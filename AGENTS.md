@@ -40,6 +40,11 @@ cargo test --workspace
 Rule of thumb: `rand` and `rand_chacha` share a minor version (both 0.9). `glam` must equal
 bevy's bundled glam (currently 0.32).
 
+Dev profiles (`Cargo.toml`): `[profile.dev] opt-level = 1` on local crates (fast recompile)
+**plus** `[profile.dev.package."*"] opt-level = 3` so Bevy + all deps build at -O3 in debug →
+usable dev FPS (standard Bevy trick). First build is slow (~12 min on this machine); later
+builds are incremental. Release: `lto = "thin"`, `codegen-units = 1`.
+
 ## Workspace layout (5 crates)
 
 - `er_core`  — no Bevy; seeds, RNG (ChaCha8), config/tunables, math foundation
