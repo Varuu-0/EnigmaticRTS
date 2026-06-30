@@ -5,4 +5,14 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-bevy = { workspace = true }
+bevy = { workspace = true, features = [
+    "3d_bevy_render",
+    "ui_bevy_render",
+    "default_app",
+    "scene",
+    "picking",
+    "std",
+    "bevy_winit",
+    "default_font",
+    "multi_threaded",
+] }

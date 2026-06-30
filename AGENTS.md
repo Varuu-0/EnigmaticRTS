@@ -42,8 +42,26 @@ bevy's bundled glam (currently 0.32).
 
 Dev profiles (`Cargo.toml`): `[profile.dev] opt-level = 1` on local crates (fast recompile)
 **plus** `[profile.dev.package."*"] opt-level = 3` so Bevy + all deps build at -O3 in debug →
-usable dev FPS (standard Bevy trick). First build is slow (~12 min on this machine); later
-builds are incremental. Release: `lto = "thin"`, `codegen-units = 1`.
+usable dev FPS (standard Bevy trick). First build after a feature/profile change is slow
+(~7–13 min on this machine); normal incremental edits are fast. Release: `lto = "thin"`,
+`codegen-units = 1`.
+
+## Fast dev builds (Windows)
+
+- **Linker:** `.cargo/config.toml` sets `linker = "rust-lld.exe"` for `x86_64-pc-windows-msvc`
+  (LLD — far faster link step than the default `link.exe`). `rust-lld.exe` is resolved from the
+  Rust sysroot; no extra install needed. (Verified: app links + runs at ~144 fps.)
+- **Trimmed Bevy features:** Bevy is `default-features = false` at the workspace level;
+  `er_game` keeps only `3d_bevy_render`, `ui_bevy_render`, `default_app`, `scene`, `picking`,
+  `std`, `bevy_winit`, `default_font`, `multi_threaded`. This drops `bevy_audio` (+ audio codecs)
+  and `bevy_gilrs` (gamepad) and the standalone 2D profile → fewer crates to compile. Note
+  `bevy_sprite` is still pulled transitively by the text/UI renderer (expected). If a later phase
+  needs audio/gamepad/gltf/etc., add that feature back in `crates/er_game/Cargo.toml`.
+- **Dynamic linking — NOT used (tried, reverted):** `dynamic_linking` built `bevy_dylib.dll`, but
+  the binary failed to start when run directly (`0xC0000135 STATUS_DLL_NOT_FOUND` — transitive
+  DLLs of `bevy_dylib.dll` aren't on the search path) and `cargo run` rebuilt instead of reusing
+  `cargo build` artifacts (net slower — opposite of the goal). Static linking + `rust-lld` is the
+  current, working setup.
 
 ## Workspace layout (5 crates)
 

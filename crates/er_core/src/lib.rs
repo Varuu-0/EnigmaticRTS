@@ -2,6 +2,7 @@
 //! Planet-creation pass; RTS crates are deferred.
 
 pub mod config;
+pub mod math;
 pub mod rng;
 pub mod seed;
 

@@ -20,7 +20,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-bevy = "0.19"
+bevy = { version = "0.19", default-features = false }
 glam = "0.32"
 rand = "0.9"
 rand_chacha = "0.9"
