@@ -1,0 +1,39 @@
+# EnigmaticRTS — Planet & Solar-System Simulator
+# Versions: bevy 0.19, glam 0.32, rand 0.9, rand_chacha 0.9, fastnoise-lite 1.1
+# Commands:
+#   cargo build --workspace
+#   cargo run -p er_game
+#   cargo test --workspace
+[workspace]
+resolver = "2"
+members = [
+    "crates/er_core",
+    "crates/er_world",
+    "crates/er_terrain",
+    "crates/er_render",
+    "crates/er_game",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+bevy = "0.19"
+glam = "0.32"
+rand = "0.9"
+rand_chacha = "0.9"
+fastnoise-lite = "1.1"
+# intra-workspace
+er_core = { path = "crates/er_core" }
+er_world = { path = "crates/er_world" }
+er_terrain = { path = "crates/er_terrain" }
+er_render = { path = "crates/er_render" }
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

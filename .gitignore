@@ -1,0 +1,5 @@
+/target
+**/*.rs.bk
+*.pdb
+.kilo/plans/1782755385739-planet-solar-sim-plan.md
+.kilo/plans/1782703038625-enigmatic-rts-world-plan.md
