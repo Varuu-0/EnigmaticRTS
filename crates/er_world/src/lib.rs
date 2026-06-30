@@ -2,6 +2,8 @@
 //! solar-system generation, Kepler orbits, and the query cache.
 //! Planet-creation pass.
 
+pub mod elevation;
+
 pub fn version() -> &'static str {
     "0"
 }
