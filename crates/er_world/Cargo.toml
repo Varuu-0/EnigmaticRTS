@@ -9,4 +9,11 @@ er_core = { workspace = true }
 glam = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
-fastnoise-lite = { workspace = true }
+fastnoise-lite = { workspace = true, features = ["f64", "std"] }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "elevation_bench"
+harness = false
