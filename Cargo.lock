@@ -2253,6 +2253,9 @@ name = "er_game"
 version = "0.0.1"
 dependencies = [
  "bevy",
+ "er_core",
+ "er_terrain",
+ "er_world",
 ]
 
 [[package]]
@@ -2268,6 +2271,9 @@ dependencies = [
 name = "er_terrain"
 version = "0.0.1"
 dependencies = [
+ "bevy",
+ "bytemuck",
+ "encase",
  "er_core",
  "er_world",
  "glam",

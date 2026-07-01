@@ -25,6 +25,7 @@ glam = "0.32"
 rand = "0.9"
 rand_chacha = "0.9"
 fastnoise-lite = "1.1"
+bytemuck = "1"
 # intra-workspace
 er_core = { path = "crates/er_core" }
 er_world = { path = "crates/er_world" }

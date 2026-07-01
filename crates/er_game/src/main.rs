@@ -1,21 +1,24 @@
 //! er_game entry point.
 //!
-//! Phase 0 bootstrap: opens a window ("Planet Solar Sim"), logs FPS, and
-//! provides an ESC settings menu (VSync / Fullscreen / MSAA / quit). VSync and
-//! Fullscreen are applied at startup from a persisted file (changing them at
-//! runtime is unsafe on hybrid graphics); MSAA applies live. Planet/terrain
-//! systems get wired in by later phases.
+//! Phase 3: terrain quadtree LOD with GPU-displaced chunks, orbital camera,
+//! and a debug overlay. ESC still opens the settings menu.
 
 use bevy::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     prelude::*,
+    render::camera::{PerspectiveProjection, Projection},
 };
 
+mod camera;
+mod debug_overlay;
 mod menu;
 mod settings;
 
+use camera::{CameraPlugin, OrbitCamera};
+use debug_overlay::DebugOverlayPlugin;
 use menu::SettingsMenuPlugin;
 use settings::GraphicsSettings;
+use er_terrain::TerrainPlugin;
 
 fn main() {
     let settings = settings::load_settings();
@@ -37,12 +40,26 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
         .insert_resource(settings)
         .add_plugins(SettingsMenuPlugin)
+        .add_plugins(CameraPlugin)
+        .add_plugins(DebugOverlayPlugin)
+        .add_plugins(TerrainPlugin::default())
         .add_systems(Startup, (setup, apply_startup_window_mode))
         .run();
 }
 
 fn setup(mut commands: Commands, settings: Res<GraphicsSettings>) {
-    commands.spawn((Camera3d::default(), settings.msaa()));
+    commands.spawn((
+        Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection {
+            near: 1.0,
+            far: 500000.0,
+            fov: 60.0_f32.to_radians(),
+            ..default()
+        }),
+        OrbitCamera::default(),
+        Transform::default(),
+        settings.msaa(),
+    ));
 }
 
 fn apply_startup_window_mode(settings: Res<GraphicsSettings>, mut windows: Query<&mut Window>) {

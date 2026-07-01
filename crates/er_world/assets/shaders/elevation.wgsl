@@ -405,23 +405,23 @@ struct ElevationParams {
 @group(0) @binding(1) var<storage, read> dirs: array<vec3<f32>>;
 @group(0) @binding(2) var<storage, read_write> elevs: array<f32>;
 
-fn compute_elevation(dir: vec3<f32>) -> f32 {
-    let warped: vec3<f32> = fnl_domain_warp_3d(dir, params.seed, params.warp_freq, params.warp_amp);
+fn compute_elevation(dir: vec3<f32>, p: ElevationParams) -> f32 {
+    let warped: vec3<f32> = fnl_domain_warp_3d(dir, p.seed, p.warp_freq, p.warp_amp);
 
-    let continental: f32 = fnl_fbm_opensimplex2_3d(params.seed, warped, params.continental_freq, params.continental_octaves, params.lacunarity, params.gain);
+    let continental: f32 = fnl_fbm_opensimplex2_3d(p.seed, warped, p.continental_freq, p.continental_octaves, p.lacunarity, p.gain);
 
-    let mountain_raw: f32 = fnl_ridged_opensimplex2_3d(params.seed, warped, params.mountain_freq, params.mountain_octaves, params.lacunarity, params.gain);
+    let mountain_raw: f32 = fnl_ridged_opensimplex2_3d(p.seed, warped, p.mountain_freq, p.mountain_octaves, p.lacunarity, p.gain);
     let mountain_mask: f32 = max(0.0, continental);
     let mountains: f32 = mountain_raw * mountain_mask;
 
-    let hills: f32 = fnl_fbm_opensimplex2_3d(params.seed, warped, params.hill_freq, params.hill_octaves, params.lacunarity, params.gain);
+    let hills: f32 = fnl_fbm_opensimplex2_3d(p.seed, warped, p.hill_freq, p.hill_octaves, p.lacunarity, p.gain);
 
-    let detail: f32 = fnl_fbm_value_3d(params.seed, warped, params.detail_freq, params.detail_octaves, params.lacunarity, params.gain);
+    let detail: f32 = fnl_fbm_value_3d(p.seed, warped, p.detail_freq, p.detail_octaves, p.lacunarity, p.gain);
 
-    return continental * params.continental_amp
-         + mountains * params.mountain_amp
-         + hills * params.hill_amp
-         + detail * params.detail_amp;
+    return continental * p.continental_amp
+         + mountains * p.mountain_amp
+         + hills * p.hill_amp
+         + detail * p.detail_amp;
 }
 
 @compute @workgroup_size(64)
@@ -431,6 +431,6 @@ fn elevation_eval(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let dir: vec3<f32> = dirs[i];
-    elevs[i] = compute_elevation(dir);
+    elevs[i] = compute_elevation(dir, params);
 }
 

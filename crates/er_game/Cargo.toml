@@ -10,8 +10,12 @@ bevy = { workspace = true, features = [
     "ui_bevy_render",
     "default_app",
     "scene",
+    "picking",
     "std",
     "bevy_winit",
     "default_font",
     "multi_threaded",
 ] }
+er_core = { workspace = true }
+er_world = { workspace = true }
+er_terrain = { path = "../er_terrain" }
