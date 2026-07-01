@@ -1,6 +1,6 @@
 use bevy::render::mesh::{Indices, Mesh, VertexAttributeValues};
 use er_core::config::{CHUNK_QUADS_PER_EDGE, CHUNK_VERT_RES};
-use er_core::math::{cells_per_edge, uv_to_dir, CellKey};
+use er_core::math::{cells_per_edge, CellKey};
 use er_terrain::{generate_chunk_mesh, ATTRIBUTE_MORPH};
 
 #[test]
@@ -120,7 +120,7 @@ fn face_edge_chunks_adjacent_across_boundary() {
     let key1 = CellKey { face: 0, i: cells - 1, j: cells / 2, lod };
     let mesh1 = generate_chunk_mesh(key1, radius);
 
-    let key2 = CellKey { face: 2, i: 0, j: cells / 2, lod };
+    let key2 = CellKey { face: 2, i: cells - 1, j: cells / 2, lod };
     let mesh2 = generate_chunk_mesh(key2, radius);
 
     let pos1 = match mesh1.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
@@ -135,7 +135,7 @@ fn face_edge_chunks_adjacent_across_boundary() {
     let mut max_diff = 0.0f32;
     for j in 0..n {
         let idx1 = j * n + (n - 1);
-        let idx2 = j * n;
+        let idx2 = j * n + (n - 1);
         let p1 = pos1[idx1];
         let p2 = pos2[idx2];
         let diff = (p1[0] - p2[0]).abs() + (p1[1] - p2[1]).abs() + (p1[2] - p2[2]).abs();

@@ -1,4 +1,4 @@
-use bevy::input::mouse::{MouseMotion, MouseWheel};
+use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
 
 #[derive(Component)]
@@ -48,8 +48,8 @@ fn orbit_camera_update(mut query: Query<(&OrbitCamera, &mut Transform)>) {
 }
 
 fn orbit_camera_input(
-    mut motion_events: EventReader<MouseMotion>,
-    mut wheel_events: EventReader<MouseWheel>,
+    accumulated_motion: Res<AccumulatedMouseMotion>,
+    accumulated_scroll: Res<AccumulatedMouseScroll>,
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut query: Query<&mut OrbitCamera>,
@@ -78,15 +78,11 @@ fn orbit_camera_input(
     }
 
     if buttons.pressed(MouseButton::Left) {
-        for event in motion_events.read() {
-            orbit.yaw -= event.delta.x * 0.005;
-            orbit.pitch = (orbit.pitch + event.delta.y * 0.005).clamp(-1.5, 1.5);
-        }
+        orbit.yaw -= accumulated_motion.delta.x * 0.005;
+        orbit.pitch = (orbit.pitch + accumulated_motion.delta.y * 0.005).clamp(-1.5, 1.5);
     }
 
-    for event in wheel_events.read() {
-        orbit.distance *= 1.0 - event.y * 0.1;
-    }
+    orbit.distance *= 1.0 - accumulated_scroll.delta.y * 0.1;
 
     if keys.pressed(KeyCode::ArrowUp) {
         orbit.distance -= zoom_speed * dt;
@@ -95,7 +91,5 @@ fn orbit_camera_input(
         orbit.distance += zoom_speed * dt;
     }
 
-    orbit.distance = orbit
-        .distance
-        .clamp(orbit.min_distance, orbit.max_distance);
+    orbit.distance = orbit.distance.clamp(orbit.min_distance, orbit.max_distance);
 }

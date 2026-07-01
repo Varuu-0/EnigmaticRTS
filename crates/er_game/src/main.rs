@@ -6,8 +6,8 @@
 use bevy::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     prelude::*,
-    render::camera::{PerspectiveProjection, Projection},
 };
+use bevy::camera::{PerspectiveProjection, Projection};
 
 mod camera;
 mod debug_overlay;
