@@ -10,9 +10,12 @@ glam = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 fastnoise-lite = { workspace = true, features = ["f64", "std"] }
+bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 
 [dev-dependencies]
 criterion = "0.5"
+wgpu = "29"
+pollster = "0.3"
 
 [[bench]]
 name = "elevation_bench"

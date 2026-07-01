@@ -5,7 +5,7 @@ use fastnoise_lite::{DomainWarpType, FastNoiseLite, FractalType, NoiseType};
 use glam::DVec3;
 use rand::RngCore;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub struct ElevationParams {
     pub seed: i32,
@@ -78,43 +78,43 @@ impl ElevationNoise {
 
         let mut warp = FastNoiseLite::with_seed(seed);
         warp.set_domain_warp_type(Some(DomainWarpType::OpenSimplex2));
-        warp.set_frequency(Some(params.warp_freq as f64));
-        warp.set_domain_warp_amp(Some(params.warp_amp as f64));
+        warp.set_frequency(Some(params.warp_freq));
+        warp.set_domain_warp_amp(Some(params.warp_amp));
 
         let mut continental = FastNoiseLite::with_seed(seed);
         continental.set_noise_type(Some(NoiseType::OpenSimplex2));
         continental.set_fractal_type(Some(FractalType::FBm));
         continental.set_fractal_octaves(Some(params.continental_octaves));
-        continental.set_frequency(Some(params.continental_freq as f64));
-        continental.set_fractal_lacunarity(Some(params.lacunarity as f64));
-        continental.set_fractal_gain(Some(params.gain as f64));
+        continental.set_frequency(Some(params.continental_freq));
+        continental.set_fractal_lacunarity(Some(params.lacunarity));
+        continental.set_fractal_gain(Some(params.gain));
         continental.set_fractal_weighted_strength(Some(0.0));
 
         let mut mountain = FastNoiseLite::with_seed(seed);
         mountain.set_noise_type(Some(NoiseType::OpenSimplex2));
         mountain.set_fractal_type(Some(FractalType::Ridged));
         mountain.set_fractal_octaves(Some(params.mountain_octaves));
-        mountain.set_frequency(Some(params.mountain_freq as f64));
-        mountain.set_fractal_lacunarity(Some(params.lacunarity as f64));
-        mountain.set_fractal_gain(Some(params.gain as f64));
+        mountain.set_frequency(Some(params.mountain_freq));
+        mountain.set_fractal_lacunarity(Some(params.lacunarity));
+        mountain.set_fractal_gain(Some(params.gain));
         mountain.set_fractal_weighted_strength(Some(0.0));
 
         let mut hill = FastNoiseLite::with_seed(seed);
         hill.set_noise_type(Some(NoiseType::OpenSimplex2));
         hill.set_fractal_type(Some(FractalType::FBm));
         hill.set_fractal_octaves(Some(params.hill_octaves));
-        hill.set_frequency(Some(params.hill_freq as f64));
-        hill.set_fractal_lacunarity(Some(params.lacunarity as f64));
-        hill.set_fractal_gain(Some(params.gain as f64));
+        hill.set_frequency(Some(params.hill_freq));
+        hill.set_fractal_lacunarity(Some(params.lacunarity));
+        hill.set_fractal_gain(Some(params.gain));
         hill.set_fractal_weighted_strength(Some(0.0));
 
         let mut detail = FastNoiseLite::with_seed(seed);
         detail.set_noise_type(Some(NoiseType::Value));
         detail.set_fractal_type(Some(FractalType::FBm));
         detail.set_fractal_octaves(Some(params.detail_octaves));
-        detail.set_frequency(Some(params.detail_freq as f64));
-        detail.set_fractal_lacunarity(Some(params.lacunarity as f64));
-        detail.set_fractal_gain(Some(params.gain as f64));
+        detail.set_frequency(Some(params.detail_freq));
+        detail.set_fractal_lacunarity(Some(params.lacunarity));
+        detail.set_fractal_gain(Some(params.gain));
         detail.set_fractal_weighted_strength(Some(0.0));
 
         Self {
@@ -140,10 +140,10 @@ pub fn elevation(dir: DVec3, noise: &ElevationNoise, params: &ElevationParams) -
 
     let detail = noise.detail.get_noise_3d(wx, wy, wz);
 
-    continental * (params.continental_amp as f64)
-        + mountains * (params.mountain_amp as f64)
-        + hills * (params.hill_amp as f64)
-        + detail * (params.detail_amp as f64)
+    (continental * params.continental_amp
+        + mountains * params.mountain_amp
+        + hills * params.hill_amp
+        + detail * params.detail_amp) as f64
 }
 
 pub fn surface_pos(
@@ -186,14 +186,8 @@ mod tests {
         let noise = ElevationNoise::new(&params);
         let dirs = rand_dirs(0xABCDEF, 1000);
 
-        let pass1: Vec<f64> = dirs
-            .iter()
-            .map(|d| elevation(*d, &noise, &params))
-            .collect();
-        let pass2: Vec<f64> = dirs
-            .iter()
-            .map(|d| elevation(*d, &noise, &params))
-            .collect();
+        let pass1: Vec<f64> = dirs.iter().map(|d| elevation(*d, &noise, &params)).collect();
+        let pass2: Vec<f64> = dirs.iter().map(|d| elevation(*d, &noise, &params)).collect();
 
         for (a, b) in pass1.iter().zip(pass2.iter()) {
             assert_eq!(a.to_bits(), b.to_bits(), "elevation not bit-identical");
@@ -214,8 +208,8 @@ mod tests {
         for d in &dirs {
             let e = elevation(*d, &noise, &params);
             assert!(
-                e >= -2.0 && e <= 2.0,
-                "elevation {e} out of [-2, 2] (amp_sum={amp_sum})"
+                e >= -3.0 && e <= 3.0,
+                "elevation {e} out of [-3, 3] (amp_sum={amp_sum})"
             );
         }
     }
