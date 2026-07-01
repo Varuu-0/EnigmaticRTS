@@ -13,6 +13,8 @@ bevy = { workspace = true, features = [
     "picking",
     "std",
     "bevy_winit",
+    "bevy_gizmos",
+    "bevy_gizmos_render",
     "default_font",
     "multi_threaded",
 ] }

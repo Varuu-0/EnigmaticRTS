@@ -13,9 +13,9 @@ pub mod systems;
 pub use chunk::ChunkComponent;
 pub use debug::TerrainDebugInfo;
 pub use material::{TerrainMaterial, TerrainMaterialUniform};
-pub use mesh_gen::{generate_chunk_mesh, ATTRIBUTE_MORPH};
+pub use mesh_gen::{generate_chunk_mesh, ATTRIBUTE_GRID, ATTRIBUTE_MORPH};
 pub use quadtree::{children_of, parent_of, root_chunks, ActiveChunks};
-pub use systems::{spawn_chunk_at, TerrainPlugin, TerrainState};
+pub use systems::{TerrainPlugin, TerrainState};
 
 pub fn version() -> &'static str {
     "0"

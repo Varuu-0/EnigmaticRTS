@@ -7,10 +7,14 @@ use er_core::math::{cell_size, cells_per_edge, uv_to_dir, CellKey};
 pub const ATTRIBUTE_MORPH: MeshVertexAttribute =
     MeshVertexAttribute::new("Morph", 988540918, VertexFormat::Float32);
 
+pub const ATTRIBUTE_GRID: MeshVertexAttribute =
+    MeshVertexAttribute::new("Grid", 988540919, VertexFormat::Uint32x2);
+
 pub fn generate_chunk_mesh(key: CellKey, radius: f64) -> Mesh {
     let n = CHUNK_VERT_RES as usize;
     let quads = CHUNK_QUADS_PER_EDGE as usize;
     let cells = cells_per_edge(key.lod) as f64;
+    let n1 = (n - 1) as u32;
 
     let u_min = key.i as f64 / cells;
     let u_max = (key.i + 1) as f64 / cells;
@@ -22,6 +26,7 @@ pub fn generate_chunk_mesh(key: CellKey, radius: f64) -> Mesh {
 
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(n * n + 4 * n);
     let mut morphs: Vec<f32> = Vec::with_capacity(n * n + 4 * n);
+    let mut grids: Vec<[u32; 2]> = Vec::with_capacity(n * n + 4 * n);
 
     for gj in 0..n {
         for gi in 0..n {
@@ -31,6 +36,7 @@ pub fn generate_chunk_mesh(key: CellKey, radius: f64) -> Mesh {
             let pos = dir * radius;
             positions.push([pos.x as f32, pos.y as f32, pos.z as f32]);
             morphs.push(1.0);
+            grids.push([gi as u32, gj as u32]);
         }
     }
 
@@ -43,6 +49,7 @@ pub fn generate_chunk_mesh(key: CellKey, radius: f64) -> Mesh {
         let pos = dir * skirt_radius;
         positions.push([pos.x as f32, pos.y as f32, pos.z as f32]);
         morphs.push(0.0);
+        grids.push([gi as u32, 0]);
     }
 
     let bot_skirt = top_skirt + n;
@@ -52,6 +59,7 @@ pub fn generate_chunk_mesh(key: CellKey, radius: f64) -> Mesh {
         let pos = dir * skirt_radius;
         positions.push([pos.x as f32, pos.y as f32, pos.z as f32]);
         morphs.push(0.0);
+        grids.push([gi as u32, n1]);
     }
 
     let left_skirt = bot_skirt + n;
@@ -61,6 +69,7 @@ pub fn generate_chunk_mesh(key: CellKey, radius: f64) -> Mesh {
         let pos = dir * skirt_radius;
         positions.push([pos.x as f32, pos.y as f32, pos.z as f32]);
         morphs.push(0.0);
+        grids.push([0, gj as u32]);
     }
 
     let right_skirt = left_skirt + n;
@@ -70,6 +79,7 @@ pub fn generate_chunk_mesh(key: CellKey, radius: f64) -> Mesh {
         let pos = dir * skirt_radius;
         positions.push([pos.x as f32, pos.y as f32, pos.z as f32]);
         morphs.push(0.0);
+        grids.push([n1, gj as u32]);
     }
 
     let mut indices: Vec<u32> = Vec::with_capacity(quads * quads * 6 + 4 * quads * 6);
@@ -122,6 +132,7 @@ pub fn generate_chunk_mesh(key: CellKey, radius: f64) -> Mesh {
     );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(ATTRIBUTE_MORPH, morphs);
+    mesh.insert_attribute(ATTRIBUTE_GRID, grids);
     mesh.insert_indices(Indices::U32(indices));
     mesh
 }

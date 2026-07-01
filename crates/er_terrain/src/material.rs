@@ -7,9 +7,10 @@ use bevy::render::render_resource::{
     AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError,
 };
 use bevy::shader::{Shader, ShaderRef};
+use er_core::math::{cells_per_edge, CellKey};
 use er_world::elevation::ElevationParams;
 
-use crate::mesh_gen::ATTRIBUTE_MORPH;
+use crate::mesh_gen::{ATTRIBUTE_GRID, ATTRIBUTE_MORPH};
 
 pub static VERTEX_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
 pub static FRAGMENT_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
@@ -36,6 +37,16 @@ pub struct TerrainMaterialUniform {
     pub gain: f32,
     pub planet_radius: f32,
     pub elevation_scale: f32,
+    pub face: i32,
+    pub u_min: f32,
+    pub u_max: f32,
+    pub v_min: f32,
+    pub v_max: f32,
+    pub chunk_depth: i32,
+    pub neighbor_depth_0: f32,
+    pub neighbor_depth_1: f32,
+    pub neighbor_depth_2: f32,
+    pub neighbor_depth_3: f32,
 }
 
 impl TerrainMaterialUniform {
@@ -61,7 +72,34 @@ impl TerrainMaterialUniform {
             gain: params.gain,
             planet_radius,
             elevation_scale,
+            face: 0,
+            u_min: 0.0,
+            u_max: 1.0,
+            v_min: 0.0,
+            v_max: 1.0,
+            chunk_depth: 0,
+            neighbor_depth_0: 0.0,
+            neighbor_depth_1: 0.0,
+            neighbor_depth_2: 0.0,
+            neighbor_depth_3: 0.0,
         }
+    }
+
+    pub fn for_chunk(&self, key: CellKey) -> Self {
+        let cells = cells_per_edge(key.lod) as f32;
+        let depth = key.lod as f32;
+        let mut u = *self;
+        u.face = key.face as i32;
+        u.u_min = key.i as f32 / cells;
+        u.u_max = (key.i + 1) as f32 / cells;
+        u.v_min = key.j as f32 / cells;
+        u.v_max = (key.j + 1) as f32 / cells;
+        u.chunk_depth = key.lod as i32;
+        u.neighbor_depth_0 = depth;
+        u.neighbor_depth_1 = depth;
+        u.neighbor_depth_2 = depth;
+        u.neighbor_depth_3 = depth;
+        u
     }
 }
 
@@ -89,6 +127,7 @@ impl Material for TerrainMaterial {
         let vertex_layout = layout.0.get_layout(&[
             Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
             ATTRIBUTE_MORPH.at_shader_location(1),
+            ATTRIBUTE_GRID.at_shader_location(2),
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         descriptor.primitive.cull_mode = None;

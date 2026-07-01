@@ -1,7 +1,9 @@
 use bevy::render::mesh::{Indices, Mesh, VertexAttributeValues};
 use er_core::config::{CHUNK_QUADS_PER_EDGE, CHUNK_VERT_RES};
 use er_core::math::{cells_per_edge, CellKey};
-use er_terrain::{generate_chunk_mesh, ATTRIBUTE_MORPH};
+use er_core::seed::PlanetSeed;
+use er_terrain::{generate_chunk_mesh, ChunkComponent, TerrainMaterialUniform, ATTRIBUTE_GRID, ATTRIBUTE_MORPH};
+use er_world::elevation::elevation_params;
 
 #[test]
 fn chunk_mesh_vertex_and_index_counts() {
@@ -145,4 +147,126 @@ fn face_edge_chunks_adjacent_across_boundary() {
         max_diff < 0.01,
         "cross-face edge mismatch: max_diff={max_diff}"
     );
+}
+
+#[test]
+fn chunk_component_neighbor_depth_default() {
+    let key = CellKey { face: 0, i: 1, j: 2, lod: 3 };
+    let chunk = ChunkComponent::new(key);
+    assert_eq!(chunk.neighbor_depth, [3, 3, 3, 3]);
+}
+
+#[test]
+fn material_uniform_for_chunk_sets_edge_stitch_data() {
+    let params = elevation_params(PlanetSeed(0xC0FFEE));
+    let base = TerrainMaterialUniform::from_params(&params, 12000.0, 1000.0);
+    let key = CellKey { face: 2, i: 1, j: 0, lod: 5 };
+    let cu = base.for_chunk(key);
+    assert_eq!(cu.face, 2);
+    assert_eq!(cu.chunk_depth, 5);
+    assert_eq!(cu.neighbor_depth_0, 5.0);
+    assert_eq!(cu.neighbor_depth_1, 5.0);
+    assert_eq!(cu.neighbor_depth_2, 5.0);
+    assert_eq!(cu.neighbor_depth_3, 5.0);
+    assert_eq!(cu.u_min, 1.0 / 32.0);
+    assert_eq!(cu.u_max, 2.0 / 32.0);
+    assert_eq!(cu.v_min, 0.0);
+    assert_eq!(cu.v_max, 1.0 / 32.0);
+}
+
+#[test]
+fn grid_attribute_values() {
+    let key = CellKey { face: 0, i: 0, j: 0, lod: 0 };
+    let mesh = generate_chunk_mesh(key, 12000.0);
+    let n = CHUNK_VERT_RES as usize;
+    let n1 = (n - 1) as u32;
+
+    let grid = mesh.attribute(ATTRIBUTE_GRID).expect("grid attr");
+    match grid {
+        VertexAttributeValues::Uint32x2(v) => {
+            assert_eq!(v.len(), n * n + 4 * n, "grid count mismatch");
+            assert_eq!(v[0], [0, 0], "first surface grid");
+            assert_eq!(v[n * n - 1], [n1, n1], "last surface grid");
+            assert_eq!(v[n * n], [0, 0], "top skirt first");
+            assert_eq!(v[n * n + n], [0, n1], "bot skirt first");
+        }
+        _ => panic!("expected Uint32x2 grid"),
+    }
+}
+
+fn positions(mesh: &Mesh) -> Vec<[f32; 3]> {
+    match mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+        VertexAttributeValues::Float32x3(v) => v.clone(),
+        _ => panic!("expected Float32x3 positions"),
+    }
+}
+
+fn manhattan(a: [f32; 3], b: [f32; 3]) -> f32 {
+    (a[0] - b[0]).abs() + (a[1] - b[1]).abs() + (a[2] - b[2]).abs()
+}
+
+fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+#[test]
+fn finer_even_edge_vertices_coincide_with_coarser() {
+    let radius = 12000.0;
+    let n = CHUNK_VERT_RES as usize;
+    // Fine chunk (lod 2): u 0.25..0.5, v 0..0.25. Its +u edge (u=0.5) abuts the
+    // coarse chunk's -u edge.
+    let fine = CellKey { face: 0, i: 1, j: 0, lod: 2 };
+    let coarse = CellKey { face: 0, i: 1, j: 0, lod: 1 };
+
+    let pf = positions(&generate_chunk_mesh(fine, radius));
+    let pc = positions(&generate_chunk_mesh(coarse, radius));
+
+    for k in 0..=(n / 2) {
+        let gj_fine = 2 * k;
+        let fine_idx = gj_fine * n + (n - 1);
+        let coarse_idx = k * n;
+        let diff = manhattan(pf[fine_idx], pc[coarse_idx]);
+        assert!(
+            diff < 0.01,
+            "fine even edge vert (gj={gj_fine}) != coarse edge vert (gj={k}): diff={diff}"
+        );
+    }
+}
+
+#[test]
+fn edge_stitch_snaps_inbetween_to_coarse_edge() {
+    let radius = 12000.0;
+    let n = CHUNK_VERT_RES as usize;
+    let fine = CellKey { face: 0, i: 1, j: 0, lod: 2 };
+    let coarse = CellKey { face: 0, i: 1, j: 0, lod: 1 };
+
+    let pf = positions(&generate_chunk_mesh(fine, radius));
+    let pc = positions(&generate_chunk_mesh(coarse, radius));
+
+    for k in 0..(n / 2) {
+        let gj_lo = 2 * k;
+        let gj_hi = 2 * k + 2;
+        let fine_lo = gj_lo * n + (n - 1);
+        let fine_mid = (gj_lo + 1) * n + (n - 1);
+        let fine_hi = gj_hi * n + (n - 1);
+        // Stitch target (delta=1, step=2): lerp of the two surrounding even
+        // edge vertices at t = 0.5.
+        let stitched = lerp3(pf[fine_lo], pf[fine_hi], 0.5);
+        // Coarse edge midpoint between the two coincident coarse vertices.
+        let coarse_mid = lerp3(pc[k * n], pc[(k + 1) * n], 0.5);
+        let diff = manhattan(stitched, coarse_mid);
+        assert!(
+            diff < 0.01,
+            "stitched in-between vert (gj={}) != coarse edge midpoint: diff={diff}",
+            gj_lo + 1
+        );
+        // The raw (unstitched) in-between surface vertex should NOT already lie
+        // on the coarse chord (it sits on the sphere), proving the stitch is load-bearing.
+        let raw_diff = manhattan(pf[fine_mid], coarse_mid);
+        assert!(raw_diff > 1e-3, "in-between vert already on coarse edge (raw_diff={raw_diff})");
+    }
 }

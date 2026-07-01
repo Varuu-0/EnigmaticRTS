@@ -16,3 +16,10 @@ bevy = { workspace = true, features = [
 ] }
 bytemuck = { workspace = true }
 encase = "0.12"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "chunk_gen_bench"
+harness = false
