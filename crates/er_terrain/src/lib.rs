@@ -7,6 +7,7 @@ pub mod debug;
 pub mod lod;
 pub mod material;
 pub mod mesh_gen;
+pub mod profiler;
 pub mod quadtree;
 pub mod systems;
 
@@ -14,6 +15,7 @@ pub use chunk::ChunkComponent;
 pub use debug::TerrainDebugInfo;
 pub use material::{TerrainMaterial, TerrainMaterialUniform};
 pub use mesh_gen::{generate_chunk_mesh, ATTRIBUTE_GRID, ATTRIBUTE_MORPH};
+pub use profiler::FrameProfiler;
 pub use quadtree::{children_of, parent_of, root_chunks, ActiveChunks};
 pub use systems::{TerrainPlugin, TerrainState};
 

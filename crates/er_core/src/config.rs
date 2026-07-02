@@ -1,14 +1,20 @@
 //! Tunable configuration constants for the planet/terrain system.
 
-pub const PLANET_RADIUS_DEFAULT: f64 = 12000.0;
+pub const PLANET_RADIUS_DEFAULT: f64 = 36000.0;
 pub const MAX_QUADTREE_DEPTH: u8 = 12;
 pub const CHUNK_VERT_RES: u32 = 17;
 pub const CHUNK_QUADS_PER_EDGE: u32 = 16; // CHUNK_VERT_RES - 1
-pub const LOD_SPLIT_BUDGET_PER_FRAME: usize = 4;
-pub const SCREEN_ERROR_THRESHOLD: f32 = 3.0;
-pub const MERGE_HYSTERESIS: f32 = 0.8;
+pub const LOD_SPLIT_BUDGET_PER_FRAME: usize = 8;
+pub const SCREEN_ERROR_THRESHOLD: f32 = 150.0;
+pub const MERGE_HYSTERESIS: f32 = 0.5;
 pub const MAX_RENDER_DISTANCE: f64 = PLANET_RADIUS_DEFAULT * 8.0;
-pub const ACTIVE_CHUNK_CAP: usize = 512;
+pub const ACTIVE_CHUNK_CAP: usize = 8192;
+
+/// Converts angular-size ratio (chunk_size / distance) to approximate pixel
+/// error: viewport_height / (2 * tan(fov/2)) for 1080p + 60° FOV.
+/// `1080 / (2 * tan(30°)) ≈ 935`. screen_error returns pixels; the threshold
+/// is in the same unit (e.g. 20 = split when a chunk exceeds ~20px of error).
+pub const LOD_PIXEL_SCALE: f32 = 935.0;
 pub const FIXED_TPS: i32 = 30;
 pub const DEFAULT_DAY_LENGTH_SEC: f64 = 180.0;
 

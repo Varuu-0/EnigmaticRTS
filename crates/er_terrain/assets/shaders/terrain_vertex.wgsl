@@ -76,18 +76,33 @@ fn make_elev_params(m: TerrainMaterialUniform) -> ElevationParams {
     return p;
 }
 
-fn grid_displaced(gi: u32, gj: u32, m: TerrainMaterialUniform, ep: ElevationParams) -> vec3<f32> {
+struct GridResult {
+    pos: vec3<f32>,
+    elev: f32,
+}
+
+fn grid(gi: u32, gj: u32, m: TerrainMaterialUniform, ep: ElevationParams) -> GridResult {
     let u = m.u_min + (m.u_max - m.u_min) * (f32(gi) / 16.0);
     let v = m.v_min + (m.v_max - m.v_min) * (f32(gj) / 16.0);
     let d = uv_to_dir(m.face, u, v);
     let e = compute_elevation(d, ep);
-    return d * (m.planet_radius + e * m.elevation_scale);
+    var r: GridResult;
+    r.pos = d * (m.planet_radius + e * m.elevation_scale);
+    r.elev = e;
+    return r;
+}
+
+struct StitchResult {
+    pos: vec3<f32>,
+    elev: f32,
 }
 
 // Edge stitch: when the neighbor across an edge is coarser, collapse this chunk's
 // in-between edge vertices onto the coarser grid so no T-junction / crack remains.
-// Only surface verts (morph ~ 1) call this; skirt verts (morph = 0) are unaffected.
-fn stitch_displaced(gi: u32, gj: u32, base: vec3<f32>, m: TerrainMaterialUniform, ep: ElevationParams) -> vec3<f32> {
+// Both position AND elevation are interpolated so the fragment color matches the
+// coarse neighbor exactly at the shared edge. Only surface verts (morph ~ 1) call
+// this; skirt verts (morph = 0) are unaffected.
+fn stitch(gi: u32, gj: u32, base_pos: vec3<f32>, base_elev: f32, m: TerrainMaterialUniform, ep: ElevationParams) -> StitchResult {
     let cd = m.chunk_depth;
 
     // NegU edge (gi == 0), along-edge index = gj, neighbor_depth_0.
@@ -97,9 +112,12 @@ fn stitch_displaced(gi: u32, gj: u32, base: vec3<f32>, m: TerrainMaterialUniform
             let k_lo = (gj / step) * step;
             let k_hi = min(k_lo + step, 16u);
             let t = f32(gj - k_lo) / f32(step);
-            let a = grid_displaced(0u, k_lo, m, ep);
-            let b = grid_displaced(0u, k_hi, m, ep);
-            return mix(a, b, t);
+            let a = grid(0u, k_lo, m, ep);
+            let b = grid(0u, k_hi, m, ep);
+            var r: StitchResult;
+            r.pos = mix(a.pos, b.pos, t);
+            r.elev = mix(a.elev, b.elev, t);
+            return r;
         }
     }
     // PosU edge (gi == 16), along-edge index = gj, neighbor_depth_1.
@@ -109,9 +127,12 @@ fn stitch_displaced(gi: u32, gj: u32, base: vec3<f32>, m: TerrainMaterialUniform
             let k_lo = (gj / step) * step;
             let k_hi = min(k_lo + step, 16u);
             let t = f32(gj - k_lo) / f32(step);
-            let a = grid_displaced(16u, k_lo, m, ep);
-            let b = grid_displaced(16u, k_hi, m, ep);
-            return mix(a, b, t);
+            let a = grid(16u, k_lo, m, ep);
+            let b = grid(16u, k_hi, m, ep);
+            var r: StitchResult;
+            r.pos = mix(a.pos, b.pos, t);
+            r.elev = mix(a.elev, b.elev, t);
+            return r;
         }
     }
     // NegV edge (gj == 0), along-edge index = gi, neighbor_depth_2.
@@ -121,9 +142,12 @@ fn stitch_displaced(gi: u32, gj: u32, base: vec3<f32>, m: TerrainMaterialUniform
             let k_lo = (gi / step) * step;
             let k_hi = min(k_lo + step, 16u);
             let t = f32(gi - k_lo) / f32(step);
-            let a = grid_displaced(k_lo, 0u, m, ep);
-            let b = grid_displaced(k_hi, 0u, m, ep);
-            return mix(a, b, t);
+            let a = grid(k_lo, 0u, m, ep);
+            let b = grid(k_hi, 0u, m, ep);
+            var r: StitchResult;
+            r.pos = mix(a.pos, b.pos, t);
+            r.elev = mix(a.elev, b.elev, t);
+            return r;
         }
     }
     // PosV edge (gj == 16), along-edge index = gi, neighbor_depth_3.
@@ -133,12 +157,18 @@ fn stitch_displaced(gi: u32, gj: u32, base: vec3<f32>, m: TerrainMaterialUniform
             let k_lo = (gi / step) * step;
             let k_hi = min(k_lo + step, 16u);
             let t = f32(gi - k_lo) / f32(step);
-            let a = grid_displaced(k_lo, 16u, m, ep);
-            let b = grid_displaced(k_hi, 16u, m, ep);
-            return mix(a, b, t);
+            let a = grid(k_lo, 16u, m, ep);
+            let b = grid(k_hi, 16u, m, ep);
+            var r: StitchResult;
+            r.pos = mix(a.pos, b.pos, t);
+            r.elev = mix(a.elev, b.elev, t);
+            return r;
         }
     }
-    return base;
+    var r: StitchResult;
+    r.pos = base_pos;
+    r.elev = base_elev;
+    return r;
 }
 
 @vertex
@@ -152,16 +182,26 @@ fn vertex(in: Vertex) -> VertexOutput {
     let elev_params = make_elev_params(material);
     let elev = compute_elevation(dir, elev_params);
 
-    var displaced = dir * (material.planet_radius + elev * material.elevation_scale * in.morph);
+    let surface_radius = material.planet_radius + elev * material.elevation_scale;
+    var displaced = dir * surface_radius;
+    var final_elev = elev;
+
+    if (in.morph < 0.5) {
+        let cells_per_edge = f32(1u << u32(material.chunk_depth));
+        let chunk_size = material.planet_radius * 1.5707963 / cells_per_edge;
+        displaced = dir * (surface_radius - chunk_size * 0.2);
+    }
 
     if (in.morph > 0.5) {
-        displaced = stitch_displaced(in.grid.x, in.grid.y, displaced, material, elev_params);
+        let s = stitch(in.grid.x, in.grid.y, displaced, elev, material, elev_params);
+        displaced = s.pos;
+        final_elev = s.elev;
     }
 
     let world_pos = mesh_position_local_to_world(model, vec4<f32>(displaced, 1.0));
     out.world_position = world_pos.xyz;
     out.clip_position = mesh_position_local_to_clip(model, vec4<f32>(displaced, 1.0));
-    out.elevation = elev;
+    out.elevation = final_elev;
 
     return out;
 }

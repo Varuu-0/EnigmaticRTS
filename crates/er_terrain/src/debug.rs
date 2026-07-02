@@ -7,4 +7,5 @@ pub struct TerrainDebugInfo {
     pub pending_splits: usize,
     pub pending_merges: usize,
     pub visible_chunks: usize,
+    pub frame_time_ms: f32,
 }

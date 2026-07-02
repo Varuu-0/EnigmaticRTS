@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use er_core::config::MAX_QUADTREE_DEPTH;
 use er_core::math::{cells_per_edge, dir_to_surface, uv_to_dir, world_to_render, OriginOffset};
-use er_terrain::{ChunkComponent, TerrainDebugInfo, TerrainState};
+use er_terrain::{ChunkComponent, FrameProfiler, TerrainDebugInfo, TerrainState};
 
 #[derive(Component)]
 struct DebugText;
@@ -26,7 +26,7 @@ fn setup_debug_text(mut commands: Commands) {
     commands.spawn((
         Text::new(""),
         TextFont {
-            font_size: FontSize::Px(16.0),
+            font_size: FontSize::Px(14.0),
             ..default()
         },
         TextColor(Color::WHITE),
@@ -42,13 +42,49 @@ fn setup_debug_text(mut commands: Commands) {
 
 fn update_debug_text(
     debug: Res<TerrainDebugInfo>,
+    profiler: Res<FrameProfiler>,
+    time: Res<Time>,
     mut query: Query<&mut Text, With<DebugText>>,
 ) {
     if let Ok(mut text) = query.single_mut() {
-        *text = Text::new(format!(
-            "Chunks: {} | Max LOD: {} | Splits: {} | Merges: {}",
-            debug.active_chunks, debug.max_depth, debug.pending_splits, debug.pending_merges
+        let fps = 1.0 / time.delta_secs().max(0.0001);
+        let frame_ms = time.delta_secs() * 1000.0;
+
+        let mut sorted: Vec<(&'static str, std::time::Duration)> = profiler.timings.clone();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+
+        let total_profiled: std::time::Duration =
+            sorted.iter().map(|(_, d)| *d).sum();
+
+        let mut lines = String::new();
+        lines.push_str(&format!(
+            "FPS: {:.0} | Frame: {:.1}ms | Chunks: {} | LOD: {} | S/M: {}/{}\n",
+            fps, frame_ms, debug.active_chunks, debug.max_depth,
+            debug.pending_splits, debug.pending_merges
         ));
+        lines.push_str(&format!(
+            "Profiled: {:.2}ms / {:.1}ms\n",
+            total_profiled.as_secs_f32() * 1000.0,
+            frame_ms
+        ));
+
+        let max_ms = sorted
+            .first()
+            .map(|(_, d)| d.as_secs_f32() * 1000.0)
+            .unwrap_or(1.0)
+            .max(0.1);
+
+        for (name, duration) in &sorted {
+            let ms = duration.as_secs_f32() * 1000.0;
+            let bar_len = ((ms / max_ms) * 30.0) as usize;
+            let bar = "#".repeat(bar_len);
+            lines.push_str(&format!(
+                "  {:<16} {:>6.2}ms {}\n",
+                name, ms, bar
+            ));
+        }
+
+        *text = Text::new(lines);
     }
 }
 

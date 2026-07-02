@@ -1,7 +1,8 @@
+use bevy::ecs::schedule::ApplyDeferred;
 use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
 use bevy::shader::Shader;
-use bevy::tasks::{futures::check_ready, AsyncComputeTaskPool, Task};
+use bevy::tasks::{futures::check_ready, Task};
 use er_core::config::{
     ACTIVE_CHUNK_CAP, LOD_SPLIT_BUDGET_PER_FRAME, MAX_QUADTREE_DEPTH, MAX_RENDER_DISTANCE,
     MERGE_HYSTERESIS, PLANET_RADIUS_DEFAULT, SCREEN_ERROR_THRESHOLD,
@@ -10,6 +11,7 @@ use er_core::math::{cell_size, cell_to_dir, CellKey};
 use er_core::seed::PlanetSeed;
 use er_world::elevation::{elevation_params, ElevationParams};
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use crate::chunk::ChunkComponent;
 use crate::culling::{frustum_cull_sphere, is_below_horizon, is_outside_render_distance};
@@ -85,13 +87,16 @@ impl Plugin for TerrainPlugin {
         .insert_resource(ActiveChunks::default())
         .insert_resource(TerrainDebugInfo::default())
         .insert_resource(PendingChunkMeshes::default())
+        .insert_resource(crate::profiler::FrameProfiler::default())
         .add_plugins(MaterialPlugin::<TerrainMaterial>::default())
         .add_systems(Startup, setup_terrain)
+        .add_systems(PreUpdate, profiler_clear)
         .add_systems(
             Update,
             (
                 update_lod,
                 process_lod_queue,
+                ApplyDeferred,
                 apply_pending_chunk_meshes,
                 update_neighbor_lod,
                 cull_chunks,
@@ -105,10 +110,10 @@ impl Plugin for TerrainPlugin {
 fn setup_terrain(
     mut commands: Commands,
     mut materials: ResMut<Assets<TerrainMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     mut shaders: ResMut<Assets<Shader>>,
     mut terrain_state: ResMut<TerrainState>,
     mut active_chunks: ResMut<ActiveChunks>,
-    mut pending_meshes: ResMut<PendingChunkMeshes>,
 ) {
     let vertex_source = format!(
         "{}\n{}\n{}",
@@ -134,8 +139,8 @@ fn setup_terrain(
         let entity = spawn_chunk_entity(
             &mut commands,
             &mut materials,
+            &mut meshes,
             &terrain_state.base_uniform,
-            &mut pending_meshes,
             key,
             terrain_state.planet_radius,
         );
@@ -143,12 +148,19 @@ fn setup_terrain(
     }
 }
 
+fn profiler_clear(mut profiler: ResMut<crate::profiler::FrameProfiler>) {
+    profiler.clear();
+}
+
 fn update_lod(
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
     mut active_chunks: ResMut<ActiveChunks>,
     terrain_state: Res<TerrainState>,
+    mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
+    let t0 = Instant::now();
     let Ok(camera_transform) = camera_query.single() else {
+        profiler.record("update_lod", t0.elapsed());
         return;
     };
     let camera_pos = camera_transform.translation().as_dvec3();
@@ -157,6 +169,10 @@ fn update_lod(
     active_chunks.clear_pending();
 
     for &key in &keys {
+        if is_below_horizon(key, camera_pos, terrain_state.planet_radius) {
+            continue;
+        }
+
         if should_split(
             key,
             camera_pos,
@@ -188,17 +204,21 @@ fn update_lod(
             }
         }
     }
+    profiler.record("update_lod", t0.elapsed());
 }
 
 #[allow(clippy::too_many_arguments)]
 fn process_lod_queue(
     mut commands: Commands,
     mut materials: ResMut<Assets<TerrainMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     mut active_chunks: ResMut<ActiveChunks>,
-    mut pending_meshes: ResMut<PendingChunkMeshes>,
     terrain_state: Res<TerrainState>,
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
+    mut debug: ResMut<TerrainDebugInfo>,
+    mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
+    let t0 = Instant::now();
     let Ok(camera_transform) = camera_query.single() else {
         return;
     };
@@ -207,7 +227,7 @@ fn process_lod_queue(
     let budget = terrain_state.lod_split_budget_per_frame;
 
     let mut splits_done = 0usize;
-    let pending_splits: Vec<CellKey> = active_chunks.pending_splits.clone();
+    let pending_splits: Vec<CellKey> = std::mem::take(&mut active_chunks.pending_splits);
     for key in pending_splits {
         if splits_done >= budget {
             break;
@@ -227,8 +247,8 @@ fn process_lod_queue(
             let entity = spawn_chunk_entity(
                 &mut commands,
                 &mut materials,
+                &mut meshes,
                 &base_uniform,
-                &mut pending_meshes,
                 child,
                 terrain_state.planet_radius,
             );
@@ -236,9 +256,10 @@ fn process_lod_queue(
         }
         splits_done += 1;
     }
+    debug.pending_splits = splits_done;
 
     let mut merges_done = 0usize;
-    let pending_merges: Vec<CellKey> = active_chunks.pending_merges.clone();
+    let pending_merges: Vec<CellKey> = std::mem::take(&mut active_chunks.pending_merges);
     for parent_key in pending_merges {
         if merges_done >= budget {
             break;
@@ -257,14 +278,15 @@ fn process_lod_queue(
         let entity = spawn_chunk_entity(
             &mut commands,
             &mut materials,
+            &mut meshes,
             &base_uniform,
-            &mut pending_meshes,
             parent_key,
             terrain_state.planet_radius,
         );
         active_chunks.insert(parent_key, entity);
         merges_done += 1;
     }
+    debug.pending_merges = merges_done;
 
     if active_chunks.len() > terrain_state.active_chunk_cap {
         let mut distances: Vec<(CellKey, f64)> = active_chunks
@@ -288,14 +310,18 @@ fn process_lod_queue(
             }
         }
     }
+    profiler.record("process_lod_queue", t0.elapsed());
 }
 
 fn cull_chunks(
     camera_query: Query<(&GlobalTransform, &Projection), With<Camera3d>>,
-    mut chunk_query: Query<(&ChunkComponent, &mut Visibility)>,
+    mut chunk_query: Query<(&ChunkComponent, &mut Visibility), With<Mesh3d>>,
     terrain_state: Res<TerrainState>,
+    mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
+    let t0 = Instant::now();
     let Ok((camera_transform, projection)) = camera_query.single() else {
+        profiler.record("cull_chunks", t0.elapsed());
         return;
     };
     let camera_pos = camera_transform.translation().as_dvec3();
@@ -319,10 +345,25 @@ fn cull_chunks(
     for (chunk, mut visibility) in &mut chunk_query {
         let key = chunk.key;
 
+        if is_outside_render_distance(
+            key,
+            camera_pos,
+            terrain_state.planet_radius,
+            terrain_state.max_render_distance,
+        ) {
+            *visibility = Visibility::Hidden;
+            continue;
+        }
+
+        if is_below_horizon(key, camera_pos, terrain_state.planet_radius) {
+            *visibility = Visibility::Hidden;
+            continue;
+        }
+
         if let Some((cam_pos, forward, right, up, fov_cos, aspect)) = frustum {
             let sphere_center = (cell_to_dir(key) * terrain_state.planet_radius).as_vec3();
             let sphere_radius =
-                cell_size(key.lod, terrain_state.planet_radius) as f32 + terrain_state.elevation_scale;
+                cell_size(key.lod, terrain_state.planet_radius) as f32 + terrain_state.elevation_scale * 3.0;
             if frustum_cull_sphere(
                 sphere_center,
                 sphere_radius,
@@ -338,56 +379,43 @@ fn cull_chunks(
             }
         }
 
-        if is_below_horizon(key, camera_pos, terrain_state.planet_radius) {
-            *visibility = Visibility::Hidden;
-            continue;
-        }
-
-        if is_outside_render_distance(
-            key,
-            camera_pos,
-            terrain_state.planet_radius,
-            terrain_state.max_render_distance,
-        ) {
-            *visibility = Visibility::Hidden;
-            continue;
-        }
-
         *visibility = Visibility::Visible;
     }
+    profiler.record("cull_chunks", t0.elapsed());
 }
 
-fn update_debug_info(active_chunks: Res<ActiveChunks>, mut debug: ResMut<TerrainDebugInfo>) {
+fn update_debug_info(
+    active_chunks: Res<ActiveChunks>,
+    mut debug: ResMut<TerrainDebugInfo>,
+    profiler: Res<crate::profiler::FrameProfiler>,
+) {
     debug.active_chunks = active_chunks.len();
     debug.max_depth = active_chunks.chunks.keys().map(|k| k.lod).max().unwrap_or(0);
-    debug.pending_splits = active_chunks.pending_splits.len();
-    debug.pending_merges = active_chunks.pending_merges.len();
+    debug.frame_time_ms = profiler.total().as_secs_f32() * 1000.0;
 }
 
 fn spawn_chunk_entity(
     commands: &mut Commands,
     materials: &mut Assets<TerrainMaterial>,
+    meshes: &mut Assets<Mesh>,
     base_uniform: &TerrainMaterialUniform,
-    pending_meshes: &mut PendingChunkMeshes,
     key: CellKey,
     radius: f64,
 ) -> Entity {
     let material = materials.add(TerrainMaterial {
         uniform: base_uniform.for_chunk(key),
     });
-    let entity = commands
+    let mesh = generate_chunk_mesh(key, radius);
+    let mesh_handle = meshes.add(mesh);
+    commands
         .spawn((
             ChunkComponent::new(key),
             MeshMaterial3d(material),
+            Mesh3d(mesh_handle),
             Transform::default(),
             Visibility::Hidden,
         ))
-        .id();
-    let task = AsyncComputeTaskPool::get().spawn(async move {
-        generate_chunk_mesh(key, radius)
-    });
-    pending_meshes.0.insert(entity, task);
-    entity
+        .id()
 }
 
 fn despawn_chunk(commands: &mut Commands, entity: Entity) {
@@ -401,7 +429,9 @@ fn apply_pending_chunk_meshes(
     mut meshes: ResMut<Assets<Mesh>>,
     mut pending: ResMut<PendingChunkMeshes>,
     chunk_query: Query<&ChunkComponent>,
+    mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
+    let t0 = Instant::now();
     let mut done = Vec::new();
     for (&entity, task) in &mut pending.0 {
         if let Some(mesh) = check_ready(task) {
@@ -415,20 +445,30 @@ fn apply_pending_chunk_meshes(
     for entity in done {
         pending.0.remove(&entity);
     }
+    profiler.record("apply_meshes", t0.elapsed());
 }
 
 fn update_neighbor_lod(
     active_chunks: Res<ActiveChunks>,
     mut materials: ResMut<Assets<TerrainMaterial>>,
-    mut chunk_query: Query<(&mut ChunkComponent, &MeshMaterial3d<TerrainMaterial>)>,
+    mut chunk_query: Query<(&mut ChunkComponent, &MeshMaterial3d<TerrainMaterial>, &Visibility), With<Mesh3d>>,
+    mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
-    for (mut chunk, mat_handle) in &mut chunk_query {
+    let t0 = Instant::now();
+    let sides = [
+        er_core::math::NeighborSide::NegU,
+        er_core::math::NeighborSide::PosU,
+        er_core::math::NeighborSide::NegV,
+        er_core::math::NeighborSide::PosV,
+    ];
+    for (mut chunk, mat_handle, vis) in &mut chunk_query {
+        if *vis == Visibility::Hidden {
+            continue;
+        }
         let key = chunk.key;
         let mut nd = [key.lod; 4];
-        for (i, nb) in chunk.neighbors.iter().enumerate() {
-            if active_chunks.contains(nb) {
-                nd[i] = nb.lod;
-            }
+        for (i, side) in sides.iter().enumerate() {
+            nd[i] = crate::quadtree::neighbor_lod_across_edge(key, *side, &active_chunks);
         }
         let prev = chunk.neighbor_depth;
         chunk.neighbor_depth = nd;
@@ -441,4 +481,5 @@ fn update_neighbor_lod(
             }
         }
     }
+    profiler.record("neighbor_lod", t0.elapsed());
 }

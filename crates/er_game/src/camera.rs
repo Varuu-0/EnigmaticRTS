@@ -1,5 +1,7 @@
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
 use bevy::prelude::*;
+use er_terrain::FrameProfiler;
+use std::time::Instant;
 
 #[derive(Component)]
 pub struct OrbitCamera {
@@ -16,10 +18,10 @@ impl Default for OrbitCamera {
         Self {
             yaw: 0.0,
             pitch: 0.3,
-            distance: 30000.0,
+            distance: 90000.0,
             target: Vec3::ZERO,
-            min_distance: 12050.0,
-            max_distance: 200000.0,
+            min_distance: 36150.0,
+            max_distance: 600000.0,
         }
     }
 }
@@ -32,7 +34,11 @@ impl Plugin for CameraPlugin {
     }
 }
 
-fn orbit_camera_update(mut query: Query<(&OrbitCamera, &mut Transform)>) {
+fn orbit_camera_update(
+    mut query: Query<(&OrbitCamera, &mut Transform)>,
+    mut profiler: ResMut<FrameProfiler>,
+) {
+    let t0 = Instant::now();
     for (orbit, mut transform) in &mut query {
         let cp = orbit.pitch.cos();
         let direction = Vec3::new(
@@ -45,6 +51,7 @@ fn orbit_camera_update(mut query: Query<(&OrbitCamera, &mut Transform)>) {
         transform.translation = orbit.target + direction * orbit.distance;
         transform.look_at(orbit.target, Vec3::Y);
     }
+    profiler.record("camera_update", t0.elapsed());
 }
 
 fn orbit_camera_input(

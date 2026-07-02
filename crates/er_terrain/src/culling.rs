@@ -1,6 +1,10 @@
 use er_core::math::{cell_size, cell_to_dir, CellKey};
 use glam::{DVec3, Vec3};
 
+const FRUSTUM_MARGIN: f32 = 0.175; // ~10° — keep chunks visible beyond screen edges
+const HORIZON_MARGIN: f64 = 0.087; // ~5° — keep chunks visible below horizon
+const DISTANCE_MARGIN: f64 = 1.15; // 15% beyond max render distance
+
 pub fn chunk_half_angle(key: CellKey, planet_radius: f64) -> f64 {
     let size = cell_size(key.lod, planet_radius);
     (size / planet_radius).min(1.0).asin() * 0.5
@@ -21,10 +25,10 @@ pub fn is_below_horizon(
     let half_angle = chunk_half_angle(key, planet_radius);
 
     let horizon_cos = if d > planet_radius * 1.5 {
-        let angle = (planet_radius / d).clamp(0.0, 1.0).acos() + half_angle;
+        let angle = (planet_radius / d).clamp(0.0, 1.0).acos() + half_angle + HORIZON_MARGIN;
         angle.cos()
     } else {
-        (std::f64::consts::FRAC_PI_2 + half_angle).cos()
+        (std::f64::consts::FRAC_PI_2 + half_angle + HORIZON_MARGIN).cos()
     };
 
     dot < horizon_cos
@@ -37,7 +41,7 @@ pub fn is_outside_render_distance(
     max_distance: f64,
 ) -> bool {
     let chunk_center = cell_to_dir(key) * planet_radius;
-    (chunk_center - camera_pos).length() > max_distance
+    (chunk_center - camera_pos).length() > max_distance * DISTANCE_MARGIN
 }
 
 pub fn frustum_cull_sphere(
@@ -58,26 +62,25 @@ pub fn frustum_cull_sphere(
     let dir = to_center / dist;
 
     let forward_dot = dir.dot(camera_forward);
-    if forward_dot < 0.0 && dist > sphere_radius {
+    if forward_dot < 0.0 {
         return true;
     }
 
     let effective_angle = (sphere_radius / dist).atan();
-    let cos_eff = (fov_cos.acos() + effective_angle).cos();
+    let v_half_fov = fov_cos.acos() + effective_angle + FRUSTUM_MARGIN;
+    let h_half_fov = (aspect * v_half_fov.tan()).atan();
 
-    if forward_dot < cos_eff {
+    if forward_dot < v_half_fov.cos() {
+        return true;
+    }
+
+    let vert_dot = dir.dot(camera_up).abs();
+    if vert_dot > v_half_fov.sin() {
         return true;
     }
 
     let horiz_dot = dir.dot(camera_right).abs();
-    let vert_dot = dir.dot(camera_up).abs();
-    let horiz_limit = (aspect * cos_eff.acos().tan()).atan2(1.0).cos();
-    let vert_limit = cos_eff;
-
-    if horiz_dot > horiz_limit + (sphere_radius / dist).min(1.0) {
-        return true;
-    }
-    if vert_dot > vert_limit + (sphere_radius / dist).min(1.0) {
+    if horiz_dot > h_half_fov.sin() {
         return true;
     }
 

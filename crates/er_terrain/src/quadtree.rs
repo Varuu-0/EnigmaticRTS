@@ -1,6 +1,6 @@
 use bevy::ecs::entity::Entity;
 use bevy::ecs::resource::Resource;
-use er_core::math::CellKey;
+use er_core::math::{cell_neighbor, CellKey, NeighborSide};
 use std::collections::HashMap;
 
 #[derive(Resource)]
@@ -73,6 +73,42 @@ pub fn parent_of(key: CellKey) -> Option<CellKey> {
         j: key.j / 2,
         lod: key.lod - 1,
     })
+}
+
+/// Find the LOD of the active chunk adjacent across `side` of `key`. Walks up
+/// the quadtree from `key` toward coarser ancestors: at each level it checks
+/// the same-level neighbor; the first active match is the coarsest neighbor
+/// across that edge (the one the stitch must collapse to). If no coarser
+/// neighbor is found, returns `key.lod` — either the neighbor is same/finer
+/// (handled from the other side) or there is none.
+pub fn neighbor_lod_across_edge(
+    key: CellKey,
+    side: NeighborSide,
+    active_chunks: &ActiveChunks,
+) -> u8 {
+    let mut current = key;
+    loop {
+        let nb = cell_neighbor(current, side);
+        if active_chunks.contains(&nb) {
+            return nb.lod;
+        }
+        // Only ascend when current is on the queried edge of its parent.
+        // If current is an inner child, the neighbor across this edge is a
+        // sibling (same/finer), not a coarser chunk — no stitch needed.
+        let on_parent_edge = match side {
+            NeighborSide::NegU => current.i % 2 == 0,
+            NeighborSide::PosU => current.i % 2 == 1,
+            NeighborSide::NegV => current.j % 2 == 0,
+            NeighborSide::PosV => current.j % 2 == 1,
+        };
+        if !on_parent_edge {
+            return key.lod;
+        }
+        match parent_of(current) {
+            Some(parent) => current = parent,
+            None => return key.lod,
+        }
+    }
 }
 
 pub fn root_chunks() -> Vec<CellKey> {
