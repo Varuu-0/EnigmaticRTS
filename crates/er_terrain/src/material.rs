@@ -10,7 +10,10 @@ use bevy::shader::{Shader, ShaderRef};
 use er_core::math::{cells_per_edge, CellKey};
 use er_world::elevation::ElevationParams;
 
-use crate::mesh_gen::{ATTRIBUTE_GRID, ATTRIBUTE_MORPH};
+use crate::mesh_gen::{
+    ATTRIBUTE_GRID, ATTRIBUTE_MORPH, ATTRIBUTE_LOW_FREQ_ELEV, ATTRIBUTE_WARPED_DIR,
+    ATTRIBUTE_MOISTURE_LOW,
+};
 
 pub static VERTEX_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
 pub static FRAGMENT_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
@@ -47,10 +50,31 @@ pub struct TerrainMaterialUniform {
     pub neighbor_depth_1: f32,
     pub neighbor_depth_2: f32,
     pub neighbor_depth_3: f32,
+    pub sea_level_climate: f32,
+    pub lapse_rate: f32,
+    pub temp_gradient: f32,
+    pub temp_noise_freq: f32,
+    pub temp_noise_amp: f32,
+    pub moisture_noise_freq: f32,
+    pub moisture_noise_amp: f32,
+    pub rain_shadow_strength: f32,
+    pub high_alt_threshold: f32,
+    pub beach_threshold: f32,
+    pub volcanic_threshold: f32,
+    pub toxic_moisture_threshold: f32,
+    pub toxic_temp_threshold: f32,
+    pub temp_noise_seed: i32,
+    pub moisture_noise_seed: i32,
+    pub _climate_pad: f32,
 }
 
 impl TerrainMaterialUniform {
-    pub fn from_params(params: &ElevationParams, planet_radius: f32, elevation_scale: f32) -> Self {
+    pub fn from_params(
+        params: &ElevationParams,
+        planet_radius: f32,
+        elevation_scale: f32,
+        climate: &er_world::params::PlanetParams,
+    ) -> Self {
         Self {
             seed: params.seed,
             sea_level: params.sea_level,
@@ -82,6 +106,22 @@ impl TerrainMaterialUniform {
             neighbor_depth_1: 0.0,
             neighbor_depth_2: 0.0,
             neighbor_depth_3: 0.0,
+            sea_level_climate: climate.sea_level as f32,
+            lapse_rate: climate.lapse_rate as f32,
+            temp_gradient: climate.temp_gradient as f32,
+            temp_noise_freq: climate.temp_noise_freq,
+            temp_noise_amp: climate.temp_noise_amp,
+            moisture_noise_freq: climate.moisture_noise_freq,
+            moisture_noise_amp: climate.moisture_noise_amp,
+            rain_shadow_strength: climate.rain_shadow_strength,
+            high_alt_threshold: climate.high_alt_threshold as f32,
+            beach_threshold: climate.beach_threshold as f32,
+            volcanic_threshold: climate.volcanic_threshold as f32,
+            toxic_moisture_threshold: climate.toxic_moisture_threshold as f32,
+            toxic_temp_threshold: climate.toxic_temp_threshold as f32,
+            temp_noise_seed: climate.temp_noise_seed,
+            moisture_noise_seed: climate.moisture_noise_seed,
+            _climate_pad: 0.0,
         }
     }
 
@@ -128,6 +168,9 @@ impl Material for TerrainMaterial {
             Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
             ATTRIBUTE_MORPH.at_shader_location(1),
             ATTRIBUTE_GRID.at_shader_location(2),
+            ATTRIBUTE_LOW_FREQ_ELEV.at_shader_location(3),
+            ATTRIBUTE_WARPED_DIR.at_shader_location(4),
+            ATTRIBUTE_MOISTURE_LOW.at_shader_location(5),
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         descriptor.primitive.cull_mode = None;

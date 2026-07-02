@@ -9,7 +9,8 @@ use er_core::config::{
 };
 use er_core::math::{cell_size, cell_to_dir, CellKey};
 use er_core::seed::PlanetSeed;
-use er_world::elevation::{elevation_params, ElevationParams};
+use er_world::elevation::{elevation_params, ElevationNoise, ElevationParams};
+use er_world::params::{climate_noise as make_climate_noise, planet_params as make_planet_params, ClimateNoise, PlanetParams};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -26,6 +27,9 @@ pub struct TerrainState {
     pub planet_radius: f64,
     pub elevation_scale: f32,
     pub params: ElevationParams,
+    pub noise: ElevationNoise,
+    pub planet_params: PlanetParams,
+    pub climate_noise: ClimateNoise,
     pub base_uniform: TerrainMaterialUniform,
     pub max_quadtree_depth: u8,
     pub screen_error_threshold: f32,
@@ -38,15 +42,22 @@ pub struct TerrainState {
 impl TerrainState {
     pub fn new(planet_radius: f64, elevation_scale: f32, seed: PlanetSeed) -> Self {
         let params = elevation_params(seed);
+        let noise = ElevationNoise::new(&params);
+        let planet_params = make_planet_params(seed);
+        let climate_noise = make_climate_noise(&planet_params);
         let base_uniform = TerrainMaterialUniform::from_params(
             &params,
             planet_radius as f32,
             elevation_scale,
+            &planet_params,
         );
         Self {
             planet_radius,
             elevation_scale,
             params,
+            noise,
+            planet_params,
+            climate_noise,
             base_uniform,
             max_quadtree_depth: MAX_QUADTREE_DEPTH,
             screen_error_threshold: SCREEN_ERROR_THRESHOLD,
@@ -116,22 +127,28 @@ fn setup_terrain(
     mut active_chunks: ResMut<ActiveChunks>,
 ) {
     let vertex_source = format!(
-        "{}\n{}\n{}",
+        "{}\n{}\n{}\n{}",
         include_str!("../../er_world/assets/shaders/elevation.wgsl"),
         include_str!("../assets/shaders/spherify.wgsl"),
+        include_str!("../assets/shaders/terrain_uniform.wgsl"),
         include_str!("../assets/shaders/terrain_vertex.wgsl")
     );
     let vertex_handle = shaders.add(Shader::from_wgsl(vertex_source, "terrain_vertex"));
     let _ = VERTEX_SHADER.set(vertex_handle);
 
-    let fragment_source = include_str!("../assets/shaders/terrain_fragment.wgsl");
-    let fragment_handle = shaders.add(Shader::from_wgsl(fragment_source.to_string(), "terrain_fragment"));
+    let fragment_source = format!(
+        "{}\n{}",
+        include_str!("../assets/shaders/terrain_uniform.wgsl"),
+        include_str!("../assets/shaders/terrain_fragment.wgsl")
+    );
+    let fragment_handle = shaders.add(Shader::from_wgsl(fragment_source, "terrain_fragment"));
     let _ = FRAGMENT_SHADER.set(fragment_handle);
 
     let uniform = TerrainMaterialUniform::from_params(
         &terrain_state.params,
         terrain_state.planet_radius as f32,
         terrain_state.elevation_scale,
+        &terrain_state.planet_params,
     );
     terrain_state.base_uniform = uniform;
 
@@ -143,6 +160,10 @@ fn setup_terrain(
             &terrain_state.base_uniform,
             key,
             terrain_state.planet_radius,
+            &terrain_state.noise,
+            &terrain_state.params,
+            &terrain_state.planet_params,
+            &terrain_state.climate_noise,
         );
         active_chunks.insert(key, entity);
     }
@@ -251,6 +272,10 @@ fn process_lod_queue(
                 &base_uniform,
                 child,
                 terrain_state.planet_radius,
+                &terrain_state.noise,
+                &terrain_state.params,
+                &terrain_state.planet_params,
+                &terrain_state.climate_noise,
             );
             active_chunks.insert(child, entity);
         }
@@ -282,6 +307,10 @@ fn process_lod_queue(
             &base_uniform,
             parent_key,
             terrain_state.planet_radius,
+            &terrain_state.noise,
+            &terrain_state.params,
+            &terrain_state.planet_params,
+            &terrain_state.climate_noise,
         );
         active_chunks.insert(parent_key, entity);
         merges_done += 1;
@@ -401,11 +430,22 @@ fn spawn_chunk_entity(
     base_uniform: &TerrainMaterialUniform,
     key: CellKey,
     radius: f64,
+    noise: &ElevationNoise,
+    elev_params: &ElevationParams,
+    planet_params: &PlanetParams,
+    climate_noise: &ClimateNoise,
 ) -> Entity {
     let material = materials.add(TerrainMaterial {
         uniform: base_uniform.for_chunk(key),
     });
-    let mesh = generate_chunk_mesh(key, radius);
+    let mesh = generate_chunk_mesh(
+        key,
+        radius,
+        noise,
+        elev_params,
+        planet_params,
+        climate_noise,
+    );
     let mesh_handle = meshes.add(mesh);
     commands
         .spawn((

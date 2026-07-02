@@ -65,11 +65,11 @@ pub fn elevation_params(seed: PlanetSeed) -> ElevationParams {
 }
 
 pub struct ElevationNoise {
-    warp: FastNoiseLite,
-    continental: FastNoiseLite,
-    mountain: FastNoiseLite,
-    hill: FastNoiseLite,
-    detail: FastNoiseLite,
+    pub(crate) warp: FastNoiseLite,
+    pub(crate) continental: FastNoiseLite,
+    pub(crate) mountain: FastNoiseLite,
+    pub(crate) hill: FastNoiseLite,
+    pub(crate) detail: FastNoiseLite,
 }
 
 impl ElevationNoise {

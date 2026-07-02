@@ -1,51 +1,23 @@
 #import bevy_pbr::mesh_functions::{get_world_from_local, mesh_position_local_to_world, mesh_position_local_to_clip}
 
-struct TerrainMaterialUniform {
-    seed: i32,
-    sea_level: f32,
-    continental_freq: f32,
-    continental_amp: f32,
-    continental_octaves: i32,
-    mountain_freq: f32,
-    mountain_amp: f32,
-    mountain_octaves: i32,
-    hill_freq: f32,
-    hill_amp: f32,
-    hill_octaves: i32,
-    detail_freq: f32,
-    detail_amp: f32,
-    detail_octaves: i32,
-    warp_freq: f32,
-    warp_amp: f32,
-    lacunarity: f32,
-    gain: f32,
-    planet_radius: f32,
-    elevation_scale: f32,
-    face: i32,
-    u_min: f32,
-    u_max: f32,
-    v_min: f32,
-    v_max: f32,
-    chunk_depth: i32,
-    neighbor_depth_0: f32,
-    neighbor_depth_1: f32,
-    neighbor_depth_2: f32,
-    neighbor_depth_3: f32,
-}
-
-@group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> material: TerrainMaterialUniform;
-
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
     @location(0) position: vec3<f32>,
     @location(1) morph: f32,
     @location(2) grid: vec2<u32>,
+    @location(3) low_freq_elev: f32,
+    @location(4) warped_dir: vec3<f32>,
+    @location(5) moisture_low: f32,
 };
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world_position: vec3<f32>,
     @location(1) elevation: f32,
+    @location(2) dir: vec3<f32>,
+    @location(3) moisture: f32,
+    @location(4) low_freq_elev: f32,
+    @location(5) temperature: f32,
 };
 
 // FACE_CORNER/FACE_U/FACE_V + uv_to_dir live in spherify.wgsl (prepended before
@@ -171,6 +143,16 @@ fn stitch(gi: u32, gj: u32, base_pos: vec3<f32>, base_elev: f32, m: TerrainMater
     return r;
 }
 
+fn compute_temperature(dir: vec3<f32>, elevation: f32, m: TerrainMaterialUniform) -> f32 {
+    let temp_noise = fnl_fbm_opensimplex2_3d(
+        m.temp_noise_seed, dir, m.temp_noise_freq, 3, m.lacunarity, m.gain
+    );
+    let temp = 1.0 - abs(dir.y) * m.temp_gradient
+        - elevation * m.lapse_rate
+        + temp_noise * m.temp_noise_amp;
+    return clamp(temp, 0.0, 1.0);
+}
+
 @vertex
 fn vertex(in: Vertex) -> VertexOutput {
     var out: VertexOutput;
@@ -180,7 +162,17 @@ fn vertex(in: Vertex) -> VertexOutput {
     let dir = normalize(in.position);
 
     let elev_params = make_elev_params(material);
-    let elev = compute_elevation(dir, elev_params);
+
+    let hills = fnl_fbm_opensimplex2_3d(
+        material.seed, in.warped_dir, material.hill_freq,
+        material.hill_octaves, material.lacunarity, material.gain
+    );
+    let detail = fnl_fbm_value_3d(
+        material.seed, in.warped_dir, material.detail_freq,
+        material.detail_octaves, material.lacunarity, material.gain
+    );
+    let high_freq = hills * material.hill_amp + detail * material.detail_amp;
+    let elev = in.low_freq_elev + high_freq;
 
     let surface_radius = material.planet_radius + elev * material.elevation_scale;
     var displaced = dir * surface_radius;
@@ -202,6 +194,10 @@ fn vertex(in: Vertex) -> VertexOutput {
     out.world_position = world_pos.xyz;
     out.clip_position = mesh_position_local_to_clip(model, vec4<f32>(displaced, 1.0));
     out.elevation = final_elev;
+    out.dir = dir;
+    out.moisture = in.moisture_low;
+    out.low_freq_elev = in.low_freq_elev;
+    out.temperature = compute_temperature(dir, final_elev, material);
 
     return out;
 }

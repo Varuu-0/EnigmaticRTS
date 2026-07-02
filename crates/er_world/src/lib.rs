@@ -2,7 +2,17 @@
 //! solar-system generation, Kepler orbits, and the query cache.
 //! Planet-creation pass.
 
+pub mod biome;
+pub mod cache;
 pub mod elevation;
+pub mod params;
+
+pub use biome::{
+    biome, classify_biome, elevation_low_freq, elevation_split, moisture, temperature, Biome,
+    BiomeData, BiomeRegistry, ElevationSplit, LowFreqElevation,
+};
+pub use cache::{CachedWorldData, WorldCache, CACHE_LOD};
+pub use params::{climate_noise, planet_params, ClimateNoise, PlanetParams};
 
 pub fn version() -> &'static str {
     "0"

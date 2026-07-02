@@ -2,13 +2,26 @@ use bevy::render::mesh::{Indices, Mesh, VertexAttributeValues};
 use er_core::config::{CHUNK_QUADS_PER_EDGE, CHUNK_VERT_RES};
 use er_core::math::{cells_per_edge, CellKey};
 use er_core::seed::PlanetSeed;
-use er_terrain::{generate_chunk_mesh, ChunkComponent, TerrainMaterialUniform, ATTRIBUTE_GRID, ATTRIBUTE_MORPH};
-use er_world::elevation::elevation_params;
+use er_terrain::{
+    generate_chunk_mesh, ChunkComponent, TerrainMaterialUniform, ATTRIBUTE_GRID, ATTRIBUTE_MORPH,
+};
+use er_world::elevation::{elevation_params, ElevationNoise, ElevationParams};
+use er_world::params::{climate_noise, planet_params, ClimateNoise, PlanetParams};
+
+fn test_elevation() -> (ElevationNoise, ElevationParams, PlanetParams, ClimateNoise) {
+    let seed = PlanetSeed(0xC0FFEE);
+    let elev_params = elevation_params(seed);
+    let noise = ElevationNoise::new(&elev_params);
+    let pp = planet_params(seed);
+    let cn = climate_noise(&pp);
+    (noise, elev_params, pp, cn)
+}
 
 #[test]
 fn chunk_mesh_vertex_and_index_counts() {
+    let (noise, elev_params, pp, cn) = test_elevation();
     let key = CellKey { face: 0, i: 0, j: 0, lod: 0 };
-    let mesh = generate_chunk_mesh(key, 12000.0);
+    let mesh = generate_chunk_mesh(key, 12000.0, &noise, &elev_params, &pp, &cn);
 
     let n = CHUNK_VERT_RES as usize;
     let quads = CHUNK_QUADS_PER_EDGE as usize;
@@ -33,8 +46,9 @@ fn chunk_mesh_vertex_and_index_counts() {
 
 #[test]
 fn chunk_mesh_morph_values() {
+    let (noise, elev_params, pp, cn) = test_elevation();
     let key = CellKey { face: 0, i: 0, j: 0, lod: 0 };
-    let mesh = generate_chunk_mesh(key, 12000.0);
+    let mesh = generate_chunk_mesh(key, 12000.0, &noise, &elev_params, &pp, &cn);
 
     let n = CHUNK_VERT_RES as usize;
     let surface_count = n * n;
@@ -56,13 +70,14 @@ fn chunk_mesh_morph_values() {
 
 #[test]
 fn adjacent_chunks_share_edge_vertices() {
+    let (noise, elev_params, pp, cn) = test_elevation();
     let radius = 12000.0;
     let lod = 2u8;
     let key1 = CellKey { face: 0, i: 0, j: 0, lod };
     let key2 = CellKey { face: 0, i: 1, j: 0, lod };
 
-    let mesh1 = generate_chunk_mesh(key1, radius);
-    let mesh2 = generate_chunk_mesh(key2, radius);
+    let mesh1 = generate_chunk_mesh(key1, radius, &noise, &elev_params, &pp, &cn);
+    let mesh2 = generate_chunk_mesh(key2, radius, &noise, &elev_params, &pp, &cn);
 
     let n = CHUNK_VERT_RES as usize;
 
@@ -90,9 +105,10 @@ fn adjacent_chunks_share_edge_vertices() {
 
 #[test]
 fn skirt_vertices_below_surface() {
+    let (noise, elev_params, pp, cn) = test_elevation();
     let radius = 12000.0;
     let key = CellKey { face: 0, i: 0, j: 0, lod: 3 };
-    let mesh = generate_chunk_mesh(key, radius);
+    let mesh = generate_chunk_mesh(key, radius, &noise, &elev_params, &pp, &cn);
 
     let n = CHUNK_VERT_RES as usize;
     let surface_count = n * n;
@@ -114,16 +130,17 @@ fn skirt_vertices_below_surface() {
 
 #[test]
 fn face_edge_chunks_adjacent_across_boundary() {
+    let (noise, elev_params, pp, cn) = test_elevation();
     let radius = 12000.0;
     let lod = 2u8;
     let cells = cells_per_edge(lod);
     let n = CHUNK_VERT_RES as usize;
 
     let key1 = CellKey { face: 0, i: cells - 1, j: cells / 2, lod };
-    let mesh1 = generate_chunk_mesh(key1, radius);
+    let mesh1 = generate_chunk_mesh(key1, radius, &noise, &elev_params, &pp, &cn);
 
     let key2 = CellKey { face: 2, i: cells - 1, j: cells / 2, lod };
-    let mesh2 = generate_chunk_mesh(key2, radius);
+    let mesh2 = generate_chunk_mesh(key2, radius, &noise, &elev_params, &pp, &cn);
 
     let pos1 = match mesh1.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
         VertexAttributeValues::Float32x3(v) => v,
@@ -158,8 +175,10 @@ fn chunk_component_neighbor_depth_default() {
 
 #[test]
 fn material_uniform_for_chunk_sets_edge_stitch_data() {
-    let params = elevation_params(PlanetSeed(0xC0FFEE));
-    let base = TerrainMaterialUniform::from_params(&params, 12000.0, 1000.0);
+    let seed = PlanetSeed(0xC0FFEE);
+    let params = elevation_params(seed);
+    let pp = planet_params(seed);
+    let base = TerrainMaterialUniform::from_params(&params, 12000.0, 1000.0, &pp);
     let key = CellKey { face: 2, i: 1, j: 0, lod: 5 };
     let cu = base.for_chunk(key);
     assert_eq!(cu.face, 2);
@@ -176,8 +195,9 @@ fn material_uniform_for_chunk_sets_edge_stitch_data() {
 
 #[test]
 fn grid_attribute_values() {
+    let (noise, elev_params, pp, cn) = test_elevation();
     let key = CellKey { face: 0, i: 0, j: 0, lod: 0 };
-    let mesh = generate_chunk_mesh(key, 12000.0);
+    let mesh = generate_chunk_mesh(key, 12000.0, &noise, &elev_params, &pp, &cn);
     let n = CHUNK_VERT_RES as usize;
     let n1 = (n - 1) as u32;
 
@@ -215,15 +235,14 @@ fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
 
 #[test]
 fn finer_even_edge_vertices_coincide_with_coarser() {
+    let (noise, elev_params, pp, cn) = test_elevation();
     let radius = 12000.0;
     let n = CHUNK_VERT_RES as usize;
-    // Fine chunk (lod 2): u 0.25..0.5, v 0..0.25. Its +u edge (u=0.5) abuts the
-    // coarse chunk's -u edge.
     let fine = CellKey { face: 0, i: 1, j: 0, lod: 2 };
     let coarse = CellKey { face: 0, i: 1, j: 0, lod: 1 };
 
-    let pf = positions(&generate_chunk_mesh(fine, radius));
-    let pc = positions(&generate_chunk_mesh(coarse, radius));
+    let pf = positions(&generate_chunk_mesh(fine, radius, &noise, &elev_params, &pp, &cn));
+    let pc = positions(&generate_chunk_mesh(coarse, radius, &noise, &elev_params, &pp, &cn));
 
     for k in 0..=(n / 2) {
         let gj_fine = 2 * k;
@@ -239,13 +258,14 @@ fn finer_even_edge_vertices_coincide_with_coarser() {
 
 #[test]
 fn edge_stitch_snaps_inbetween_to_coarse_edge() {
+    let (noise, elev_params, pp, cn) = test_elevation();
     let radius = 12000.0;
     let n = CHUNK_VERT_RES as usize;
     let fine = CellKey { face: 0, i: 1, j: 0, lod: 2 };
     let coarse = CellKey { face: 0, i: 1, j: 0, lod: 1 };
 
-    let pf = positions(&generate_chunk_mesh(fine, radius));
-    let pc = positions(&generate_chunk_mesh(coarse, radius));
+    let pf = positions(&generate_chunk_mesh(fine, radius, &noise, &elev_params, &pp, &cn));
+    let pc = positions(&generate_chunk_mesh(coarse, radius, &noise, &elev_params, &pp, &cn));
 
     for k in 0..(n / 2) {
         let gj_lo = 2 * k;
@@ -253,10 +273,7 @@ fn edge_stitch_snaps_inbetween_to_coarse_edge() {
         let fine_lo = gj_lo * n + (n - 1);
         let fine_mid = (gj_lo + 1) * n + (n - 1);
         let fine_hi = gj_hi * n + (n - 1);
-        // Stitch target (delta=1, step=2): lerp of the two surrounding even
-        // edge vertices at t = 0.5.
         let stitched = lerp3(pf[fine_lo], pf[fine_hi], 0.5);
-        // Coarse edge midpoint between the two coincident coarse vertices.
         let coarse_mid = lerp3(pc[k * n], pc[(k + 1) * n], 0.5);
         let diff = manhattan(stitched, coarse_mid);
         assert!(
@@ -264,8 +281,6 @@ fn edge_stitch_snaps_inbetween_to_coarse_edge() {
             "stitched in-between vert (gj={}) != coarse edge midpoint: diff={diff}",
             gj_lo + 1
         );
-        // The raw (unstitched) in-between surface vertex should NOT already lie
-        // on the coarse chord (it sits on the sphere), proving the stitch is load-bearing.
         let raw_diff = manhattan(pf[fine_mid], coarse_mid);
         assert!(raw_diff > 1e-3, "in-between vert already on coarse edge (raw_diff={raw_diff})");
     }

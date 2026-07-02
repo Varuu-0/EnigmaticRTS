@@ -11,6 +11,8 @@ rand = { workspace = true }
 rand_chacha = { workspace = true }
 fastnoise-lite = { workspace = true, features = ["f64", "std"] }
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
+serde = { version = "1", features = ["derive"] }
+ron = "0.8"
 
 [dev-dependencies]
 criterion = "0.5"
