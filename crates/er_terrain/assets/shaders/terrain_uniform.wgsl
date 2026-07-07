@@ -44,6 +44,9 @@ struct TerrainMaterialUniform {
     toxic_temp_threshold: f32,
     temp_noise_seed: i32,
     moisture_noise_seed: i32,
+    sun_dir_x: f32,
+    sun_dir_y: f32,
+    sun_dir_z: f32,
     _climate_pad: f32,
 }
 

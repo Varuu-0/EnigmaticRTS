@@ -9,9 +9,11 @@ use er_core::config::{
 };
 use er_core::math::{cell_size, cell_to_dir, CellKey};
 use er_core::seed::PlanetSeed;
+use er_world::cache::WorldCache;
 use er_world::elevation::{elevation_params, ElevationNoise, ElevationParams};
 use er_world::params::{climate_noise as make_climate_noise, planet_params as make_planet_params, ClimateNoise, PlanetParams};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::chunk::ChunkComponent;
@@ -20,6 +22,7 @@ use crate::debug::TerrainDebugInfo;
 use crate::lod::{chunk_camera_distance, should_merge_parent, should_split};
 use crate::material::{TerrainMaterial, TerrainMaterialUniform, FRAGMENT_SHADER, VERTEX_SHADER};
 use crate::mesh_gen::generate_chunk_mesh;
+use crate::ocean::{OceanMaterial, setup_ocean, update_ocean_time};
 use crate::quadtree::{children_of, parent_of, root_chunks, ActiveChunks};
 
 #[derive(Resource)]
@@ -37,6 +40,7 @@ pub struct TerrainState {
     pub max_render_distance: f64,
     pub active_chunk_cap: usize,
     pub lod_split_budget_per_frame: usize,
+    pub cache: Arc<WorldCache>,
 }
 
 impl TerrainState {
@@ -65,6 +69,7 @@ impl TerrainState {
             max_render_distance: MAX_RENDER_DISTANCE,
             active_chunk_cap: ACTIVE_CHUNK_CAP,
             lod_split_budget_per_frame: LOD_SPLIT_BUDGET_PER_FRAME,
+            cache: Arc::new(WorldCache::new(262144)),
         }
     }
 }
@@ -100,7 +105,8 @@ impl Plugin for TerrainPlugin {
         .insert_resource(PendingChunkMeshes::default())
         .insert_resource(crate::profiler::FrameProfiler::default())
         .add_plugins(MaterialPlugin::<TerrainMaterial>::default())
-        .add_systems(Startup, setup_terrain)
+        .add_plugins(MaterialPlugin::<OceanMaterial>::default())
+        .add_systems(Startup, (setup_terrain, setup_ocean))
         .add_systems(PreUpdate, profiler_clear)
         .add_systems(
             Update,
@@ -112,6 +118,7 @@ impl Plugin for TerrainPlugin {
                 update_neighbor_lod,
                 cull_chunks,
                 update_debug_info,
+                update_ocean_time,
             )
                 .chain(),
         );
@@ -164,6 +171,7 @@ fn setup_terrain(
             &terrain_state.params,
             &terrain_state.planet_params,
             &terrain_state.climate_noise,
+            &terrain_state.cache,
         );
         active_chunks.insert(key, entity);
     }
@@ -276,6 +284,7 @@ fn process_lod_queue(
                 &terrain_state.params,
                 &terrain_state.planet_params,
                 &terrain_state.climate_noise,
+                &terrain_state.cache,
             );
             active_chunks.insert(child, entity);
         }
@@ -311,6 +320,7 @@ fn process_lod_queue(
             &terrain_state.params,
             &terrain_state.planet_params,
             &terrain_state.climate_noise,
+            &terrain_state.cache,
         );
         active_chunks.insert(parent_key, entity);
         merges_done += 1;
@@ -434,6 +444,7 @@ fn spawn_chunk_entity(
     elev_params: &ElevationParams,
     planet_params: &PlanetParams,
     climate_noise: &ClimateNoise,
+    cache: &WorldCache,
 ) -> Entity {
     let material = materials.add(TerrainMaterial {
         uniform: base_uniform.for_chunk(key),
@@ -445,6 +456,7 @@ fn spawn_chunk_entity(
         elev_params,
         planet_params,
         climate_noise,
+        Some(cache),
     );
     let mesh_handle = meshes.add(mesh);
     commands

@@ -21,3 +21,4 @@ bevy = { workspace = true, features = [
 er_core = { workspace = true }
 er_world = { workspace = true }
 er_terrain = { path = "../er_terrain" }
+encase = "0.12"

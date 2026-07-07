@@ -2259,6 +2259,7 @@ name = "er_game"
 version = "0.0.1"
 dependencies = [
  "bevy",
+ "encase",
  "er_core",
  "er_terrain",
  "er_world",

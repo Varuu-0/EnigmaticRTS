@@ -6,6 +6,7 @@ pub mod biome;
 pub mod cache;
 pub mod elevation;
 pub mod params;
+pub mod water;
 
 pub use biome::{
     biome, classify_biome, elevation_low_freq, elevation_split, moisture, temperature, Biome,
@@ -13,6 +14,7 @@ pub use biome::{
 };
 pub use cache::{CachedWorldData, WorldCache, CACHE_LOD};
 pub use params::{climate_noise, planet_params, ClimateNoise, PlanetParams};
+pub use water::{is_ocean, is_water, lake_surface_elev, ocean_depth_band, water_depth, water_surface_elev};
 
 pub fn version() -> &'static str {
     "0"

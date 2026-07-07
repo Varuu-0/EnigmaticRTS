@@ -200,8 +200,14 @@ Top-level Bevy states (this pass): `Generating` → `InGame`. (A `MainMenu` is L
 - [ ] 6.7 Sun render: bright emissive sphere at the sun position (Phase 8/9) + simple additive glow; sun color from star params (temperature → color).
 - [ ] 6.8 `render::body::BodyRenderer`: renders sun/home/other uniformly with a `DetailTier { Sun, HomePlanet, SimpleSphere }` enum; other planets/moons = a single low-poly sphere mesh + the body's tint/atmosphere shader (NOT terrain LOD).
 - [ ] 6.9 Headless visual snapshot tests: planet renders with biome colors; atmosphere limb visible from orbit; starfield visible on night side; sun disc visible; other bodies render as tinted spheres.
+- [ ] 6.10 Biome border blending: replace hard `if`-threshold classification in terrain_fragment.wgsl with `smoothstep`-based color blending between adjacent biomes (ocean depth bands, beach→land, land→mountain, Whittaker temp/moisture transitions). Produces natural ecotone borders without changing CPU parity (parity test uses biome.wgsl compute shader, not the terrain fragment shader).
+- [ ] 6.11 Palette variation noise: add per-pixel high-frequency value noise in the fragment shader to vary brightness/hue within each biome (breaks up flat single-color appearance; selects between palette shades).
+- [ ] 6.12 Slope-based rock overlay: compute slope from the surface normal; blend a rock color onto steep surfaces (>~50°) regardless of underlying biome classification. Adds realism to cliffs, mountains, coastlines.
+- [ ] 6.13 Triplanar procedural detail: sample 3-axis value noise (XY/YZ/XZ planes) blended by the surface normal to add fine-grained texture (grass variation, rock cracks, sand ripples) without UV seams.
+- [ ] 6.14 Sun direction uniform: add `sun_dir_x/y/z` to `TerrainMaterialUniform` and use it in the fragment shader instead of the hardcoded `vec3(0.5, 0.8, 0.3)`. Ensures consistent lighting across terrain, ocean, and atmosphere.
+- [ ] 6.15 Improved lighting: ambient occlusion term from elevation (depressions darker), specular highlight on wet/ocean surfaces, hemisphere ambient fill (sky tint vs ground tint).
 
-**AC:** Surface = biome-colored low-poly terrain with crisp borders; from orbit a blue atmosphere limb; night side shows stars; sun is a bright disc; other bodies are simpler tinted spheres.
+**AC:** Surface = biome-colored low-poly terrain with **smooth ecotone transitions**, per-pixel color variation, rock on steep slopes, triplanar texture detail; consistent sun-direction lighting across all objects; from orbit a blue atmosphere limb; night side shows stars; sun is a bright disc; other bodies are simpler tinted spheres.
 
 ---
 
@@ -298,6 +304,175 @@ Top-level Bevy states (this pass): `Generating` → `InGame`. (A `MainMenu` is L
 
 ---
 
+### Phase 13 — PA-style Visual Fidelity (Terrain Geometry + Rendering)
+
+**Goal:** Make the planet look like Planetary Annihilation — dramatic steep features on a flatter base, rich texture-driven biome coloring, curvature variation, fresnel atmosphere, and vivid oceans. Based on research into PA's actual engine architecture (Mavor's blog, Allen Chou's blog, PA shader source).
+
+**Research findings (verified from primary sources):**
+
+PA uses a **two-tier terrain system**:
+1. **Base terrain**: Simplex noise displacement on a sphere — gentle rolling variation only. This is the "flat" part the user observed.
+2. **CSG brushes**: Separate add/subtract boolean operations for dramatic features:
+   - **Additive brushes** (mountains, plateaus, ice cliffs) — create steep tall features
+   - **Subtractive brushes** (craters, cracks, canyons) — create steep valleys
+   - Brushes are artist-modeled flat geometry, "bent" onto the sphere (Allen Chou's bending math: `angle = sqrt(v.x² + v.y²) / radius`, rotation axis = cross product of local-origin-image and vertex-image)
+   - World broken into "plates" for localized CSG rebuild
+
+PA's **visual pipeline** (from actual shader source — `PlanetShader` gist by rfikes4):
+- **Texture-driven coloring**, not hardcoded `vec3` constants: 5 texture maps (Map1=FHE, Map2=OCB, NormalMap, Map4=EC, Ramp LUT)
+- **Ramp texture** stores terrain/water colors by height+biome — shader does 2D texture lookup
+- **Latitude color zones**: Tropics zone (`hueShift + desaturate + brightness` blended by latitude), Poles zone (same pattern)
+- **Curvature coloring**: Concave (valleys) vs convex (ridges) surfaces get different colors, driven by `Map2.g`
+- **AO map**: `Map2.r` darkens crevices/valleys
+- **Fresnel atmosphere**: `pow(1.0 + dot(V, N), ...)` creates colored rim glow at horizon
+- **Flow mapping** for animated water detail
+
+**Our current gaps (verified against codebase):**
+- Elevation is single-tier noise only — no brush system, no dramatic features (`elevation.rs:130-147`)
+- Fragment shader uses hardcoded `vec3` biome colors, not ramp lookup (`terrain_fragment.wgsl:72-95`)
+- Detail variation is a single brightness scalar `0.85 + detail * 0.30` — no hue shift, no multi-octave (`terrain_fragment.wgsl:132`)
+- Triplanar detail noise at frequency 80.0 is too fine — reads as grain, not texture (`terrain_fragment.wgsl:149`)
+- No latitude-based color zones (tropics/poles)
+- No curvature-based coloring
+- No fresnel rim lighting on terrain
+- Ocean colors are crushed dark (`ocean_fragment.wgsl:31-34` — abyssal at `vec3(0.01, 0.05, 0.12)`)
+- Noise frequency ranges are narrow (`params.rs:42-44` — temp/moisture freq 0.5-1.0)
+
+#### A. Two-Tier Terrain Geometry (Procedural CSG-like Brushes)
+
+PA uses CSG brushes as separate geometry operations layered on smooth base noise. Our heightfield can't do true 3D boolean ops (no overhangs — that's RTS-later), but brush displacement as a signed height function replicates PA's dramatic features. This is the key to "flat base + steep mountains/valleys."
+
+- [ ] 13.1 `er_world::brushes` module: define procedural brush shapes as pure functions of `(dir, brush_center, radius, height, shape_type) -> f64`:
+  - **Mountain** (additive): cone/dome profile, `height * (1 - (dist/radius)²)²` — steep peak with rounded base
+  - **Plateau** (additive): flat-top mesa, smoothstep edge — steep cliff edges, flat top
+  - **Crater** (subtractive): bowl profile, `-depth * (1 - (dist/radius)²)` with raised rim
+  - **Canyon/Crack** (subtractive): elongated groove, `dist` measured to a great-circle line segment — narrow steep walls
+  - **Ridge** (additive): elongated dome along a great-circle line — mountain ranges
+  - All shapes use `smoothstep` falloff from center so they blend with base noise (no hard seams)
+  - Brush displacement is pure: `brush_displacement(dir, seed) -> f64`
+
+- [ ] 13.2 Brush placement from `PlanetSeed`: ChaCha8 RNG picks N brush instances per planet:
+  - Position: random unit direction (uniform on sphere)
+  - Type: weighted random from shape types (biome-influenced — volcanic planets get more craters, earth-like get mountains+plateaus)
+  - Radius: `planet_radius * (0.02..0.15)` — features span 2-15% of planet radius
+  - Height/depth: `elevation_scale * (0.3..2.0)` — dramatic, well beyond noise amplitude
+  - Orientation: for elongated shapes (canyon/ridge), random great-circle direction
+  - Brush count: `planet_radius / 2000` scaled (tunable), ~50-200 brushes for a 12000u planet
+  - All deterministic from seed; stored once at planet gen
+
+- [ ] 13.3 Integrate brushes into elevation pipeline:
+  - `elevation(dir) = base_noise(dir) + brush_displacement(dir)`
+  - `brush_displacement` sums all brushes whose falloff region includes `dir` (spatial hash for CPU; all-brute-force is fine for WGSL at vertex count)
+  - Brushes produce steep features: amplitude 0.3-2.0 × elevation_scale vs base noise 0.05-0.15 — dramatic contrast
+  - Update `elevation_low_freq` / `elevation_split` to include brush contribution in `low_freq_elev` (so LOD/morph/edge-stitch account for brush height)
+  - Update CPU elevation tests for determinism + bounds with brushes
+
+- [ ] 13.4 WGSL port: port brush shapes + placement to `elevation.wgsl`:
+  - Brush instances passed as a storage buffer: `array<vec4<f32>>` (xyz=center_dir, w=radius) + `array<vec4<f32>>` (x=height, y=shape_type, z=orient_x, w=orient_z)
+  - `compute_elevation` adds `brush_displacement(dir)` after base noise
+  - Update parity test (`tests/parity.rs`): CPU vs WGSL elevation with brushes, tolerance 1e-4
+  - Verify brush features visible in chunk meshes (steep displacement, no cracks at brush boundaries)
+
+#### B. Procedural Color Ramp (Replacing Hardcoded Biome Colors)
+
+PA uses a 2D ramp texture (height × biome) for terrain colors. We build a procedural ramp in the shader instead:
+
+- [ ] 13.5 Procedural ramp function in `terrain_fragment.wgsl`:
+  - `ramp_lookup(height_normalized, biome_weight) -> vec3<f32>`: piecewise-linear color interpolation
+  - Each biome gets a vertical gradient (e.g., grassland: dark green at low → yellow-green at high → brown at very high)
+  - Built from seeded color stops so each planet's palette is unique (derived from `PlanetSeed`)
+  - Replaces the hardcoded `c_grass`, `c_forest`, etc. constants (`terrain_fragment.wgsl:86-95`)
+
+- [ ] 13.6 Palette variation: multi-octave noise modulates the ramp lookup:
+  - `height_offset = fbm_detail(dir * scale1) * 0.1` — shifts the ramp sampling point for organic variation
+  - `hue_jitter = vnoise(dir * scale2) * 0.05` — small per-pixel hue rotation
+  - Replaces the single `0.85 + detail * 0.30` brightness scalar (`terrain_fragment.wgsl:132`)
+  - Each biome gets its own detail scale (grass=fine high-freq, rock=medium cracks, sand=medium ripples)
+
+#### C. Latitude-Based Color Zones (Tropics / Poles)
+
+PA applies hue-shift + saturation + brightness adjustments by latitude, separate from biome classification:
+
+- [ ] 13.7 Add latitude color zone parameters to `PlanetParams` (`params.rs`):
+  - `tropics_hue_shift: f32` (radians, ~0.0-2.0)
+  - `tropics_saturation: f32` (0.0-1.0)
+  - `tropics_brightness: f32` (-0.2 to 0.2)
+  - `tropics_distance: f32` (latitude threshold, ~0.3-0.7)
+  - `tropics_falloff: f32` (transition width, ~0.1-0.3)
+  - Mirror for poles: `poles_hue_shift/saturation/brightness/distance/falloff`
+  - All derived from `PlanetSeed` via ChaCha8
+
+- [ ] 13.8 Implement latitude zones in `terrain_fragment.wgsl`:
+  - `hueShift(color, radians)` function (RGB→HSV→shift→RGB, or cheaper approximation)
+  - `desaturate(color, amount)` function
+  - Tropics: `tropics_blend = smoothstep(tropics_distance - tropics_falloff, tropics_distance, 1.0 - abs(dir.y))`
+  - `color = mix(color, hueShift(desaturate(color, trop_sat) + trop_bright, trop_hue), tropics_blend)`
+  - Poles: same pattern with `abs(dir.y)` as input
+  - These are applied AFTER biome color, BEFORE lighting — so every biome gets the tropical/polar treatment
+
+#### D. Curvature-Based Coloring
+
+PA stores curvature in `Map2.g` and varies terrain color by concavity/convexity. We compute it procedurally:
+
+- [ ] 13.9 Compute surface curvature in `terrain_fragment.wgsl`:
+  - From screen-space derivatives: `curvature = laplacian(world_position)` ≈ `d²p/dx² + d²p/dy²`
+  - Or simpler: `convexity = dot(cross(dpdx, dpdy), up) / (length(dpdx) * length(dpdy))` — sign tells concave vs convex
+  - Normalize to [-1, 1] range
+
+- [ ] 13.10 Apply curvature coloring:
+  - Concave (valleys, crevices, <0): darker, wetter, more saturated — `mix(color, color * 0.7 + wet_tint, concave_amount)`
+  - Convex (ridges, peaks, >0): lighter, drier, slightly desaturated — `mix(color, color * 1.15, convex_amount)`
+  - Add curvature parameters to `PlanetParams`: `curvature_hue_shift`, `curvature_saturation`, `curvature_brightness`, `curvature_amount`
+
+#### E. Fresnel Atmosphere on Terrain
+
+PA applies fresnel-based atmosphere to the terrain shader for rim glow at the horizon:
+
+- [ ] 13.11 Add view-direction uniform to `TerrainMaterialUniform`:
+  - `camera_pos_x/y/z` (or `view_dir_x/y/z`)
+  - Updated each frame from camera transform (like ocean material needs camera pos, but for terrain)
+
+- [ ] 13.12 Implement terrain fresnel rim in `terrain_fragment.wgsl`:
+  - `view_dir = normalize(camera_pos - world_position)`
+  - `fresnel = pow(1.0 - max(dot(view_dir, normal), 0.0), fresnel_power)` (PA uses `pow(1.0 + dot(V, N), ...)`)
+  - Blend atmosphere color into terrain at high fresnel: `color = mix(color, atmosphere_color, fresnel * atmosphere_strength)`
+  - This creates the "glowing limb" effect visible from orbit — the planet edge glows with atmosphere color
+  - Tie `atmosphere_color` to the existing atmosphere shell shader's color for consistency
+
+#### F. Ocean Improvements
+
+- [ ] 13.13 Brighten and enrich ocean depth-band colors in `ocean_fragment.wgsl`:
+  - Replace crushed dark colors with richer blues/cyans:
+    - Shallow: `vec3(0.15, 0.5, 0.65)` (was `0.1, 0.4, 0.6`)
+    - Mid: `vec3(0.08, 0.3, 0.5)` (was `0.06, 0.25, 0.45`)
+    - Deep: `vec3(0.04, 0.18, 0.35)` (was `0.03, 0.12, 0.25`)
+    - Abyss: `vec3(0.02, 0.10, 0.20)` (was `0.01, 0.05, 0.12`)
+  - Add subsurface scattering near shore: brighten color where depth is shallow
+  - Add fresnel reflection at grazing angles: `fresnel = pow(1.0 - dot(view_dir, normal), 3.0)`
+
+- [ ] 13.14 Add flow-mapping-like ripple variation:
+  - Multi-frequency sine waves for wave detail (replaces single `sin(time*2 + dir.x*30 + dir.z*25)`)
+  - Directional flow from a noise field (cheap approximation of PA's flow mapping)
+
+#### G. Parameter Widening
+
+- [ ] 13.15 Widen noise frequency ranges in `params.rs`:
+  - `temp_noise_freq`: 0.3-1.5 (was 0.5-1.0) — more climate zone variation between planets
+  - `moisture_noise_freq`: 0.3-1.5 (was 0.5-1.0)
+  - `temp_noise_amp`: 0.05-0.4 (was 0.1-0.3)
+  - `moisture_noise_amp`: 0.05-0.4 (was 0.1-0.3)
+  - Update `planet_params_in_expected_ranges` test bounds
+
+- [ ] 13.16 Add all new uniform fields to `TerrainMaterialUniform` (`material.rs`) and `terrain_uniform.wgsl`:
+  - Tropics/poles/curvature params (from 13.7, 13.10)
+  - Camera position (from 13.11)
+  - Brush buffer bindings (from 13.4)
+  - Update `from_params()` and `for_chunk()` accordingly
+
+**AC:** Planet has dramatic steep features (mountains, craters, canyons) on a flatter noise base; biome colors come from a procedural ramp with multi-octave variation (no flat single-color patches); tropics are hue-shifted greener, poles are hue-shifted whiter; valleys are darker/wetter, ridges are lighter; planet limb glows with atmosphere fresnel from orbit; oceans are richer blues with fresnel reflections; different seeds produce visibly different climate zone patterns and feature distributions. CPU↔WGSL parity holds with brushes (≤1e-4).
+
+---
+
 ## 4. Validation Plan (this pass — minimal)
 - **Parity:** CPU vs WGSL elevation ≤1e-4; biome exact/border-tolerant. CI.
 - **Determinism:** `SystemSeed`/`PlanetSeed` → byte-identical system + planet across runs. CI.
@@ -318,6 +493,10 @@ Top-level Bevy states (this pass): `Generating` → `InGame`. (A `MainMenu` is L
 | W6 | Solar-system determinism across threads | Pure f(seed,clock) + bit-identical test (Phase 8.6). |
 | W7 | Cache memory growth | LRU/size-bounded `WorldCache`; invalidate by seed only (Phase 4.8). |
 | W8 | Shadow-map cost on large terrain | Near-field cascade only; far terrain unshadowed (Phase 7.3). |
+| W9 | Brush displacement breaks LOD edge-stitch / seam parity | Brushes included in `low_freq_elev` (13.3); parity test extended (13.4); edge-stitch interpolates elevation including brushes. |
+| W10 | Brush count too high → CPU/WGSL eval cost | Spatial hash for CPU brush lookup; WGSL brute-force capped at ~200 brushes; brush count tunable from seed. |
+| W11 | Hue shift in WGSL (no native HSV) | Implement `hueShift` via RGB rotation matrix (cheaper than full HSV roundtrip); or approximate with channel mixing. |
+| W12 | Fresnel requires per-frame camera pos update on terrain material | System updates `camera_pos` in `TerrainMaterialUniform` each frame (same pattern as atmosphere `update_space`). |
 
 ---
 

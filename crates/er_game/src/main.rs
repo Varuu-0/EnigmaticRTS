@@ -13,11 +13,13 @@ mod camera;
 mod debug_overlay;
 mod menu;
 mod settings;
+mod space;
 
 use camera::{CameraPlugin, OrbitCamera};
 use debug_overlay::DebugOverlayPlugin;
 use menu::SettingsMenuPlugin;
 use settings::GraphicsSettings;
+use space::SpacePlugin;
 use er_terrain::TerrainPlugin;
 
 fn main() {
@@ -43,6 +45,7 @@ fn main() {
         .add_plugins(CameraPlugin)
         .add_plugins(DebugOverlayPlugin)
         .add_plugins(TerrainPlugin::default())
+        .add_plugins(SpacePlugin)
         .add_systems(Startup, (setup, apply_startup_window_mode))
         .run();
 }

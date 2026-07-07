@@ -3,9 +3,11 @@ use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{PrimitiveTopology, VertexFormat};
 use er_core::config::{CHUNK_QUADS_PER_EDGE, CHUNK_VERT_RES};
 use er_core::math::{cell_size, cells_per_edge, uv_to_dir, CellKey};
-use er_world::biome::{elevation_low_freq, moisture};
-use er_world::elevation::{ElevationNoise, ElevationParams};
+use er_world::biome::{biome, elevation_low_freq, moisture};
+use er_world::cache::{CachedWorldData, WorldCache};
+use er_world::elevation::{elevation, ElevationNoise, ElevationParams};
 use er_world::params::{ClimateNoise, PlanetParams};
+use glam::DVec3;
 
 pub const ATTRIBUTE_MORPH: MeshVertexAttribute =
     MeshVertexAttribute::new("Morph", 988540918, VertexFormat::Float32);
@@ -22,6 +24,68 @@ pub const ATTRIBUTE_WARPED_DIR: MeshVertexAttribute =
 pub const ATTRIBUTE_MOISTURE_LOW: MeshVertexAttribute =
     MeshVertexAttribute::new("MoistureLow", 988540922, VertexFormat::Float32);
 
+fn compute_cached_vertex(
+    dir: DVec3,
+    noise: &ElevationNoise,
+    elev_params: &ElevationParams,
+    planet_params: &PlanetParams,
+    climate_noise: &ClimateNoise,
+) -> CachedWorldData {
+    let split = elevation_low_freq(dir, noise, elev_params);
+    let moist = moisture(dir, split.mountain_influence, planet_params, climate_noise);
+    let elev = elevation(dir, noise, elev_params);
+    let b = biome(
+        dir,
+        elev,
+        split.low_freq_elev,
+        split.mountain_influence,
+        planet_params,
+        climate_noise,
+    );
+    CachedWorldData {
+        elevation: elev,
+        low_freq_elev: split.low_freq_elev as f32,
+        warped_dir: [split.warped_dir.x as f32, split.warped_dir.y as f32, split.warped_dir.z as f32],
+        moisture: moist as f32,
+        biome: b,
+        mountain_influence: split.mountain_influence as f32,
+    }
+}
+
+struct VertexData {
+    low_freq: f32,
+    warped_dir: [f32; 3],
+    moisture: f32,
+}
+
+fn vertex_data(
+    dir: DVec3,
+    noise: &ElevationNoise,
+    elev_params: &ElevationParams,
+    planet_params: &PlanetParams,
+    climate_noise: &ClimateNoise,
+    cache: Option<&WorldCache>,
+) -> VertexData {
+    if let Some(cache) = cache {
+        let c = cache.get_or_insert(dir, || {
+            compute_cached_vertex(dir, noise, elev_params, planet_params, climate_noise)
+        });
+        VertexData {
+            low_freq: c.low_freq_elev,
+            warped_dir: c.warped_dir,
+            moisture: c.moisture,
+        }
+    } else {
+        let split = elevation_low_freq(dir, noise, elev_params);
+        let moist = moisture(dir, split.mountain_influence, planet_params, climate_noise);
+        VertexData {
+            low_freq: split.low_freq_elev as f32,
+            warped_dir: [split.warped_dir.x as f32, split.warped_dir.y as f32, split.warped_dir.z as f32],
+            moisture: moist as f32,
+        }
+    }
+}
+
 pub fn generate_chunk_mesh(
     key: CellKey,
     radius: f64,
@@ -29,6 +93,7 @@ pub fn generate_chunk_mesh(
     elev_params: &ElevationParams,
     planet_params: &PlanetParams,
     climate_noise: &ClimateNoise,
+    cache: Option<&WorldCache>,
 ) -> Mesh {
     let n = CHUNK_VERT_RES as usize;
     let quads = CHUNK_QUADS_PER_EDGE as usize;
@@ -61,22 +126,21 @@ pub fn generate_chunk_mesh(
             let v = v_min + (v_max - v_min) * (gj as f64 / (n - 1) as f64);
             let dir = uv_to_dir(key.face, u, v);
             let pos = dir * radius;
-            let split = elevation_low_freq(dir, noise, elev_params);
-            let moist = moisture(dir, split.mountain_influence, planet_params, climate_noise);
+            let vd = vertex_data(dir, noise, elev_params, planet_params, climate_noise, cache);
 
             let surf_idx = gj * n + gi;
-            let lf = split.low_freq_elev as f32;
-            let wd = [split.warped_dir.x as f32, split.warped_dir.y as f32, split.warped_dir.z as f32];
+            let lf = vd.low_freq;
+            let wd = vd.warped_dir;
             surf_low_freq[surf_idx] = lf;
             surf_warped_dir[surf_idx] = wd;
-            surf_moisture[surf_idx] = moist as f32;
+            surf_moisture[surf_idx] = vd.moisture;
 
             positions.push([pos.x as f32, pos.y as f32, pos.z as f32]);
             morphs.push(1.0);
             grids.push([gi as u32, gj as u32]);
             low_freq_elevs.push(lf);
             warped_dirs.push(wd);
-            moisture_lows.push(moist as f32);
+            moisture_lows.push(vd.moisture);
         }
     }
 

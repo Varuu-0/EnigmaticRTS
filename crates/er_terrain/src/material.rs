@@ -65,6 +65,9 @@ pub struct TerrainMaterialUniform {
     pub toxic_temp_threshold: f32,
     pub temp_noise_seed: i32,
     pub moisture_noise_seed: i32,
+    pub sun_dir_x: f32,
+    pub sun_dir_y: f32,
+    pub sun_dir_z: f32,
     pub _climate_pad: f32,
 }
 
@@ -121,6 +124,9 @@ impl TerrainMaterialUniform {
             toxic_temp_threshold: climate.toxic_temp_threshold as f32,
             temp_noise_seed: climate.temp_noise_seed,
             moisture_noise_seed: climate.moisture_noise_seed,
+            sun_dir_x: 0.5,
+            sun_dir_y: 0.8,
+            sun_dir_z: 0.3,
             _climate_pad: 0.0,
         }
     }

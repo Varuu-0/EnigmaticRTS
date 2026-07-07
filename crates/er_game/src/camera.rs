@@ -20,7 +20,7 @@ impl Default for OrbitCamera {
             pitch: 0.3,
             distance: 90000.0,
             target: Vec3::ZERO,
-            min_distance: 36150.0,
+            min_distance: 38500.0,
             max_distance: 600000.0,
         }
     }

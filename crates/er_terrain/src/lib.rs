@@ -7,6 +7,7 @@ pub mod debug;
 pub mod lod;
 pub mod material;
 pub mod mesh_gen;
+pub mod ocean;
 pub mod profiler;
 pub mod quadtree;
 pub mod systems;
