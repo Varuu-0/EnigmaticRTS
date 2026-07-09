@@ -18,6 +18,7 @@ struct VertexOutput {
     @location(3) moisture: f32,
     @location(4) low_freq_elev: f32,
     @location(5) temperature: f32,
+    @location(6) normal: vec3<f32>,
 };
 
 // FACE_CORNER/FACE_U/FACE_V + uv_to_dir live in spherify.wgsl (prepended before
@@ -143,6 +144,33 @@ fn stitch(gi: u32, gj: u32, base_pos: vec3<f32>, base_elev: f32, m: TerrainMater
     return r;
 }
 
+fn compute_surface_normal(
+    dir: vec3<f32>,
+    elev: f32,
+    m: TerrainMaterialUniform,
+    ep: ElevationParams,
+) -> vec3<f32> {
+    let eps = 0.0008;
+    let ref_vec = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(dir.y) > 0.99);
+    let t1 = normalize(cross(ref_vec, dir));
+    let t2 = cross(dir, t1);
+
+    let d1 = normalize(dir + t1 * eps);
+    let d2 = normalize(dir + t2 * eps);
+    let e1 = compute_elevation(d1, ep);
+    let e2 = compute_elevation(d2, ep);
+
+    let sr0 = m.planet_radius + elev * m.elevation_scale;
+    let sr1 = m.planet_radius + e1 * m.elevation_scale;
+    let sr2 = m.planet_radius + e2 * m.elevation_scale;
+
+    let p0 = dir * sr0;
+    let p1 = d1 * sr1;
+    let p2 = d2 * sr2;
+
+    return normalize(cross(p1 - p0, p2 - p0));
+}
+
 fn compute_temperature(dir: vec3<f32>, elevation: f32, m: TerrainMaterialUniform) -> f32 {
     let temp_noise = fnl_fbm_opensimplex2_3d(
         m.temp_noise_seed, dir, m.temp_noise_freq, 3, m.lacunarity, m.gain
@@ -198,6 +226,7 @@ fn vertex(in: Vertex) -> VertexOutput {
     out.moisture = in.moisture_low;
     out.low_freq_elev = in.low_freq_elev;
     out.temperature = compute_temperature(dir, final_elev, material);
+    out.normal = compute_surface_normal(dir, final_elev, material, elev_params);
 
     return out;
 }

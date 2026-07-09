@@ -39,10 +39,10 @@ pub fn planet_params(seed: PlanetSeed) -> PlanetParams {
         sea_level: -0.1 + rand_unit(&mut r) * 0.2,
         lapse_rate: 0.05 + rand_unit(&mut r) * 0.1,
         temp_gradient: 0.7 + rand_unit(&mut r) * 0.3,
-        temp_noise_freq: (0.5 + rand_unit(&mut r) * 0.5) as f32,
-        temp_noise_amp: (0.1 + rand_unit(&mut r) * 0.2) as f32,
-        moisture_noise_freq: (0.5 + rand_unit(&mut r) * 0.5) as f32,
-        moisture_noise_amp: (0.1 + rand_unit(&mut r) * 0.2) as f32,
+        temp_noise_freq: (0.3 + rand_unit(&mut r) * 1.2) as f32,
+        temp_noise_amp: (0.05 + rand_unit(&mut r) * 0.35) as f32,
+        moisture_noise_freq: (0.3 + rand_unit(&mut r) * 1.2) as f32,
+        moisture_noise_amp: (0.05 + rand_unit(&mut r) * 0.35) as f32,
         rain_shadow_strength: (0.3 + rand_unit(&mut r) * 0.4) as f32,
         high_alt_threshold: 0.5 + rand_unit(&mut r) * 0.3,
         beach_threshold: 0.02 + rand_unit(&mut r) * 0.03,
@@ -102,7 +102,10 @@ mod tests {
         assert!(p.sea_level >= -0.1 && p.sea_level <= 0.1);
         assert!(p.lapse_rate >= 0.05 && p.lapse_rate <= 0.15);
         assert!(p.temp_gradient >= 0.7 && p.temp_gradient <= 1.0);
-        assert!(p.temp_noise_freq >= 0.5 && p.temp_noise_freq <= 1.0);
+        assert!(p.temp_noise_freq >= 0.3 && p.temp_noise_freq <= 1.5);
+        assert!(p.temp_noise_amp >= 0.05 && p.temp_noise_amp <= 0.4);
+        assert!(p.moisture_noise_freq >= 0.3 && p.moisture_noise_freq <= 1.5);
+        assert!(p.moisture_noise_amp >= 0.05 && p.moisture_noise_amp <= 0.4);
         assert!(p.high_alt_threshold >= 0.5 && p.high_alt_threshold <= 0.8);
         assert!(p.beach_threshold >= 0.02 && p.beach_threshold <= 0.05);
         assert!(p.volcanic_threshold >= 0.8 && p.volcanic_threshold <= 1.2);

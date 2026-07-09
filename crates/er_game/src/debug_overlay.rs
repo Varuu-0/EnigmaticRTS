@@ -1,7 +1,10 @@
 use bevy::prelude::*;
-use er_core::config::MAX_QUADTREE_DEPTH;
+use er_core::config::{DEFAULT_DAY_LENGTH_SEC, MAX_QUADTREE_DEPTH};
 use er_core::math::{cells_per_edge, dir_to_surface, uv_to_dir, world_to_render, OriginOffset};
 use er_terrain::{ChunkComponent, FrameProfiler, TerrainDebugInfo, TerrainState};
+
+use crate::space::{SimTime, TimeScale};
+use er_terrain::SunDirection;
 
 #[derive(Component)]
 struct DebugText;
@@ -15,9 +18,11 @@ impl Plugin for DebugOverlayPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(LodDebugDraw::default())
             .add_systems(Startup, setup_debug_text)
+            .add_systems(PostUpdate, update_debug_text)
             .add_systems(
                 Update,
-                (update_debug_text, toggle_lod_debug, draw_lod_gizmos),
+                (toggle_lod_debug, draw_lod_gizmos)
+                    .after(er_terrain::TerrainUpdate),
             );
     }
 }
@@ -44,6 +49,9 @@ fn update_debug_text(
     debug: Res<TerrainDebugInfo>,
     profiler: Res<FrameProfiler>,
     time: Res<Time>,
+    sun_direction: Res<SunDirection>,
+    sim_time: Res<SimTime>,
+    time_scale: Res<TimeScale>,
     mut query: Query<&mut Text, With<DebugText>>,
 ) {
     if let Ok(mut text) = query.single_mut() {
@@ -56,11 +64,24 @@ fn update_debug_text(
         let total_profiled: std::time::Duration =
             sorted.iter().map(|(_, d)| *d).sum();
 
+        let sun = sun_direction.0;
+        let day_length = DEFAULT_DAY_LENGTH_SEC as f32;
+        let day_percent = ((sim_time.0.rem_euclid(day_length)) / day_length * 100.0).round();
+        let speed_str = if time_scale.current == 0.0 {
+            "PAUSED".to_string()
+        } else {
+            format!("{:.1}x", time_scale.current)
+        };
+
         let mut lines = String::new();
         lines.push_str(&format!(
             "FPS: {:.0} | Frame: {:.1}ms | Chunks: {} | LOD: {} | S/M: {}/{}\n",
             fps, frame_ms, debug.active_chunks, debug.max_depth,
             debug.pending_splits, debug.pending_merges
+        ));
+        lines.push_str(&format!(
+            "Sun: ({:.2}, {:.2}, {:.2}) | Day: {:.0}% | Speed: {}\n",
+            sun.x, sun.y, sun.z, day_percent, speed_str
         ));
         lines.push_str(&format!(
             "Profiled: {:.2}ms / {:.1}ms\n",

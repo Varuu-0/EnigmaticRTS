@@ -116,3 +116,18 @@ pub fn root_chunks() -> Vec<CellKey> {
         .map(|face| CellKey { face, i: 0, j: 0, lod: 0 })
         .collect()
 }
+
+/// A parent chunk kept alive as a visible fallback while its four children's
+/// meshes generate. The parent is removed from `ActiveChunks` (so the LOD
+/// controller stops re-evaluating it) but stays rendered until every child has
+/// a mesh, at which point `finalize_retirements` despawns it and reveals the
+/// children atomically.
+pub struct RetainedSplit {
+    pub parent_entity: Entity,
+    pub children: [Entity; 4],
+}
+
+#[derive(Resource, Default)]
+pub struct RetainedSplits {
+    pub map: HashMap<CellKey, RetainedSplit>,
+}

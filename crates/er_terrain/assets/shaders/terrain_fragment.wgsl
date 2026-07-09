@@ -5,6 +5,7 @@ struct FragmentInput {
     @location(3) moisture: f32,
     @location(4) low_freq_elev: f32,
     @location(5) temperature: f32,
+    @location(6) normal: vec3<f32>,
 };
 
 // --- Simple value noise for detail/palette variation ---
@@ -56,7 +57,7 @@ fn triplanar(dir: vec3<f32>, normal: vec3<f32>, freq: f32) -> f32 {
     return (nxy * w.x + nyz * w.y + nxz * w.z) / wt;
 }
 
-// --- Blended biome coloring (smoothstep transitions, replaces discrete classify) ---
+// --- Blended biome coloring (smoothstep transitions, richer palette) ---
 
 fn biome_color_blended(
     elev: f32,
@@ -65,14 +66,15 @@ fn biome_color_blended(
     lfe: f32,
     m: TerrainMaterialUniform,
     detail: f32,
+    dir: vec3<f32>,
 ) -> vec3<f32> {
     let sl = m.sea_level_climate;
 
-    // Ocean depth gradient (smooth between bands)
-    let c_shallow = vec3<f32>(0.1, 0.4, 0.6);
-    let c_ocean_mid = vec3<f32>(0.06, 0.25, 0.45);
-    let c_ocean_deep = vec3<f32>(0.03, 0.12, 0.25);
-    let c_abyss = vec3<f32>(0.01, 0.05, 0.12);
+    // Ocean depth gradient — brighter, more varied
+    let c_shallow = vec3<f32>(0.15, 0.5, 0.65);
+    let c_ocean_mid = vec3<f32>(0.08, 0.3, 0.5);
+    let c_ocean_deep = vec3<f32>(0.04, 0.18, 0.35);
+    let c_abyss = vec3<f32>(0.02, 0.10, 0.20);
 
     let depth = max(sl - elev, 0.0);
     let t1 = smoothstep(0.15, 0.45, depth);
@@ -82,15 +84,15 @@ fn biome_color_blended(
     ocean_col = mix(ocean_col, c_ocean_deep, t2);
     ocean_col = mix(ocean_col, c_abyss, t3);
 
-    // Land biome colors
+    // Land biome colors — richer, more natural tones
     let c_beach = vec3<f32>(0.76, 0.70, 0.50);
-    let c_grass = vec3<f32>(0.35, 0.55, 0.20);
-    let c_forest = vec3<f32>(0.15, 0.40, 0.12);
-    let c_jungle = vec3<f32>(0.12, 0.50, 0.08);
-    let c_desert = vec3<f32>(0.85, 0.75, 0.45);
-    let c_tundra = vec3<f32>(0.50, 0.48, 0.42);
+    let c_grass = vec3<f32>(0.30, 0.55, 0.20);
+    let c_forest = vec3<f32>(0.12, 0.38, 0.10);
+    let c_jungle = vec3<f32>(0.10, 0.45, 0.06);
+    let c_desert = vec3<f32>(0.85, 0.72, 0.42);
+    let c_tundra = vec3<f32>(0.55, 0.52, 0.46);
     let c_snow = vec3<f32>(0.92, 0.94, 0.96);
-    let c_mtn = vec3<f32>(0.40, 0.36, 0.32);
+    let c_mtn = vec3<f32>(0.42, 0.38, 0.34);
     let c_volcanic = vec3<f32>(0.25, 0.08, 0.05);
     let c_toxic = vec3<f32>(0.35, 0.25, 0.40);
 
@@ -109,7 +111,7 @@ fn biome_color_blended(
 
     var land_col = cold_col * cold_w + temp_col * temp_w + hot_col * hot_w;
 
-    // Shoreline blend (beach ↔ ocean ↔ land)
+    // Shoreline blend (beach <-> ocean <-> land)
     let shore_t = smoothstep(sl - m.beach_threshold, sl + m.beach_threshold, elev);
     land_col = mix(c_beach, land_col, smoothstep(0.0, m.beach_threshold * 2.0, elev - sl));
 
@@ -128,54 +130,63 @@ fn biome_color_blended(
              * smoothstep(m.toxic_moisture_threshold - 0.04, m.toxic_moisture_threshold + 0.04, moist);
     color = mix(color, c_toxic, tox_b * 0.4);
 
-    // Palette variation: modulate brightness/hue with detail noise
-    let variation = 0.85 + detail * 0.30;
-    color = color * variation;
+    // Multi-octave color variation: brightness + subtle hue jitter
+    let variation = fbm_detail(dir * 15.0) * 0.12 + vnoise(dir * 40.0) * 0.08;
+    color = color * (1.0 + variation - 0.05);
+    let hue = vnoise(dir * 55.0) - 0.5;
+    color.r = clamp(color.r + hue * 0.02, 0.0, 1.0);
+    color.b = clamp(color.b - hue * 0.02, 0.0, 1.0);
 
     return color;
 }
 
 @fragment
 fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
-    // Surface normal from screen-space derivatives
-    let dp1 = dpdx(input.world_position);
-    let dp2 = dpdy(input.world_position);
-    let normal = normalize(cross(dp1, dp2));
-
-    // Sun direction from uniform (6.14)
     let sun_dir = normalize(vec3<f32>(material.sun_dir_x, material.sun_dir_y, material.sun_dir_z));
+    let camera_pos = vec3<f32>(material.camera_pos_x, material.camera_pos_y, material.camera_pos_z);
+    let view_dir = normalize(camera_pos - input.world_position);
 
-    // Detail noise: triplanar sampling (6.13)
-    let detail = triplanar(input.dir, normal, 80.0);
+    let up = input.dir;
+    let normal = normalize(input.normal);
+    let slope = 1.0 - abs(dot(normal, up));
 
-    // Blended biome color (6.10, 6.11)
-    let base_color = biome_color_blended(
+    let detail = triplanar(input.dir, normal, 25.0);
+
+    var color = biome_color_blended(
         input.elevation, input.temperature, input.moisture,
-        input.low_freq_elev, material, detail,
+        input.low_freq_elev, material, detail, input.dir,
     );
 
-    // Slope-based rock overlay (6.12)
-    let up = input.dir;
-    let slope = 1.0 - abs(dot(normal, up));
-    let rock_col = vec3<f32>(0.38, 0.34, 0.30) * (0.9 + detail * 0.2);
+    let rock_col = vec3<f32>(0.42, 0.38, 0.34) * (0.9 + detail * 0.2);
     let rock_blend = smoothstep(0.35, 0.55, slope);
-    var color = mix(base_color, rock_col, rock_blend);
+    color = mix(color, rock_col, rock_blend);
 
-    // Snow on high-altitude flat surfaces
     let snow_blend = smoothstep(0.75, 0.85, input.elevation) * (1.0 - rock_blend);
     color = mix(color, vec3<f32>(0.92, 0.94, 0.96), snow_blend * 0.8);
 
-    // Lighting: diffuse + ambient + elevation AO (6.15)
+    let elev_ao = mix(0.55, 1.0, smoothstep(-0.5, 0.5, input.low_freq_elev));
+    let slope_ao = mix(1.0, 0.75, slope);
+    let ao = elev_ao * slope_ao;
+
+    let sky_color = vec3<f32>(0.30, 0.38, 0.50);
+    let ground_color = vec3<f32>(0.15, 0.12, 0.10);
+    let hemi = mix(ground_color, sky_color, max(dot(normal, up), 0.0) * 0.5 + 0.5);
+    let ambient = hemi * ao * 0.35;
+
     let diffuse = max(dot(normal, sun_dir), 0.0);
-    let ambient = 0.18;
-    let ao = mix(0.7, 1.0, smoothstep(-0.5, 0.3, input.low_freq_elev));
-    let light = ambient + diffuse * 0.82;
 
-    // Specular on wet/ocean surfaces
     let is_wet = step(input.elevation, material.sea_level_climate);
-    let spec = pow(max(dot(normal, sun_dir), 0.0), 32.0) * 0.15 * is_wet;
+    let half_vec = normalize(sun_dir + view_dir);
+    let spec_power = mix(6.0, 48.0, is_wet);
+    let spec_strength = mix(0.04, 0.25, is_wet);
+    let spec = pow(max(dot(normal, half_vec), 0.0), spec_power) * spec_strength;
 
-    color = color * light * ao + vec3<f32>(spec);
+    let sun_color = vec3<f32>(1.0, 0.96, 0.88);
+    color = color * (ambient + sun_color * diffuse) + vec3<f32>(spec);
+
+    let fresnel = pow(1.0 - max(dot(view_dir, normal), 0.0), 3.0);
+    let atmosphere_color = vec3<f32>(0.3, 0.6, 1.0);
+    color = mix(color, atmosphere_color, fresnel * 0.4);
 
     return vec4<f32>(color, 1.0);
 }

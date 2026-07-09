@@ -12,7 +12,7 @@ pub mod profiler;
 pub mod quadtree;
 pub mod systems;
 
-pub use chunk::ChunkComponent;
+pub use chunk::{ChunkComponent, HoldHidden};
 pub use debug::TerrainDebugInfo;
 pub use material::{TerrainMaterial, TerrainMaterialUniform};
 pub use mesh_gen::{
@@ -20,8 +20,8 @@ pub use mesh_gen::{
     ATTRIBUTE_WARPED_DIR, ATTRIBUTE_MOISTURE_LOW,
 };
 pub use profiler::FrameProfiler;
-pub use quadtree::{children_of, parent_of, root_chunks, ActiveChunks};
-pub use systems::{TerrainPlugin, TerrainState};
+pub use quadtree::{children_of, parent_of, root_chunks, ActiveChunks, RetainedSplit, RetainedSplits};
+pub use systems::{TerrainPlugin, TerrainState, SunDirection, TerrainUpdate};
 
 pub fn version() -> &'static str {
     "0"

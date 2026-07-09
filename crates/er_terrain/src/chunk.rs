@@ -15,3 +15,11 @@ impl ChunkComponent {
         }
     }
 }
+
+/// Marker for a freshly-spawned split child whose mesh is still generating.
+/// `cull_chunks` skips these (leaves them `Hidden`) so children are revealed
+/// atomically — all four at once — by `finalize_retirements` only after every
+/// child has a mesh. This avoids both gaps (parent stays visible as the
+/// fallback) and z-fighting (parent is despawned the instant children appear).
+#[derive(Component, Clone, Debug, Default)]
+pub struct HoldHidden;

@@ -28,10 +28,14 @@ fn make_elev_params(m: OceanMaterialUniform) -> ElevationParams {
 }
 
 fn ocean_depth_color(depth: f32) -> vec3<f32> {
-    if (depth < 0.3) { return vec3<f32>(0.1, 0.4, 0.6); }
-    if (depth < 0.6) { return vec3<f32>(0.06, 0.25, 0.45); }
-    if (depth < 1.0) { return vec3<f32>(0.03, 0.12, 0.25); }
-    return vec3<f32>(0.01, 0.05, 0.12);
+    let shallow = vec3<f32>(0.15, 0.5, 0.65);
+    let mid = vec3<f32>(0.08, 0.3, 0.5);
+    let deep = vec3<f32>(0.04, 0.18, 0.35);
+    let abyss = vec3<f32>(0.02, 0.10, 0.20);
+    var col = mix(shallow, mid, smoothstep(0.15, 0.45, depth));
+    col = mix(col, deep, smoothstep(0.45, 0.75, depth));
+    col = mix(col, abyss, smoothstep(0.75, 1.25, depth));
+    return col;
 }
 
 @fragment
@@ -40,12 +44,14 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
     let ep = make_elev_params(ocean_material);
     let elev = compute_elevation(dir, ep);
 
+    // Don't discard over land - return transparent but still write depth
+    // This ensures the ocean sphere occludes far-side terrain
     if (elev >= ocean_material.sea_level) {
-        discard;
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
 
     let depth = ocean_material.sea_level - elev;
-    let base_color = ocean_depth_color(depth);
+    var color = ocean_depth_color(depth);
 
     let sun_dir = normalize(vec3<f32>(
         ocean_material.sun_dir_x,
@@ -53,10 +59,32 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
         ocean_material.sun_dir_z,
     ));
     let sun_dot = max(dot(dir, sun_dir), 0.0);
-    let specular = pow(sun_dot, 64.0) * 0.3;
 
-    let ripple = sin(ocean_material.time * 2.0 + dir.x * 30.0 + dir.z * 25.0) * 0.02;
+    // Fresnel reflection — sky tint at grazing angles
+    let camera_pos = vec3<f32>(
+        ocean_material.camera_pos_x,
+        ocean_material.camera_pos_y,
+        ocean_material.camera_pos_z,
+    );
+    let view_dir = normalize(camera_pos - input.world_position);
+    let fresnel = pow(1.0 - max(dot(view_dir, dir), 0.0), 3.0);
+    let sky_color = vec3<f32>(0.4, 0.6, 0.9);
+    color = mix(color, sky_color, fresnel * 0.5);
 
-    let color = base_color + vec3<f32>(specular) + vec3<f32>(ripple);
+    // Subsurface scattering near shore
+    let shallow_glow = (1.0 - smoothstep(0.0, 0.3, depth)) * 0.3;
+    color = color + vec3<f32>(0.1, 0.2, 0.15) * shallow_glow;
+
+    // Multi-frequency ripples
+    let ripple1 = sin(ocean_material.time * 1.5 + dir.x * 20.0 + dir.z * 15.0) * 0.015;
+    let ripple2 = sin(ocean_material.time * 3.0 + dir.y * 35.0 - dir.x * 10.0) * 0.008;
+    let ripple3 = sin(ocean_material.time * 0.7 + dir.z * 12.0 + dir.y * 18.0) * 0.005;
+    let ripple = ripple1 + ripple2 + ripple3;
+    color = color + vec3<f32>(ripple);
+
+    // Better specular glint — tight sun reflection + broader glow
+    let spec = pow(sun_dot, 128.0) * 0.5 + pow(sun_dot, 16.0) * 0.1;
+    color = color + vec3<f32>(spec);
+
     return vec4<f32>(color, 1.0);
 }

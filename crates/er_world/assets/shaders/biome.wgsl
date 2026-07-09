@@ -57,7 +57,8 @@ fn classify_biome(elevation: f32, temperature: f32, moisture: f32, low_freq_elev
     if (elevation > bp.high_alt_threshold) { return 11u; }
     if (temperature > bp.toxic_temp_threshold && moisture > bp.toxic_moisture_threshold) { return 12u; }
     if (temperature < 0.25) {
-        if (moisture < 0.7) { return 9u; }
+        if (moisture < 0.35) { return 9u; }
+        if (moisture < 0.7) { return 6u; }
         return 10u;
     } else if (temperature < 0.6) {
         if (moisture < 0.7) { return 5u; }

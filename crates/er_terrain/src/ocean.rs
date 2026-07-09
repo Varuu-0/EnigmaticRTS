@@ -4,7 +4,7 @@ use bevy::reflect::TypePath;
 use bevy::render::mesh::{Indices, Mesh, MeshVertexBufferLayoutRef};
 use bevy::render::render_resource::{
     AsBindGroup, Face, RenderPipelineDescriptor, SpecializedMeshPipelineError,
-    PrimitiveTopology,
+    PrimitiveTopology, BlendState, ColorWrites,
 };
 use bevy::shader::{Shader, ShaderRef};
 use bevy::ecs::system::{Commands, Res, ResMut};
@@ -16,6 +16,43 @@ use er_world::params::PlanetParams;
 
 pub static OCEAN_VERTEX_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
 pub static OCEAN_FRAGMENT_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
+
+/// Depth-only material for occlusion sphere - writes depth but not color
+#[derive(Asset, TypePath, AsBindGroup, Clone)]
+pub struct OcclusionMaterial {
+    #[uniform(0)]
+    pub _dummy: u32,
+}
+
+impl Material for OcclusionMaterial {
+    fn fragment_shader() -> ShaderRef {
+        // Use a minimal shader that just returns transparent
+        ShaderRef::Default
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        let vertex_layout = layout.0.get_layout(&[
+            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
+        ])?;
+        descriptor.vertex.buffers = vec![vertex_layout];
+        // Render both sides to create full occlusion sphere
+        descriptor.primitive.cull_mode = None;
+        // Don't write color, only depth
+        if let Some(fragment) = &mut descriptor.fragment {
+            for target in &mut fragment.targets {
+                if let Some(color_target) = target {
+                    color_target.write_mask = ColorWrites::empty();
+                }
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(encase::ShaderType, Clone, Copy)]
 pub struct OceanMaterialUniform {
@@ -45,8 +82,9 @@ pub struct OceanMaterialUniform {
     pub sun_dir_y: f32,
     pub sun_dir_z: f32,
     pub time: f32,
-    _pad2: f32,
-    _pad3: f32,
+    pub camera_pos_x: f32,
+    pub camera_pos_y: f32,
+    pub camera_pos_z: f32,
 }
 
 impl OceanMaterialUniform {
@@ -83,8 +121,9 @@ impl OceanMaterialUniform {
             sun_dir_y: 0.8,
             sun_dir_z: 0.3,
             time: 0.0,
-            _pad2: 0.0,
-            _pad3: 0.0,
+            camera_pos_x: 0.0,
+            camera_pos_y: 0.0,
+            camera_pos_z: 0.0,
         }
     }
 }
@@ -115,6 +154,9 @@ impl Material for OceanMaterial {
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         descriptor.primitive.cull_mode = Some(Face::Back);
+        // Enable alpha blending so transparent pixels (over land) don't write color
+        // but still write depth to occlude far-side terrain
+        descriptor.fragment.as_mut().unwrap().targets[0].as_mut().unwrap().blend = Some(BlendState::ALPHA_BLENDING);
         Ok(())
     }
 }
@@ -166,6 +208,7 @@ pub fn setup_ocean(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<OceanMaterial>>,
+    mut occlusion_materials: ResMut<Assets<OcclusionMaterial>>,
     mut shaders: ResMut<Assets<Shader>>,
     terrain_state: Res<crate::systems::TerrainState>,
 ) {
@@ -187,8 +230,8 @@ pub fn setup_ocean(
     let _ = OCEAN_FRAGMENT_SHADER.set(fragment_handle);
 
     let ocean_radius = terrain_state.planet_radius as f32
-        + terrain_state.params.sea_level * terrain_state.elevation_scale
-        + 2.0;
+        + terrain_state.elevation_scale
+        + 100.0;
 
     let uniform = OceanMaterialUniform::from_params(
         &terrain_state.params,
@@ -205,6 +248,19 @@ pub fn setup_ocean(
         OceanComponent,
         MeshMaterial3d(material.clone()),
         Mesh3d(mesh_handle),
+        Transform::default(),
+        Visibility::Visible,
+    ));
+
+    // Add depth-only occlusion sphere to prevent far-side terrain bleed-through
+    let occlusion_radius = terrain_state.planet_radius as f32 + terrain_state.elevation_scale + 200.0;
+    let occlusion_mesh = generate_ocean_sphere(occlusion_radius, 64, 32);
+    let occlusion_mesh_handle = meshes.add(occlusion_mesh);
+    let occlusion_mat = occlusion_materials.add(OcclusionMaterial { _dummy: 0 });
+    
+    commands.spawn((
+        MeshMaterial3d(occlusion_mat),
+        Mesh3d(occlusion_mesh_handle),
         Transform::default(),
         Visibility::Visible,
     ));

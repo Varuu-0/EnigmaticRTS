@@ -2,7 +2,7 @@ use bevy::render::mesh::{Indices, Mesh, MeshVertexAttribute};
 use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{PrimitiveTopology, VertexFormat};
 use er_core::config::{CHUNK_QUADS_PER_EDGE, CHUNK_VERT_RES};
-use er_core::math::{cell_size, cells_per_edge, uv_to_dir, CellKey};
+use er_core::math::{cell_size, cells_per_edge, uv_to_dir, CellKey, FACE_U, FACE_V};
 use er_world::biome::{biome, elevation_low_freq, moisture};
 use er_world::cache::{CachedWorldData, WorldCache};
 use er_world::elevation::{elevation, ElevationNoise, ElevationParams};
@@ -23,6 +23,14 @@ pub const ATTRIBUTE_WARPED_DIR: MeshVertexAttribute =
 
 pub const ATTRIBUTE_MOISTURE_LOW: MeshVertexAttribute =
     MeshVertexAttribute::new("MoistureLow", 988540922, VertexFormat::Float32);
+
+fn append_tri(indices: &mut Vec<u32>, a: u32, b: u32, c: u32, flip: bool) {
+    if flip {
+        indices.extend_from_slice(&[a, c, b]);
+    } else {
+        indices.extend_from_slice(&[a, b, c]);
+    }
+}
 
 fn compute_cached_vertex(
     dir: DVec3,
@@ -204,13 +212,23 @@ pub fn generate_chunk_mesh(
 
     let mut indices: Vec<u32> = Vec::with_capacity(quads * quads * 6 + 4 * quads * 6);
 
+    // Some cube faces have a left-handed (u,v) parameterization; without a
+    // winding flip their triangles face inward and back-face culling reveals the
+    // planet interior as a dark wireframe grid.
+    let face_normal = uv_to_dir(key.face, 0.5, 0.5);
+    let flip_winding = FACE_U[key.face as usize]
+        .cross(FACE_V[key.face as usize])
+        .dot(face_normal)
+        < 0.0;
+
     for gj in 0..quads {
         for gi in 0..quads {
             let v00 = (gj * n + gi) as u32;
             let v10 = (gj * n + gi + 1) as u32;
             let v01 = ((gj + 1) * n + gi) as u32;
             let v11 = ((gj + 1) * n + gi + 1) as u32;
-            indices.extend_from_slice(&[v00, v01, v11, v00, v11, v10]);
+            append_tri(&mut indices, v00, v10, v11, flip_winding);
+            append_tri(&mut indices, v00, v11, v01, flip_winding);
         }
     }
 
@@ -219,7 +237,8 @@ pub fn generate_chunk_mesh(
         let g1 = (gi + 1) as u32;
         let s0 = (top_skirt + gi) as u32;
         let s1 = (top_skirt + gi + 1) as u32;
-        indices.extend_from_slice(&[g0, s0, s1, g0, s1, g1]);
+        append_tri(&mut indices, g0, s0, s1, flip_winding);
+        append_tri(&mut indices, g0, s1, g1, flip_winding);
     }
 
     for gi in 0..quads {
@@ -227,7 +246,8 @@ pub fn generate_chunk_mesh(
         let g1 = ((n - 1) * n + gi + 1) as u32;
         let s0 = (bot_skirt + gi) as u32;
         let s1 = (bot_skirt + gi + 1) as u32;
-        indices.extend_from_slice(&[g0, s1, s0, g0, g1, s1]);
+        append_tri(&mut indices, g0, s0, s1, flip_winding);
+        append_tri(&mut indices, g0, s1, g1, flip_winding);
     }
 
     for gj in 0..quads {
@@ -235,7 +255,8 @@ pub fn generate_chunk_mesh(
         let g1 = ((gj + 1) * n) as u32;
         let s0 = (left_skirt + gj) as u32;
         let s1 = (left_skirt + gj + 1) as u32;
-        indices.extend_from_slice(&[g0, s1, s0, g0, g1, s1]);
+        append_tri(&mut indices, g0, s0, s1, flip_winding);
+        append_tri(&mut indices, g0, s1, g1, flip_winding);
     }
 
     for gj in 0..quads {
@@ -243,7 +264,8 @@ pub fn generate_chunk_mesh(
         let g1 = ((gj + 1) * n + (n - 1)) as u32;
         let s0 = (right_skirt + gj) as u32;
         let s1 = (right_skirt + gj + 1) as u32;
-        indices.extend_from_slice(&[g0, s0, s1, g0, s1, g1]);
+        append_tri(&mut indices, g0, s1, s0, flip_winding);
+        append_tri(&mut indices, g0, g1, s1, flip_winding);
     }
 
     let mut mesh = Mesh::new(

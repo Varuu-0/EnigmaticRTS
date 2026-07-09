@@ -3,6 +3,8 @@ use bevy::prelude::*;
 use er_terrain::FrameProfiler;
 use std::time::Instant;
 
+const PLANET_RADIUS: f32 = 36000.0;
+
 #[derive(Component)]
 pub struct OrbitCamera {
     pub yaw: f32,
@@ -11,17 +13,24 @@ pub struct OrbitCamera {
     pub target: Vec3,
     pub min_distance: f32,
     pub max_distance: f32,
+    pub smoothed_distance: f32,
+    pub smoothed_target: Vec3,
+    pub smoothing: f32,
 }
 
 impl Default for OrbitCamera {
     fn default() -> Self {
+        let distance = PLANET_RADIUS * 2.5;
         Self {
             yaw: 0.0,
             pitch: 0.3,
-            distance: 90000.0,
+            distance,
             target: Vec3::ZERO,
-            min_distance: 38500.0,
-            max_distance: 600000.0,
+            min_distance: 50.0,
+            max_distance: 1500000.0,
+            smoothed_distance: distance,
+            smoothed_target: Vec3::ZERO,
+            smoothing: 10.0,
         }
     }
 }
@@ -30,16 +39,27 @@ pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (orbit_camera_input, orbit_camera_update).chain());
+        app.add_systems(
+            Update,
+            (orbit_camera_input, orbit_camera_update).chain(),
+        );
     }
 }
 
+use crate::space::{StarfieldComponent, SunLight, SunSphere};
+
 fn orbit_camera_update(
-    mut query: Query<(&OrbitCamera, &mut Transform)>,
+    mut query: Query<(&mut OrbitCamera, &mut Transform), (With<Camera3d>, Without<SunLight>, Without<SunSphere>, Without<StarfieldComponent>)>,
+    time: Res<Time>,
     mut profiler: ResMut<FrameProfiler>,
 ) {
     let t0 = Instant::now();
-    for (orbit, mut transform) in &mut query {
+    let dt = time.delta_secs();
+    for (mut orbit, mut transform) in &mut query {
+        let alpha = 1.0 - (-orbit.smoothing * dt).exp();
+        orbit.smoothed_distance = orbit.smoothed_distance.lerp(orbit.distance, alpha);
+        orbit.smoothed_target = orbit.smoothed_target.lerp(orbit.target, alpha);
+
         let cp = orbit.pitch.cos();
         let direction = Vec3::new(
             cp * orbit.yaw.sin(),
@@ -48,8 +68,14 @@ fn orbit_camera_update(
         )
         .normalize();
 
-        transform.translation = orbit.target + direction * orbit.distance;
-        transform.look_at(orbit.target, Vec3::Y);
+        transform.translation = orbit.smoothed_target + direction * orbit.smoothed_distance;
+        // Avoid the look_at singularity when looking straight up/down.
+        let up = if direction.abs().dot(Vec3::Y) > 0.999 {
+            Vec3::Z
+        } else {
+            Vec3::Y
+        };
+        transform.look_at(orbit.smoothed_target, up);
     }
     profiler.record("camera_update", t0.elapsed());
 }
@@ -68,8 +94,8 @@ fn orbit_camera_input(
     };
 
     let dt = time.delta_secs();
-    let orbit_speed = 2.5;
-    let zoom_speed = 20000.0;
+    let orbit_speed = 2.5 * (orbit.distance / 50000.0).clamp(0.1, 3.0);
+    let zoom_speed = orbit.distance * 0.5;
 
     if keys.pressed(KeyCode::KeyA) {
         orbit.yaw += orbit_speed * dt;

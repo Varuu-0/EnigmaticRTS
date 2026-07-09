@@ -111,7 +111,7 @@ pub fn is_water(
 mod tests {
     use super::*;
     use crate::elevation::{elevation_params, ElevationNoise};
-    use crate::params::{climate_noise, planet_params};
+    use crate::params::planet_params;
     use er_core::rng::rng_from_seed;
     use er_core::seed::PlanetSeed;
     use rand::RngCore;

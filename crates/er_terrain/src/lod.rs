@@ -32,10 +32,7 @@ pub fn should_merge_parent(
     hysteresis: f32,
 ) -> bool {
     let merge_threshold = threshold * hysteresis;
-    let children = crate::quadtree::children_of(parent_key);
-    children
-        .iter()
-        .all(|c| screen_error(*c, camera_pos, planet_radius) < merge_threshold)
+    screen_error(parent_key, camera_pos, planet_radius) < merge_threshold
 }
 
 pub fn chunk_camera_distance(key: CellKey, camera_pos: DVec3, planet_radius: f64) -> f64 {

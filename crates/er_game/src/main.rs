@@ -12,22 +12,41 @@ use bevy::camera::{PerspectiveProjection, Projection};
 mod camera;
 mod debug_overlay;
 mod menu;
+mod screenshot_test;
 mod settings;
 mod space;
 
 use camera::{CameraPlugin, OrbitCamera};
 use debug_overlay::DebugOverlayPlugin;
 use menu::SettingsMenuPlugin;
+use screenshot_test::{ScreenshotTestPlugin, parse_test_args};
 use settings::GraphicsSettings;
 use space::SpacePlugin;
 use er_terrain::TerrainPlugin;
 
 fn main() {
+    let test_config = parse_test_args();
+    let is_test_mode = test_config.is_some();
+    
     let settings = settings::load_settings();
     let present_mode = settings.present_mode();
 
-    App::new()
-        .add_plugins(
+    let mut app = App::new();
+    
+    if is_test_mode {
+        app.add_plugins(
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Planet Solar Sim (Test Mode)".into(),
+                    present_mode,
+                    visible: false,
+                    ..default()
+                }),
+                ..default()
+            }),
+        );
+    } else {
+        app.add_plugins(
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
                     title: "Planet Solar Sim".into(),
@@ -36,18 +55,29 @@ fn main() {
                 }),
                 ..default()
             }),
-        )
-        .add_plugins(FrameTimeDiagnosticsPlugin::default())
+        );
+    }
+    
+    app.add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(LogDiagnosticsPlugin::default())
         .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
         .insert_resource(settings)
-        .add_plugins(SettingsMenuPlugin)
         .add_plugins(CameraPlugin)
-        .add_plugins(DebugOverlayPlugin)
         .add_plugins(TerrainPlugin::default())
-        .add_plugins(SpacePlugin)
-        .add_systems(Startup, (setup, apply_startup_window_mode))
-        .run();
+        .add_plugins(SpacePlugin);
+    
+    if is_test_mode {
+        let config = test_config.unwrap();
+        app.insert_resource(config);
+        app.add_plugins(ScreenshotTestPlugin);
+    } else {
+        app.add_plugins(SettingsMenuPlugin)
+            .add_plugins(DebugOverlayPlugin);
+    }
+    
+    app.add_systems(Startup, (setup, apply_startup_window_mode));
+    
+    app.run();
 }
 
 fn setup(mut commands: Commands, settings: Res<GraphicsSettings>) {

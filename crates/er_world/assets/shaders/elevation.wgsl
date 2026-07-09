@@ -424,6 +424,24 @@ fn compute_elevation(dir: vec3<f32>, p: ElevationParams) -> f32 {
          + detail * p.detail_amp;
 }
 
+// Smoothed elevation for normal computation — excludes high-frequency detail
+// (Value noise, axis-aligned) to avoid grid-aligned artifacts in normals.
+fn compute_elevation_for_normals(dir: vec3<f32>, p: ElevationParams) -> f32 {
+    let warped: vec3<f32> = fnl_domain_warp_3d(dir, p.seed, p.warp_freq, p.warp_amp);
+
+    let continental: f32 = fnl_fbm_opensimplex2_3d(p.seed, warped, p.continental_freq, p.continental_octaves, p.lacunarity, p.gain);
+
+    let mountain_raw: f32 = fnl_ridged_opensimplex2_3d(p.seed, warped, p.mountain_freq, p.mountain_octaves, p.lacunarity, p.gain);
+    let mountain_mask: f32 = max(0.0, continental);
+    let mountains: f32 = mountain_raw * mountain_mask;
+
+    let hills: f32 = fnl_fbm_opensimplex2_3d(p.seed, warped, p.hill_freq, p.hill_octaves, p.lacunarity, p.gain);
+
+    return continental * p.continental_amp
+         + mountains * p.mountain_amp
+         + hills * p.hill_amp;
+}
+
 @compute @workgroup_size(64)
 fn elevation_eval(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i: u32 = gid.x;

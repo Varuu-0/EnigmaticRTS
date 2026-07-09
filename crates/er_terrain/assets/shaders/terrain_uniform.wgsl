@@ -47,7 +47,9 @@ struct TerrainMaterialUniform {
     sun_dir_x: f32,
     sun_dir_y: f32,
     sun_dir_z: f32,
-    _climate_pad: f32,
+    camera_pos_x: f32,
+    camera_pos_y: f32,
+    camera_pos_z: f32,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> material: TerrainMaterialUniform;

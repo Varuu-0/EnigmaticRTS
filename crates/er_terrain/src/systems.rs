@@ -1,8 +1,9 @@
 use bevy::ecs::schedule::ApplyDeferred;
+use bevy::ecs::schedule::SystemSet;
 use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
 use bevy::shader::Shader;
-use bevy::tasks::{futures::check_ready, Task};
+use bevy::tasks::{futures::check_ready, AsyncComputeTaskPool, Task};
 use er_core::config::{
     ACTIVE_CHUNK_CAP, LOD_SPLIT_BUDGET_PER_FRAME, MAX_QUADTREE_DEPTH, MAX_RENDER_DISTANCE,
     MERGE_HYSTERESIS, PLANET_RADIUS_DEFAULT, SCREEN_ERROR_THRESHOLD,
@@ -16,14 +17,26 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::chunk::ChunkComponent;
+use crate::chunk::{ChunkComponent, HoldHidden};
 use crate::culling::{frustum_cull_sphere, is_below_horizon, is_outside_render_distance};
 use crate::debug::TerrainDebugInfo;
 use crate::lod::{chunk_camera_distance, should_merge_parent, should_split};
 use crate::material::{TerrainMaterial, TerrainMaterialUniform, FRAGMENT_SHADER, VERTEX_SHADER};
 use crate::mesh_gen::generate_chunk_mesh;
 use crate::ocean::{OceanMaterial, setup_ocean, update_ocean_time};
-use crate::quadtree::{children_of, parent_of, root_chunks, ActiveChunks};
+use crate::quadtree::{children_of, parent_of, root_chunks, ActiveChunks, RetainedSplit, RetainedSplits};
+
+#[derive(Resource, Clone, Copy)]
+pub struct SunDirection(pub Vec3);
+
+impl Default for SunDirection {
+    fn default() -> Self {
+        Self(Vec3::new(0.5, 0.8, 0.3).normalize())
+    }
+}
+
+#[derive(SystemSet, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct TerrainUpdate;
 
 #[derive(Resource)]
 pub struct TerrainState {
@@ -101,11 +114,14 @@ impl Plugin for TerrainPlugin {
             self.seed,
         ))
         .insert_resource(ActiveChunks::default())
+        .insert_resource(RetainedSplits::default())
         .insert_resource(TerrainDebugInfo::default())
         .insert_resource(PendingChunkMeshes::default())
         .insert_resource(crate::profiler::FrameProfiler::default())
+        .insert_resource(SunDirection::default())
         .add_plugins(MaterialPlugin::<TerrainMaterial>::default())
         .add_plugins(MaterialPlugin::<OceanMaterial>::default())
+        .add_plugins(MaterialPlugin::<crate::ocean::OcclusionMaterial>::default())
         .add_systems(Startup, (setup_terrain, setup_ocean))
         .add_systems(PreUpdate, profiler_clear)
         .add_systems(
@@ -115,12 +131,16 @@ impl Plugin for TerrainPlugin {
                 process_lod_queue,
                 ApplyDeferred,
                 apply_pending_chunk_meshes,
+                ApplyDeferred,
+                finalize_retirements,
+                ApplyDeferred,
                 update_neighbor_lod,
                 cull_chunks,
                 update_debug_info,
                 update_ocean_time,
             )
-                .chain(),
+                .chain()
+                .in_set(TerrainUpdate),
         );
     }
 }
@@ -128,10 +148,10 @@ impl Plugin for TerrainPlugin {
 fn setup_terrain(
     mut commands: Commands,
     mut materials: ResMut<Assets<TerrainMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut shaders: ResMut<Assets<Shader>>,
     mut terrain_state: ResMut<TerrainState>,
     mut active_chunks: ResMut<ActiveChunks>,
+    mut pending: ResMut<PendingChunkMeshes>,
 ) {
     let vertex_source = format!(
         "{}\n{}\n{}\n{}",
@@ -163,14 +183,12 @@ fn setup_terrain(
         let entity = spawn_chunk_entity(
             &mut commands,
             &mut materials,
-            &mut meshes,
+            &mut pending,
             &terrain_state.base_uniform,
             key,
             terrain_state.planet_radius,
-            &terrain_state.noise,
             &terrain_state.params,
             &terrain_state.planet_params,
-            &terrain_state.climate_noise,
             &terrain_state.cache,
         );
         active_chunks.insert(key, entity);
@@ -240,11 +258,13 @@ fn update_lod(
 fn process_lod_queue(
     mut commands: Commands,
     mut materials: ResMut<Assets<TerrainMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut active_chunks: ResMut<ActiveChunks>,
+    mut retained: ResMut<RetainedSplits>,
     terrain_state: Res<TerrainState>,
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
+    mesh_query: Query<(), With<Mesh3d>>,
     mut debug: ResMut<TerrainDebugInfo>,
+    mut pending: ResMut<PendingChunkMeshes>,
     mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
     let t0 = Instant::now();
@@ -268,41 +288,108 @@ fn process_lod_queue(
             continue;
         }
 
-        if let Some(entity) = active_chunks.remove(&key) {
-            despawn_chunk(&mut commands, entity);
+        let parent_entity = *active_chunks.chunks.get(&key).unwrap();
+
+        // Gate: only split a chunk that already has a mesh. A freshly-spawned
+        // (still-meshless) child is never split, so the cascade is serialized
+        // one LOD level per mesh round-trip — the retained parent stays as the
+        // visible fallback until the child mesh is ready.
+        if mesh_query.get(parent_entity).is_err() {
+            continue;
         }
 
-        for child in children_of(key) {
+        // Retain the parent as a visible fallback instead of despawning it.
+        // It is dropped from the LOD set (so it is not re-split/merged) but
+        // stays rendered until all four children have meshes.
+        active_chunks.remove(&key);
+
+        // Ensure the retained parent is visible. If this chunk was itself a
+        // hidden child of an outer retained split, it must now render as the
+        // fallback for its own children.
+        if let Ok(mut e) = commands.get_entity(parent_entity) {
+            e.remove::<HoldHidden>().insert(Visibility::Visible);
+        }
+
+        let children = children_of(key);
+        let child_entities: [Entity; 4] = core::array::from_fn(|idx| {
+            let child = children[idx];
             let entity = spawn_chunk_entity(
                 &mut commands,
                 &mut materials,
-                &mut meshes,
+                &mut pending,
                 &base_uniform,
                 child,
                 terrain_state.planet_radius,
-                &terrain_state.noise,
                 &terrain_state.params,
                 &terrain_state.planet_params,
-                &terrain_state.climate_noise,
                 &terrain_state.cache,
             );
+            // Hold hidden until all four siblings are meshed (atomic reveal).
+            if let Ok(mut e) = commands.get_entity(entity) {
+                e.insert(HoldHidden);
+            }
             active_chunks.insert(child, entity);
-        }
+            entity
+        });
+        retained.map.insert(
+            key,
+            RetainedSplit {
+                parent_entity,
+                children: child_entities,
+            },
+        );
         splits_done += 1;
     }
     debug.pending_splits = splits_done;
 
+    let over_cap = active_chunks.len().saturating_sub(terrain_state.active_chunk_cap);
+    let merge_budget = if over_cap > 0 {
+        (budget * 4).max(over_cap * 4)
+    } else {
+        budget
+    };
     let mut merges_done = 0usize;
-    let pending_merges: Vec<CellKey> = std::mem::take(&mut active_chunks.pending_merges);
+    let mut pending_merges: Vec<CellKey> = std::mem::take(&mut active_chunks.pending_merges);
+    if over_cap > 0 {
+        pending_merges.sort_by(|a, b| {
+            let da = chunk_camera_distance(*a, camera_pos, terrain_state.planet_radius);
+            let db = chunk_camera_distance(*b, camera_pos, terrain_state.planet_radius);
+            db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
     for parent_key in pending_merges {
-        if merges_done >= budget {
+        if merges_done >= merge_budget {
             break;
+        }
+        // Don't merge a parent whose children are still meshing in a retained
+        // split. Despawning those children before their queued HoldHidden /
+        // Mesh3d commands are applied causes an entity-generation mismatch panic.
+        if retained.map.contains_key(&parent_key) {
+            continue;
         }
         let children = children_of(parent_key);
         if !children.iter().all(|c| active_chunks.contains(c)) {
             continue;
         }
 
+        // If this parent is currently retained from an in-flight split (the
+        // camera reversed before the children finished meshing), reuse its
+        // already-meshed entity instead of regenerating — instant merge, no
+        // gap and no orphaned fallback.
+        if let Some(entry) = retained.map.remove(&parent_key) {
+            for child in &children {
+                if let Some(entity) = active_chunks.remove(child) {
+                    despawn_chunk(&mut commands, entity);
+                }
+            }
+            active_chunks.insert(parent_key, entry.parent_entity);
+            merges_done += 1;
+            continue;
+        }
+
+        // Non-retained merge: despawn children immediately, spawn parent.
+        // There will be a brief gap (1-2 frames) until parent mesh arrives,
+        // but this is better than persistent black holes.
         for child in &children {
             if let Some(entity) = active_chunks.remove(child) {
                 despawn_chunk(&mut commands, entity);
@@ -312,14 +399,12 @@ fn process_lod_queue(
         let entity = spawn_chunk_entity(
             &mut commands,
             &mut materials,
-            &mut meshes,
+            &mut pending,
             &base_uniform,
             parent_key,
             terrain_state.planet_radius,
-            &terrain_state.noise,
             &terrain_state.params,
             &terrain_state.planet_params,
-            &terrain_state.climate_noise,
             &terrain_state.cache,
         );
         active_chunks.insert(parent_key, entity);
@@ -353,19 +438,33 @@ fn process_lod_queue(
 }
 
 fn cull_chunks(
-    camera_query: Query<(&GlobalTransform, &Projection), With<Camera3d>>,
-    mut chunk_query: Query<(&ChunkComponent, &mut Visibility), With<Mesh3d>>,
+    mut camera_query: Query<(&GlobalTransform, &mut Projection), With<Camera3d>>,
+    mut chunk_query: Query<(&ChunkComponent, &mut Visibility), (With<Mesh3d>, Without<HoldHidden>)>,
     terrain_state: Res<TerrainState>,
     mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
     let t0 = Instant::now();
-    let Ok((camera_transform, projection)) = camera_query.single() else {
+    let Ok((camera_transform, mut projection)) = camera_query.single_mut() else {
         profiler.record("cull_chunks", t0.elapsed());
         return;
     };
     let camera_pos = camera_transform.translation().as_dvec3();
 
-    let frustum = match projection {
+    let planet_radius = terrain_state.planet_radius as f32;
+    let cam_dist = camera_transform.translation().length();
+    let (near, far) = if cam_dist < planet_radius * 1.1 {
+        (0.1, 500000.0)
+    } else if cam_dist < planet_radius * 5.0 {
+        (1.0, 500000.0)
+    } else {
+        (10.0, 5000000.0)
+    };
+    if let Projection::Perspective(p) = &mut *projection {
+        p.near = near;
+        p.far = far;
+    }
+
+    let frustum = match &*projection {
         Projection::Perspective(p) => {
             let fov_cos = (p.fov / 2.0).cos();
             let aspect = p.aspect_ratio;
@@ -433,41 +532,58 @@ fn update_debug_info(
     debug.frame_time_ms = profiler.total().as_secs_f32() * 1000.0;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_chunk_entity(
     commands: &mut Commands,
     materials: &mut Assets<TerrainMaterial>,
-    meshes: &mut Assets<Mesh>,
+    pending: &mut PendingChunkMeshes,
     base_uniform: &TerrainMaterialUniform,
     key: CellKey,
     radius: f64,
-    noise: &ElevationNoise,
     elev_params: &ElevationParams,
     planet_params: &PlanetParams,
-    climate_noise: &ClimateNoise,
-    cache: &WorldCache,
+    cache: &Arc<WorldCache>,
 ) -> Entity {
     let material = materials.add(TerrainMaterial {
         uniform: base_uniform.for_chunk(key),
     });
-    let mesh = generate_chunk_mesh(
-        key,
-        radius,
-        noise,
-        elev_params,
-        planet_params,
-        climate_noise,
-        Some(cache),
-    );
-    let mesh_handle = meshes.add(mesh);
-    commands
+
+    // Spawn entity without mesh — it will be added by apply_pending_chunk_meshes
+    // when the async mesh generation task completes.
+    let entity = commands
         .spawn((
             ChunkComponent::new(key),
             MeshMaterial3d(material),
-            Mesh3d(mesh_handle),
             Transform::default(),
             Visibility::Hidden,
         ))
-        .id()
+        .id();
+
+    // Copy/clone data for the async task.
+    // ElevationNoise and ClimateNoise don't derive Clone (FastNoiseLite
+    // isn't Clone), so we reconstruct both from their params inside the task
+    // — both constructors are deterministic from their params.
+    let elev_params = *elev_params;
+    let planet_params = *planet_params;
+    let cache = Arc::clone(cache);
+
+    let task = AsyncComputeTaskPool::get().spawn(async move {
+        let noise = ElevationNoise::new(&elev_params);
+        let climate_noise = make_climate_noise(&planet_params);
+        generate_chunk_mesh(
+            key,
+            radius,
+            &noise,
+            &elev_params,
+            &planet_params,
+            &climate_noise,
+            Some(&cache),
+        )
+    });
+
+    pending.0.insert(entity, task);
+
+    entity
 }
 
 fn despawn_chunk(commands: &mut Commands, entity: Entity) {
@@ -489,7 +605,9 @@ fn apply_pending_chunk_meshes(
         if let Some(mesh) = check_ready(task) {
             if chunk_query.get(entity).is_ok() {
                 let handle = meshes.add(mesh);
-                commands.entity(entity).insert(Mesh3d(handle));
+                if let Ok(mut e) = commands.get_entity(entity) {
+                    e.insert(Mesh3d(handle));
+                }
             }
             done.push(entity);
         }
@@ -498,6 +616,55 @@ fn apply_pending_chunk_meshes(
         pending.0.remove(&entity);
     }
     profiler.record("apply_meshes", t0.elapsed());
+}
+
+/// Finalize retained splits: once all four children of a retained parent have
+/// meshes, reveal the children and despawn the parent atomically (same frame).
+/// This is the no-gap / no-overlap handoff — the parent was the visible
+/// fallback right up to the frame its replacement coverage is ready.
+fn finalize_retirements(
+    mut commands: Commands,
+    mut retained: ResMut<RetainedSplits>,
+    mesh_query: Query<(), With<Mesh3d>>,
+    chunk_query: Query<&ChunkComponent>,
+    mut profiler: ResMut<crate::profiler::FrameProfiler>,
+) {
+    let t0 = Instant::now();
+    let mut done = Vec::new();
+    // First pass: collect which entries can finalize and which parents must be
+    // despawned. We need the despawn set before queueing any reveal commands so
+    // we don't try to reveal an entity that is being despawned in the same
+    // command batch.
+    let mut despawn_parents = std::collections::HashSet::<Entity>::new();
+    for (&key, entry) in retained.map.iter() {
+        if entry.children.iter().all(|&c| mesh_query.get(c).is_ok()) {
+            if chunk_query.get(entry.parent_entity).is_ok() {
+                despawn_parents.insert(entry.parent_entity);
+            }
+            done.push(key);
+        }
+    }
+
+    for &key in &done {
+        let entry = retained.map.get(&key).unwrap();
+        if despawn_parents.contains(&entry.parent_entity) {
+            if let Ok(mut parent_cmd) = commands.get_entity(entry.parent_entity) {
+                parent_cmd.despawn();
+            }
+        }
+        for &c in &entry.children {
+            if !despawn_parents.contains(&c) {
+                if let Ok(mut child_cmd) = commands.get_entity(c) {
+                    child_cmd.remove::<HoldHidden>().insert(Visibility::Visible);
+                }
+            }
+        }
+    }
+
+    for key in done {
+        retained.map.remove(&key);
+    }
+    profiler.record("finalize_retirements", t0.elapsed());
 }
 
 fn update_neighbor_lod(

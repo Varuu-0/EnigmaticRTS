@@ -3,8 +3,12 @@
 struct StarfieldUniform {
     seed: f32,
     brightness: f32,
+    sun_dir_x: f32,
+    sun_dir_y: f32,
+    sun_dir_z: f32,
     _pad0: f32,
     _pad1: f32,
+    _pad2: f32,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> starfield: StarfieldUniform;
@@ -57,7 +61,11 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
     brightness = brightness + star_at(dir * 1.3, starfield.seed + 31.0) * 0.7;
     brightness = brightness + star_at(dir * 1.7, starfield.seed + 57.0) * 0.5;
 
-    brightness = brightness * starfield.brightness;
+    // Sun direction from uniform — fade stars when sun is above horizon
+    let sun_dir = normalize(vec3<f32>(starfield.sun_dir_x, starfield.sun_dir_y, starfield.sun_dir_z));
+    let star_visibility = clamp(-sun_dir.y * 3.0, 0.0, 1.0);
+
+    brightness = brightness * starfield.brightness * star_visibility;
 
     let star_color = vec3<f32>(0.9, 0.95, 1.0) * brightness;
     return vec4<f32>(star_color, 1.0);

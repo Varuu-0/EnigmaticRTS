@@ -2,7 +2,7 @@ use er_core::math::{cell_size, cell_to_dir, CellKey};
 use glam::{DVec3, Vec3};
 
 const FRUSTUM_MARGIN: f32 = 0.175; // ~10° — keep chunks visible beyond screen edges
-const HORIZON_MARGIN: f64 = 0.087; // ~5° — keep chunks visible below horizon
+const HORIZON_MARGIN: f64 = 0.262; // ~15° — keep chunks visible below horizon (covers cracks at terminator)
 const DISTANCE_MARGIN: f64 = 1.15; // 15% beyond max render distance
 
 pub fn chunk_half_angle(key: CellKey, planet_radius: f64) -> f64 {
@@ -69,10 +69,6 @@ pub fn frustum_cull_sphere(
     let effective_angle = (sphere_radius / dist).atan();
     let v_half_fov = fov_cos.acos() + effective_angle + FRUSTUM_MARGIN;
     let h_half_fov = (aspect * v_half_fov.tan()).atan();
-
-    if forward_dot < v_half_fov.cos() {
-        return true;
-    }
 
     let vert_dot = dir.dot(camera_up).abs();
     if vert_dot > v_half_fov.sin() {

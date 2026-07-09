@@ -119,7 +119,7 @@ pub fn classify_biome(
             return Biome::Tundra;
         }
         if moisture < 0.7 {
-            return Biome::Tundra;
+            return Biome::Forest;
         }
         return Biome::Snow;
     } else if temperature < 0.6 {
@@ -295,6 +295,7 @@ mod tests {
         let params = planet_params(PlanetSeed(0xC0FFEE));
         let el = params.sea_level + 0.2;
         assert_eq!(classify_biome(el, 0.1, 0.1, 0.0, &params), Biome::Tundra);
+        assert_eq!(classify_biome(el, 0.1, 0.5, 0.0, &params), Biome::Forest);
         assert_eq!(classify_biome(el, 0.1, 0.8, 0.0, &params), Biome::Snow);
         assert_eq!(classify_biome(el, 0.4, 0.1, 0.0, &params), Biome::Grassland);
         assert_eq!(classify_biome(el, 0.4, 0.8, 0.0, &params), Biome::Forest);

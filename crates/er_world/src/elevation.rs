@@ -46,14 +46,14 @@ pub fn elevation_params(seed: PlanetSeed) -> ElevationParams {
         continental_freq: (0.5 + rand_unit(&mut r) * 0.3) as f32,
         continental_amp: (0.8 + rand_unit(&mut r) * 0.4) as f32,
         continental_octaves: 4,
-        mountain_freq: (1.0 + rand_unit(&mut r) * 0.5) as f32,
-        mountain_amp: (0.3 + rand_unit(&mut r) * 0.4) as f32,
+        mountain_freq: (0.7 + rand_unit(&mut r) * 0.4) as f32,
+        mountain_amp: (0.6 + rand_unit(&mut r) * 0.6) as f32,
         mountain_octaves: 4,
-        hill_freq: (2.0 + rand_unit(&mut r) * 1.0) as f32,
-        hill_amp: (0.15 + rand_unit(&mut r) * 0.2) as f32,
+        hill_freq: (1.5 + rand_unit(&mut r) * 0.8) as f32,
+        hill_amp: (0.25 + rand_unit(&mut r) * 0.3) as f32,
         hill_octaves: 3,
-        detail_freq: (4.0 + rand_unit(&mut r) * 2.0) as f32,
-        detail_amp: (0.05 + rand_unit(&mut r) * 0.1) as f32,
+        detail_freq: (8.0 + rand_unit(&mut r) * 6.0) as f32,
+        detail_amp: (0.10 + rand_unit(&mut r) * 0.12) as f32,
         detail_octaves: 2,
         warp_freq: (0.3 + rand_unit(&mut r) * 0.2) as f32,
         warp_amp: (0.3 + rand_unit(&mut r) * 0.4) as f32,
@@ -208,8 +208,8 @@ mod tests {
         for d in &dirs {
             let e = elevation(*d, &noise, &params);
             assert!(
-                e >= -3.0 && e <= 3.0,
-                "elevation {e} out of [-3, 3] (amp_sum={amp_sum})"
+                e >= -3.5 && e <= 3.5,
+                "elevation {e} out of [-3.5, 3.5] (amp_sum={amp_sum})"
             );
         }
     }

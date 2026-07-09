@@ -4,7 +4,7 @@ use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey};
 use bevy::reflect::TypePath;
 use bevy::render::mesh::{Mesh, MeshVertexBufferLayoutRef};
 use bevy::render::render_resource::{
-    AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+    AsBindGroup, Face, RenderPipelineDescriptor, SpecializedMeshPipelineError,
 };
 use bevy::shader::{Shader, ShaderRef};
 use er_core::math::{cells_per_edge, CellKey};
@@ -68,7 +68,9 @@ pub struct TerrainMaterialUniform {
     pub sun_dir_x: f32,
     pub sun_dir_y: f32,
     pub sun_dir_z: f32,
-    pub _climate_pad: f32,
+    pub camera_pos_x: f32,
+    pub camera_pos_y: f32,
+    pub camera_pos_z: f32,
 }
 
 impl TerrainMaterialUniform {
@@ -127,7 +129,9 @@ impl TerrainMaterialUniform {
             sun_dir_x: 0.5,
             sun_dir_y: 0.8,
             sun_dir_z: 0.3,
-            _climate_pad: 0.0,
+            camera_pos_x: 0.0,
+            camera_pos_y: 0.0,
+            camera_pos_z: 0.0,
         }
     }
 
@@ -179,7 +183,7 @@ impl Material for TerrainMaterial {
             ATTRIBUTE_MOISTURE_LOW.at_shader_location(5),
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
-        descriptor.primitive.cull_mode = None;
+        descriptor.primitive.cull_mode = Some(Face::Back);
         Ok(())
     }
 }
