@@ -39,7 +39,7 @@ fn main() {
                 primary_window: Some(Window {
                     title: "Planet Solar Sim (Test Mode)".into(),
                     present_mode,
-                    visible: false,
+                    visible: true,
                     ..default()
                 }),
                 ..default()

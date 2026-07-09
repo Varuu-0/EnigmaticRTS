@@ -1,16 +1,30 @@
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Capturing, Screenshot};
+use er_terrain::{PendingChunkMeshes, TerrainDebugInfo, TerrainUpdate};
 use std::path::PathBuf;
+
+/// Consecutive frames with no pending chunk meshes required before the scene is
+/// considered settled enough for a screenshot.
+const SETTLED_FRAMES_THRESHOLD: u32 = 3;
+
+/// Hard cap: never wait more than this many frames for a scenario, even if the
+/// terrain is still churning. At 60 fps this is ~10 s per scenario.
+const MAX_FRAMES_PER_SCENARIO: u32 = 600;
 
 #[derive(Resource, Default)]
 pub struct ScreenshotTestConfig {
     pub output_dir: PathBuf,
     pub scenarios: Vec<ScreenshotScenario>,
     pub current_index: usize,
+    /// Minimum frames to wait after moving the camera before stabilization can
+    /// be declared. This is kept low because the real gate is the pending-mesh
+    /// count.
     pub frames_to_wait: u32,
     pub frames_waited: u32,
     pub completed: bool,
     pub pending_screenshots: u32,
+    /// Consecutive frames the terrain has reported no pending meshes.
+    pub settled_frames: u32,
 }
 
 #[derive(Clone)]
@@ -26,7 +40,8 @@ pub struct ScreenshotTestPlugin;
 
 impl Plugin for ScreenshotTestPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, run_screenshot_test);
+        // Run after terrain systems so pending_meshes reflects the latest work.
+        app.add_systems(Update, run_screenshot_test.after(TerrainUpdate));
     }
 }
 
@@ -35,6 +50,8 @@ fn run_screenshot_test(
     mut camera_query: Query<(&mut crate::camera::OrbitCamera, &mut Transform), With<Camera3d>>,
     mut commands: Commands,
     capturing: Query<Entity, With<Capturing>>,
+    pending_meshes: Res<PendingChunkMeshes>,
+    debug_info: Res<TerrainDebugInfo>,
 ) {
     // Check if any screenshots are still being captured
     let capturing_count = capturing.iter().count() as u32;
@@ -66,7 +83,7 @@ fn run_screenshot_test(
 
     if config.frames_waited == 0 {
         info!("Capturing scenario: {} (index {})", scenario.name, config.current_index);
-        
+
         if let Ok((mut orbit, mut transform)) = camera_query.single_mut() {
             orbit.yaw = scenario.camera_yaw;
             orbit.pitch = scenario.camera_pitch;
@@ -95,31 +112,75 @@ fn run_screenshot_test(
 
     config.frames_waited += 1;
 
-    if config.frames_waited >= config.frames_to_wait {
+    // The black boxes in screenshots came from taking the picture while chunk
+    // meshes were still generating asynchronously. Wait until the terrain
+    // system reports no pending meshes for several consecutive frames; that
+    // means the LOD cascade has generated every chunk that is currently needed.
+    let terrain_settled = pending_meshes.0.is_empty()
+        && debug_info.pending_splits == 0
+        && debug_info.pending_merges == 0;
+    if terrain_settled {
+        config.settled_frames += 1;
+    } else {
+        config.settled_frames = 0;
+        if config.frames_waited % 30 == 0 {
+            info!(
+                "Scenario {} waiting for terrain: {} pending meshes, {} active chunks",
+                scenario.name,
+                debug_info.pending_meshes,
+                debug_info.active_chunks,
+            );
+        }
+    }
+
+    let ready_to_capture = config.frames_waited >= config.frames_to_wait
+        && config.settled_frames >= SETTLED_FRAMES_THRESHOLD;
+    let timed_out = config.frames_waited >= MAX_FRAMES_PER_SCENARIO;
+
+    if ready_to_capture || timed_out {
+        if timed_out && !ready_to_capture {
+            warn!(
+                "Scenario {} timed out after {} frames with {} pending meshes still in flight",
+                scenario.name,
+                config.frames_waited,
+                debug_info.pending_meshes,
+            );
+        } else {
+            info!(
+                "Scenario {} settled after {} frames ({} active chunks)",
+                scenario.name,
+                config.frames_waited,
+                debug_info.active_chunks,
+            );
+        }
+
         let filename = format!("{}.png", scenario.name);
         let path = config.output_dir.join(&filename);
-        
+
         info!("Taking screenshot: {:?}", path);
-        
+
         std::fs::create_dir_all(&config.output_dir).ok();
-        
+
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk(path.clone()));
-        
+
         config.current_index += 1;
         config.frames_waited = 0;
+        config.settled_frames = 0;
         config.pending_screenshots += 1;
     }
 }
 
 pub fn parse_test_args() -> Option<ScreenshotTestConfig> {
     let args: Vec<String> = std::env::args().collect();
-    
+
     let mut output_dir = PathBuf::from("screenshots");
     let mut scenarios = Vec::new();
-    let mut frames_to_wait = 10;
-    
+    // Minimum frames before stabilization is allowed; the real gate is the
+    // pending mesh count.
+    let mut frames_to_wait = 5;
+
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -132,7 +193,7 @@ pub fn parse_test_args() -> Option<ScreenshotTestConfig> {
             "--frames" => {
                 i += 1;
                 if i < args.len() {
-                    frames_to_wait = args[i].parse().unwrap_or(10);
+                    frames_to_wait = args[i].parse().unwrap_or(5);
                 }
             }
             "--scenario" => {
@@ -154,11 +215,11 @@ pub fn parse_test_args() -> Option<ScreenshotTestConfig> {
         }
         i += 1;
     }
-    
+
     if scenarios.is_empty() {
         return None;
     }
-    
+
     Some(ScreenshotTestConfig {
         output_dir,
         scenarios,
@@ -167,87 +228,8 @@ pub fn parse_test_args() -> Option<ScreenshotTestConfig> {
         frames_waited: 0,
         completed: false,
         pending_screenshots: 0,
+        settled_frames: 0,
     })
 }
 
-pub fn default_test_scenarios() -> Vec<ScreenshotScenario> {
-    vec![
-        ScreenshotScenario {
-            name: "orbit_far_0deg".to_string(),
-            camera_yaw: 0.0,
-            camera_pitch: 0.3,
-            camera_distance: 150000.0,
-            camera_target: Vec3::ZERO,
-        },
-        ScreenshotScenario {
-            name: "orbit_far_90deg".to_string(),
-            camera_yaw: std::f32::consts::FRAC_PI_2,
-            camera_pitch: 0.3,
-            camera_distance: 150000.0,
-            camera_target: Vec3::ZERO,
-        },
-        ScreenshotScenario {
-            name: "orbit_far_180deg".to_string(),
-            camera_yaw: std::f32::consts::PI,
-            camera_pitch: 0.3,
-            camera_distance: 150000.0,
-            camera_target: Vec3::ZERO,
-        },
-        ScreenshotScenario {
-            name: "orbit_far_270deg".to_string(),
-            camera_yaw: std::f32::consts::PI * 1.5,
-            camera_pitch: 0.3,
-            camera_distance: 150000.0,
-            camera_target: Vec3::ZERO,
-        },
-        ScreenshotScenario {
-            name: "orbit_mid_0deg".to_string(),
-            camera_yaw: 0.0,
-            camera_pitch: 0.3,
-            camera_distance: 70000.0,
-            camera_target: Vec3::ZERO,
-        },
-        ScreenshotScenario {
-            name: "orbit_mid_90deg".to_string(),
-            camera_yaw: std::f32::consts::FRAC_PI_2,
-            camera_pitch: 0.3,
-            camera_distance: 70000.0,
-            camera_target: Vec3::ZERO,
-        },
-        ScreenshotScenario {
-            name: "orbit_close_0deg".to_string(),
-            camera_yaw: 0.0,
-            camera_pitch: 0.3,
-            camera_distance: 45000.0,
-            camera_target: Vec3::ZERO,
-        },
-        ScreenshotScenario {
-            name: "orbit_close_45deg".to_string(),
-            camera_yaw: std::f32::consts::FRAC_PI_4,
-            camera_pitch: 0.3,
-            camera_distance: 45000.0,
-            camera_target: Vec3::ZERO,
-        },
-        ScreenshotScenario {
-            name: "orbit_very_close_0deg".to_string(),
-            camera_yaw: 0.0,
-            camera_pitch: 0.3,
-            camera_distance: 38000.0,
-            camera_target: Vec3::ZERO,
-        },
-        ScreenshotScenario {
-            name: "top_down".to_string(),
-            camera_yaw: 0.0,
-            camera_pitch: 1.5,
-            camera_distance: 100000.0,
-            camera_target: Vec3::ZERO,
-        },
-        ScreenshotScenario {
-            name: "equator_view".to_string(),
-            camera_yaw: 0.0,
-            camera_pitch: 0.0,
-            camera_distance: 60000.0,
-            camera_target: Vec3::ZERO,
-        },
-    ]
-}
+

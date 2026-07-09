@@ -1,10 +1,16 @@
 # Screenshot Test Script for EnigmaticRTS
 # Usage: .\screenshot_test.ps1 [-OutputDir <path>] [-Preset <name>] [-Frames <count>]
+#
+# Note: -Frames is the minimum number of frames to wait after each camera move.
+# The harness actually waits until the terrain LOD system reports no pending
+# chunk meshes for several consecutive frames, so each scenario may take longer
+# than the minimum. This prevents the black boxes caused by taking a screenshot
+# while chunk meshes are still generating asynchronously.
 
 param(
     [string]$OutputDir = "screenshots",
     [string]$Preset = "default",
-    [int]$Frames = 15
+    [int]$Frames = 5
 )
 
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"

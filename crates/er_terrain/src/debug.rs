@@ -6,6 +6,7 @@ pub struct TerrainDebugInfo {
     pub max_depth: u8,
     pub pending_splits: usize,
     pub pending_merges: usize,
+    pub pending_meshes: usize,
     pub visible_chunks: usize,
     pub frame_time_ms: f32,
 }

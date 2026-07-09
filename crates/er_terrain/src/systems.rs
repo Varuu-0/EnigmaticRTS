@@ -524,11 +524,13 @@ fn cull_chunks(
 
 fn update_debug_info(
     active_chunks: Res<ActiveChunks>,
+    pending: Res<PendingChunkMeshes>,
     mut debug: ResMut<TerrainDebugInfo>,
     profiler: Res<crate::profiler::FrameProfiler>,
 ) {
     debug.active_chunks = active_chunks.len();
     debug.max_depth = active_chunks.chunks.keys().map(|k| k.lod).max().unwrap_or(0);
+    debug.pending_meshes = pending.0.len();
     debug.frame_time_ms = profiler.total().as_secs_f32() * 1000.0;
 }
 

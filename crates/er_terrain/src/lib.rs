@@ -21,7 +21,7 @@ pub use mesh_gen::{
 };
 pub use profiler::FrameProfiler;
 pub use quadtree::{children_of, parent_of, root_chunks, ActiveChunks, RetainedSplit, RetainedSplits};
-pub use systems::{TerrainPlugin, TerrainState, SunDirection, TerrainUpdate};
+pub use systems::{PendingChunkMeshes, TerrainPlugin, TerrainState, SunDirection, TerrainUpdate};
 
 pub fn version() -> &'static str {
     "0"
