@@ -23,3 +23,10 @@ impl ChunkComponent {
 /// fallback) and z-fighting (parent is despawned the instant children appear).
 #[derive(Component, Clone, Debug, Default)]
 pub struct HoldHidden;
+
+/// Marker for the four children of a parent that is being merged to a coarser
+/// LOD. The children stay rendered as the visible fallback until the new
+/// parent's mesh is ready and `finalize_retained_merges` performs the atomic
+/// reveal/despawn. This prevents the 1–2 frame black gap of a plain merge.
+#[derive(Component, Clone, Debug, Default)]
+pub struct HoldForMerge;

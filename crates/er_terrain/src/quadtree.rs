@@ -131,3 +131,19 @@ pub struct RetainedSplit {
 pub struct RetainedSplits {
     pub map: HashMap<CellKey, RetainedSplit>,
 }
+
+/// The four children of a parent that is being merged back to a coarser LOD.
+/// The children stay rendered as the visible fallback until the new parent's
+/// mesh is ready; then `finalize_retained_merges` reveals the parent and despawns
+/// the children atomically. This avoids the 1–2 frame black gap that a plain
+/// non-retained merge creates.
+pub struct RetainedMerge {
+    pub parent_key: CellKey,
+    pub parent_entity: Entity,
+    pub children: [Entity; 4],
+}
+
+#[derive(Resource, Default)]
+pub struct RetainedMerges {
+    pub map: HashMap<CellKey, RetainedMerge>,
+}

@@ -17,14 +17,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::chunk::{ChunkComponent, HoldHidden};
+use crate::chunk::{ChunkComponent, HoldForMerge, HoldHidden};
 use crate::culling::{frustum_cull_sphere, is_below_horizon, is_outside_render_distance};
 use crate::debug::TerrainDebugInfo;
 use crate::lod::{chunk_camera_distance, should_merge_parent, should_split};
 use crate::material::{TerrainMaterial, TerrainMaterialUniform, FRAGMENT_SHADER, VERTEX_SHADER};
 use crate::mesh_gen::generate_chunk_mesh;
 use crate::ocean::{OceanMaterial, setup_ocean, update_ocean_time};
-use crate::quadtree::{children_of, parent_of, root_chunks, ActiveChunks, RetainedSplit, RetainedSplits};
+use crate::quadtree::{children_of, parent_of, root_chunks, ActiveChunks, RetainedMerge, RetainedMerges, RetainedSplit, RetainedSplits};
 
 #[derive(Resource, Clone, Copy)]
 pub struct SunDirection(pub Vec3);
@@ -115,6 +115,7 @@ impl Plugin for TerrainPlugin {
         ))
         .insert_resource(ActiveChunks::default())
         .insert_resource(RetainedSplits::default())
+        .insert_resource(RetainedMerges::default())
         .insert_resource(TerrainDebugInfo::default())
         .insert_resource(PendingChunkMeshes::default())
         .insert_resource(crate::profiler::FrameProfiler::default())
@@ -133,6 +134,8 @@ impl Plugin for TerrainPlugin {
                 apply_pending_chunk_meshes,
                 ApplyDeferred,
                 finalize_retirements,
+                ApplyDeferred,
+                finalize_retained_merges,
                 ApplyDeferred,
                 update_neighbor_lod,
                 cull_chunks,
@@ -203,6 +206,8 @@ fn update_lod(
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
     mut active_chunks: ResMut<ActiveChunks>,
     terrain_state: Res<TerrainState>,
+    retained_splits: Res<RetainedSplits>,
+    retained_merges: Res<RetainedMerges>,
     mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
     let t0 = Instant::now();
@@ -218,6 +223,15 @@ fn update_lod(
     for &key in &keys {
         if is_below_horizon(key, camera_pos, terrain_state.planet_radius) {
             continue;
+        }
+
+        // If this chunk is waiting for its parent mesh to finish during a
+        // retained merge, don't re-evaluate its LOD — the merge decision is
+        // already in flight.
+        if let Some(parent) = parent_of(key) {
+            if retained_merges.map.contains_key(&parent) {
+                continue;
+            }
         }
 
         if should_split(
@@ -238,6 +252,14 @@ fn update_lod(
         }
     }
     for parent_key in parents_to_check {
+        // Skip parents already splitting (retained split) or already waiting on
+        // a retained merge parent mesh.
+        if retained_splits.map.contains_key(&parent_key)
+            || retained_merges.map.contains_key(&parent_key)
+        {
+            continue;
+        }
+
         let children = children_of(parent_key);
         if children.iter().all(|c| active_chunks.contains(c)) {
             if should_merge_parent(
@@ -260,6 +282,7 @@ fn process_lod_queue(
     mut materials: ResMut<Assets<TerrainMaterial>>,
     mut active_chunks: ResMut<ActiveChunks>,
     mut retained: ResMut<RetainedSplits>,
+    mut retained_merges: ResMut<RetainedMerges>,
     terrain_state: Res<TerrainState>,
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
     mesh_query: Query<(), With<Mesh3d>>,
@@ -387,16 +410,26 @@ fn process_lod_queue(
             continue;
         }
 
-        // Non-retained merge: despawn children immediately, spawn parent.
-        // There will be a brief gap (1-2 frames) until parent mesh arrives,
-        // but this is better than persistent black holes.
-        for child in &children {
+        // Retained merge: keep the children rendered as the visible fallback
+        // while the new parent's mesh generates asynchronously. The children
+        // are removed from `ActiveChunks` (so they are not re-evaluated) but
+        // stay visible until `finalize_retained_merges` reveals the parent and
+        // despawns them atomically. This removes the 1-2 frame black gap of the
+        // old non-retained merge path.
+        let mut child_entities: [Entity; 4] = [Entity::PLACEHOLDER; 4];
+        for (idx, child) in children.iter().enumerate() {
             if let Some(entity) = active_chunks.remove(child) {
-                despawn_chunk(&mut commands, entity);
+                // Tag the child so cull_chunks skips it and leaves it at its
+                // current visibility. It will be despawned the frame the
+                // parent mesh is ready.
+                if let Ok(mut e) = commands.get_entity(entity) {
+                    e.insert(HoldForMerge);
+                }
+                child_entities[idx] = entity;
             }
         }
 
-        let entity = spawn_chunk_entity(
+        let parent_entity = spawn_chunk_entity(
             &mut commands,
             &mut materials,
             &mut pending,
@@ -407,7 +440,17 @@ fn process_lod_queue(
             &terrain_state.planet_params,
             &terrain_state.cache,
         );
-        active_chunks.insert(parent_key, entity);
+        // Parent starts Hidden (spawn_chunk_entity default) and without a mesh.
+        // finalize_retained_merges will reveal it once its mesh arrives.
+        retained_merges.map.insert(
+            parent_key,
+            RetainedMerge {
+                parent_key,
+                parent_entity,
+                children: child_entities,
+            },
+        );
+        active_chunks.insert(parent_key, parent_entity);
         merges_done += 1;
     }
     debug.pending_merges = merges_done;
@@ -439,7 +482,7 @@ fn process_lod_queue(
 
 fn cull_chunks(
     mut camera_query: Query<(&GlobalTransform, &mut Projection), With<Camera3d>>,
-    mut chunk_query: Query<(&ChunkComponent, &mut Visibility), (With<Mesh3d>, Without<HoldHidden>)>,
+    mut chunk_query: Query<(&ChunkComponent, &mut Visibility), (With<Mesh3d>, Without<HoldHidden>, Without<HoldForMerge>)>,
     terrain_state: Res<TerrainState>,
     mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
@@ -667,6 +710,61 @@ fn finalize_retirements(
         retained.map.remove(&key);
     }
     profiler.record("finalize_retirements", t0.elapsed());
+}
+
+/// Finalize retained merges: once the newly-spawned (coarser) parent has a
+/// mesh, reveal it and despawn the four fallback children atomically in the
+/// same frame. The children were kept visible as the fallback while the
+/// parent's mesh generated, so there is no gap.
+fn finalize_retained_merges(
+    mut commands: Commands,
+    mut retained_merges: ResMut<RetainedMerges>,
+    mesh_query: Query<(), With<Mesh3d>>,
+    chunk_query: Query<&ChunkComponent>,
+    mut active_chunks: ResMut<ActiveChunks>,
+    mut profiler: ResMut<crate::profiler::FrameProfiler>,
+) {
+    let t0 = Instant::now();
+    let mut done = Vec::new();
+    let mut despawn_children: HashSet<Entity> = HashSet::new();
+
+    for (&key, entry) in retained_merges.map.iter() {
+        if mesh_query.get(entry.parent_entity).is_ok() {
+            if chunk_query.get(entry.parent_entity).is_ok() {
+                for &c in &entry.children {
+                    if c != Entity::PLACEHOLDER {
+                        despawn_children.insert(c);
+                    }
+                }
+            }
+            done.push(key);
+        }
+    }
+
+    for &key in &done {
+        let entry = retained_merges.map.get(&key).unwrap();
+        // Reveal the parent and make sure cull_chunks will evaluate it again.
+        if let Ok(mut e) = commands.get_entity(entry.parent_entity) {
+            e.remove::<HoldForMerge>().insert(Visibility::Visible);
+        }
+        // If for some reason the parent entity was evicted, re-insert it.
+        if !active_chunks.contains(&key) {
+            active_chunks.insert(key, entry.parent_entity);
+        }
+        // Despawn the fallback children.
+        for &c in &entry.children {
+            if c != Entity::PLACEHOLDER && despawn_children.contains(&c) {
+                if let Ok(mut child_cmd) = commands.get_entity(c) {
+                    child_cmd.despawn();
+                }
+            }
+        }
+    }
+
+    for key in done {
+        retained_merges.map.remove(&key);
+    }
+    profiler.record("finalize_retained_merges", t0.elapsed());
 }
 
 fn update_neighbor_lod(
