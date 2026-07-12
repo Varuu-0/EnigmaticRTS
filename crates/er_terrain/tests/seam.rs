@@ -8,6 +8,8 @@ use er_terrain::{
 use er_world::elevation::{elevation_params, ElevationNoise, ElevationParams};
 use er_world::params::{climate_noise, planet_params, ClimateNoise, PlanetParams};
 
+const ELEVATION_SCALE: f32 = 1000.0;
+
 fn test_elevation() -> (ElevationNoise, ElevationParams, PlanetParams, ClimateNoise) {
     let seed = PlanetSeed(0xC0FFEE);
     let elev_params = elevation_params(seed);
@@ -21,7 +23,7 @@ fn test_elevation() -> (ElevationNoise, ElevationParams, PlanetParams, ClimateNo
 fn chunk_mesh_vertex_and_index_counts() {
     let (noise, elev_params, pp, cn) = test_elevation();
     let key = CellKey { face: 0, i: 0, j: 0, lod: 0 };
-    let mesh = generate_chunk_mesh(key, 12000.0, &noise, &elev_params, &pp, &cn, None);
+    let mesh = generate_chunk_mesh(key, 12000.0, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
 
     let n = CHUNK_VERT_RES as usize;
     let quads = CHUNK_QUADS_PER_EDGE as usize;
@@ -48,7 +50,7 @@ fn chunk_mesh_vertex_and_index_counts() {
 fn chunk_mesh_morph_values() {
     let (noise, elev_params, pp, cn) = test_elevation();
     let key = CellKey { face: 0, i: 0, j: 0, lod: 0 };
-    let mesh = generate_chunk_mesh(key, 12000.0, &noise, &elev_params, &pp, &cn, None);
+    let mesh = generate_chunk_mesh(key, 12000.0, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
 
     let n = CHUNK_VERT_RES as usize;
     let surface_count = n * n;
@@ -76,8 +78,8 @@ fn adjacent_chunks_share_edge_vertices() {
     let key1 = CellKey { face: 0, i: 0, j: 0, lod };
     let key2 = CellKey { face: 0, i: 1, j: 0, lod };
 
-    let mesh1 = generate_chunk_mesh(key1, radius, &noise, &elev_params, &pp, &cn, None);
-    let mesh2 = generate_chunk_mesh(key2, radius, &noise, &elev_params, &pp, &cn, None);
+    let mesh1 = generate_chunk_mesh(key1, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
+    let mesh2 = generate_chunk_mesh(key2, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
 
     let n = CHUNK_VERT_RES as usize;
 
@@ -108,7 +110,7 @@ fn skirt_vertices_below_surface() {
     let (noise, elev_params, pp, cn) = test_elevation();
     let radius = 12000.0;
     let key = CellKey { face: 0, i: 0, j: 0, lod: 3 };
-    let mesh = generate_chunk_mesh(key, radius, &noise, &elev_params, &pp, &cn, None);
+    let mesh = generate_chunk_mesh(key, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
 
     let n = CHUNK_VERT_RES as usize;
     let surface_count = n * n;
@@ -137,10 +139,10 @@ fn face_edge_chunks_adjacent_across_boundary() {
     let n = CHUNK_VERT_RES as usize;
 
     let key1 = CellKey { face: 0, i: cells - 1, j: cells / 2, lod };
-    let mesh1 = generate_chunk_mesh(key1, radius, &noise, &elev_params, &pp, &cn, None);
+    let mesh1 = generate_chunk_mesh(key1, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
 
     let key2 = CellKey { face: 2, i: cells - 1, j: cells / 2, lod };
-    let mesh2 = generate_chunk_mesh(key2, radius, &noise, &elev_params, &pp, &cn, None);
+    let mesh2 = generate_chunk_mesh(key2, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
 
     let pos1 = match mesh1.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
         VertexAttributeValues::Float32x3(v) => v,
@@ -197,7 +199,7 @@ fn material_uniform_for_chunk_sets_edge_stitch_data() {
 fn grid_attribute_values() {
     let (noise, elev_params, pp, cn) = test_elevation();
     let key = CellKey { face: 0, i: 0, j: 0, lod: 0 };
-    let mesh = generate_chunk_mesh(key, 12000.0, &noise, &elev_params, &pp, &cn, None);
+    let mesh = generate_chunk_mesh(key, 12000.0, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
     let n = CHUNK_VERT_RES as usize;
     let n1 = (n - 1) as u32;
 
@@ -241,8 +243,8 @@ fn finer_even_edge_vertices_coincide_with_coarser() {
     let fine = CellKey { face: 0, i: 1, j: 0, lod: 2 };
     let coarse = CellKey { face: 0, i: 1, j: 0, lod: 1 };
 
-    let pf = positions(&generate_chunk_mesh(fine, radius, &noise, &elev_params, &pp, &cn, None));
-    let pc = positions(&generate_chunk_mesh(coarse, radius, &noise, &elev_params, &pp, &cn, None));
+    let pf = positions(&generate_chunk_mesh(fine, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None));
+    let pc = positions(&generate_chunk_mesh(coarse, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None));
 
     for k in 0..=(n / 2) {
         let gj_fine = 2 * k;
@@ -264,8 +266,8 @@ fn edge_stitch_snaps_inbetween_to_coarse_edge() {
     let fine = CellKey { face: 0, i: 1, j: 0, lod: 2 };
     let coarse = CellKey { face: 0, i: 1, j: 0, lod: 1 };
 
-    let pf = positions(&generate_chunk_mesh(fine, radius, &noise, &elev_params, &pp, &cn, None));
-    let pc = positions(&generate_chunk_mesh(coarse, radius, &noise, &elev_params, &pp, &cn, None));
+    let pf = positions(&generate_chunk_mesh(fine, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None));
+    let pc = positions(&generate_chunk_mesh(coarse, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None));
 
     for k in 0..(n / 2) {
         let gj_lo = 2 * k;
