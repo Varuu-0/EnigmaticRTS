@@ -2,9 +2,9 @@
 //! and sun (emissive sphere). Phase 6.
 
 use bevy::asset::{Asset, RenderAssetUsages};
-use bevy::pbr::{Material, MaterialPlugin, MaterialPipeline, MaterialPipelineKey};
-use bevy::prelude::*;
 use bevy::material::AlphaMode;
+use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
+use bevy::prelude::*;
 use bevy::reflect::TypePath;
 use bevy::render::mesh::{Indices, Mesh, MeshVertexBufferLayoutRef};
 use bevy::render::render_resource::{
@@ -86,8 +86,9 @@ impl Material for AtmosphereMaterial {
         layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        let vertex_layout =
-            layout.0.get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?;
+        let vertex_layout = layout
+            .0
+            .get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         descriptor.primitive.cull_mode = Some(Face::Front);
         Ok(())
@@ -137,8 +138,9 @@ impl Material for StarfieldMaterial {
         layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        let vertex_layout =
-            layout.0.get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?;
+        let vertex_layout = layout
+            .0
+            .get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         descriptor.primitive.cull_mode = Some(Face::Front);
         Ok(())
@@ -183,8 +185,9 @@ impl Material for SunMaterial {
         layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        let vertex_layout =
-            layout.0.get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?;
+        let vertex_layout = layout
+            .0
+            .get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         descriptor.primitive.cull_mode = Some(Face::Back);
         Ok(())
@@ -229,8 +232,9 @@ impl Material for CloudMaterial {
         layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        let vertex_layout =
-            layout.0.get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?;
+        let vertex_layout = layout
+            .0
+            .get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         descriptor.primitive.cull_mode = Some(Face::Front);
         Ok(())
@@ -283,7 +287,10 @@ fn make_sphere(radius: f32, segments: usize, rings: usize) -> Mesh {
             indices.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
         }
     }
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_indices(Indices::U32(indices));
     mesh
@@ -306,7 +313,12 @@ impl Plugin for SpacePlugin {
             .add_systems(Startup, setup_space)
             .add_systems(
                 Update,
-                (handle_time_controls, update_sun, update_terrain_uniforms, update_space)
+                (
+                    handle_time_controls,
+                    update_sun,
+                    update_terrain_uniforms,
+                    update_space,
+                )
                     .chain()
                     .before(er_terrain::TerrainUpdate),
             );
@@ -390,9 +402,7 @@ fn setup_space(
         Transform::default(),
         Visibility::Visible,
     ));
-    commands.insert_resource(StarfieldState {
-        material: star_mat,
-    });
+    commands.insert_resource(StarfieldState { material: star_mat });
 
     // Sun
     let sun_dir = Vec3::new(0.0, 1.0, 0.0);
@@ -420,9 +430,7 @@ fn setup_space(
         Transform::from_translation(sun_pos),
         Visibility::Visible,
     ));
-    commands.insert_resource(SunState {
-        material: sun_mat,
-    });
+    commands.insert_resource(SunState { material: sun_mat });
 
     // Cloud layer
     let cloud_radius = planet_radius * 1.08;
@@ -587,7 +595,10 @@ fn update_sun(
         mat.uniform.time = sim_time.0;
     }
 
-    let cam_pos = camera_query.single().map(|c| c.translation()).unwrap_or(Vec3::ZERO);
+    let cam_pos = camera_query
+        .single()
+        .map(|c| c.translation())
+        .unwrap_or(Vec3::ZERO);
     if let Some(mut mat) = cloud_materials.get_mut(&cloud_state.material) {
         mat.uniform.sun_dir_x = sun_dir.x;
         mat.uniform.sun_dir_y = sun_dir.y;

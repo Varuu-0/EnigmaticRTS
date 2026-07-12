@@ -48,8 +48,7 @@ impl Plugin for SettingsMenuPlugin {
                     update_vsync_label,
                     update_fullscreen_label,
                     update_button_colors,
-                    apply_graphics_settings
-                        .run_if(|open: Res<MenuOpen>| !open.0),
+                    apply_graphics_settings.run_if(|open: Res<MenuOpen>| !open.0),
                 )
                     .chain(),
             );
@@ -130,7 +129,10 @@ fn build_menu(mut commands: Commands) {
                         BackgroundColor(BTN),
                     ))
                     .with_children(|b| {
-                        b.spawn((text_bundle("Fullscreen: OFF", 20.0, TXT), FullscreenStateLabel));
+                        b.spawn((
+                            text_bundle("Fullscreen: OFF", 20.0, TXT),
+                            FullscreenStateLabel,
+                        ));
                     });
 
                 panel.spawn((
@@ -252,7 +254,10 @@ fn handle_button_actions(
     }
 }
 
-fn update_vsync_label(settings: Res<GraphicsSettings>, mut q: Query<&mut Text, With<VSyncStateLabel>>) {
+fn update_vsync_label(
+    settings: Res<GraphicsSettings>,
+    mut q: Query<&mut Text, With<VSyncStateLabel>>,
+) {
     if !settings.is_changed() {
         return;
     }
@@ -269,7 +274,10 @@ fn update_fullscreen_label(
         return;
     }
     for mut t in &mut q {
-        t.0 = format!("Fullscreen: {}", if settings.fullscreen { "ON" } else { "OFF" });
+        t.0 = format!(
+            "Fullscreen: {}",
+            if settings.fullscreen { "ON" } else { "OFF" }
+        );
     }
 }
 

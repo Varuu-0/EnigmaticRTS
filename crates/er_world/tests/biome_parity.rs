@@ -164,10 +164,22 @@ async fn run_biome_compute(
         label: Some("bind_group"),
         layout: &bind_group_layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: elev_params_buffer.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 3, resource: biome_params_buffer.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 4, resource: dirs_buffer.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 5, resource: biomes_buffer.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: elev_params_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: biome_params_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: dirs_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: biomes_buffer.as_entire_binding(),
+            },
         ],
     });
 
@@ -226,15 +238,20 @@ fn parity_biome_cpu_vs_wgsl() {
         })
         .collect();
 
-    let gpu_biomes = match pollster::block_on(run_biome_compute(&elev_params, &biome_shader_params, &dirs)) {
-        Some(b) => b,
-        None => {
-            eprintln!("No GPU adapter available; skipping biome parity test");
-            return;
-        }
-    };
+    let gpu_biomes =
+        match pollster::block_on(run_biome_compute(&elev_params, &biome_shader_params, &dirs)) {
+            Some(b) => b,
+            None => {
+                eprintln!("No GPU adapter available; skipping biome parity test");
+                return;
+            }
+        };
 
-    assert_eq!(cpu_biomes.len(), gpu_biomes.len(), "CPU and GPU biome counts differ");
+    assert_eq!(
+        cpu_biomes.len(),
+        gpu_biomes.len(),
+        "CPU and GPU biome counts differ"
+    );
 
     let mut mismatches = 0usize;
     let mut first_mismatch = None;
@@ -242,18 +259,18 @@ fn parity_biome_cpu_vs_wgsl() {
         if cpu != gpu {
             mismatches += 1;
             if first_mismatch.is_none() {
-                first_mismatch = Some((
-                    i,
-                    *cpu,
-                    *gpu,
-                    dirs[i],
-                    {
-                        let split = elevation_split(dirs[i], &noise, &elev_params);
-                        let temp = er_world::biome::temperature(dirs[i], split.full_elev, &planet, &climate);
-                        let moist = er_world::biome::moisture(dirs[i], split.mountain_influence, &planet, &climate);
-                        (split.full_elev, split.low_freq_elev, temp, moist)
-                    },
-                ));
+                first_mismatch = Some((i, *cpu, *gpu, dirs[i], {
+                    let split = elevation_split(dirs[i], &noise, &elev_params);
+                    let temp =
+                        er_world::biome::temperature(dirs[i], split.full_elev, &planet, &climate);
+                    let moist = er_world::biome::moisture(
+                        dirs[i],
+                        split.mountain_influence,
+                        &planet,
+                        &climate,
+                    );
+                    (split.full_elev, split.low_freq_elev, temp, moist)
+                }));
             }
         }
     }

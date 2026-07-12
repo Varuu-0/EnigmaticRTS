@@ -3,11 +3,12 @@
 //! Phase 3: terrain quadtree LOD with GPU-displaced chunks, orbital camera,
 //! and a debug overlay. ESC still opens the settings menu.
 
+use bevy::camera::{PerspectiveProjection, Projection};
 use bevy::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     prelude::*,
+    render::RenderPlugin,
 };
-use bevy::camera::{PerspectiveProjection, Projection};
 
 mod bench;
 mod camera;
@@ -17,13 +18,13 @@ mod screenshot_test;
 mod settings;
 mod space;
 
-use camera::{CameraPlugin, OrbitCamera};
+use camera::{CameraPlugin, CameraUpdate, OrbitCamera};
 use debug_overlay::DebugOverlayPlugin;
+use er_terrain::TerrainPlugin;
 use menu::SettingsMenuPlugin;
-use screenshot_test::{ScreenshotTestPlugin, parse_test_args};
+use screenshot_test::{parse_test_args, ScreenshotTestPlugin};
 use settings::GraphicsSettings;
 use space::SpacePlugin;
-use er_terrain::TerrainPlugin;
 
 fn main() {
     let test_config = parse_test_args();
@@ -37,41 +38,42 @@ fn main() {
 
     let mut app = App::new();
 
+    let render_plugin = RenderPlugin {
+        // Screenshot and benchmark modes need deterministic shader readiness before
+        // their first captured frame.
+        synchronous_pipeline_compilation: is_test_mode || is_bench_mode,
+        ..default()
+    };
+
     if headless {
-        app.add_plugins(
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "Planet Solar Sim (Bench)".into(),
-                    present_mode,
-                    visible: false,
-                    ..default()
-                }),
+        app.add_plugins(DefaultPlugins.set(render_plugin).set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "Planet Solar Sim (Bench)".into(),
+                present_mode,
+                visible: false,
                 ..default()
             }),
-        );
+            ..default()
+        }));
     } else if is_test_mode {
-        app.add_plugins(
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "Planet Solar Sim (Test Mode)".into(),
-                    present_mode,
-                    visible: true,
-                    ..default()
-                }),
+        app.add_plugins(DefaultPlugins.set(render_plugin).set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "Planet Solar Sim (Test Mode)".into(),
+                present_mode,
+                visible: true,
                 ..default()
             }),
-        );
+            ..default()
+        }));
     } else {
-        app.add_plugins(
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "Planet Solar Sim".into(),
-                    present_mode,
-                    ..default()
-                }),
+        app.add_plugins(DefaultPlugins.set(render_plugin).set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "Planet Solar Sim".into(),
+                present_mode,
                 ..default()
             }),
-        );
+            ..default()
+        }));
     }
 
     app.add_plugins(FrameTimeDiagnosticsPlugin::default())
@@ -80,7 +82,8 @@ fn main() {
         .insert_resource(settings)
         .add_plugins(CameraPlugin)
         .add_plugins(TerrainPlugin::default())
-        .add_plugins(SpacePlugin);
+        .add_plugins(SpacePlugin)
+        .configure_sets(Update, er_terrain::TerrainUpdate.after(CameraUpdate));
 
     if is_bench_mode {
         let config = bench_config.unwrap();

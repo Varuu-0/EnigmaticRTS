@@ -3,3 +3,4 @@
 *.pdb
 AGENTS.md
 *.playwright-mcp
+/screenshots_retained/

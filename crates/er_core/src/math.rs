@@ -344,14 +344,24 @@ mod tests {
         // the face center is unambiguously owned by its own face.
         for face in 0..6 {
             for &(u, v) in &[
-                (0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0), (0.5, 0.5),
-                (0.0, 0.5), (1.0, 0.5), (0.5, 0.0), (0.5, 1.0),
+                (0.0, 0.0),
+                (0.0, 1.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (0.5, 0.5),
+                (0.0, 0.5),
+                (1.0, 0.5),
+                (0.5, 0.0),
+                (0.5, 1.0),
             ] {
                 let d = uv_to_dir(face, u, v);
                 let (f2, u2, v2) = dir_to_uv(d);
                 assert!(f2 < 6);
                 let d2 = uv_to_dir(f2, u2, v2);
-                assert!((d - d2).length() < 1e-9, "edge/corner dir round-trip failed at {face}/{u},{v}");
+                assert!(
+                    (d - d2).length() < 1e-9,
+                    "edge/corner dir round-trip failed at {face}/{u},{v}"
+                );
                 if u == 0.5 && v == 0.5 {
                     assert_eq!(f2, face, "face center not owned by its face");
                 }
@@ -408,10 +418,42 @@ mod tests {
             for i in 1..n - 1 {
                 for j in 1..n - 1 {
                     let k = CellKey { face, i, j, lod };
-                    assert_eq!(cell_neighbor(k, NeighborSide::NegU), CellKey { face, i: i - 1, j, lod });
-                    assert_eq!(cell_neighbor(k, NeighborSide::PosU), CellKey { face, i: i + 1, j, lod });
-                    assert_eq!(cell_neighbor(k, NeighborSide::NegV), CellKey { face, i, j: j - 1, lod });
-                    assert_eq!(cell_neighbor(k, NeighborSide::PosV), CellKey { face, i, j: j + 1, lod });
+                    assert_eq!(
+                        cell_neighbor(k, NeighborSide::NegU),
+                        CellKey {
+                            face,
+                            i: i - 1,
+                            j,
+                            lod
+                        }
+                    );
+                    assert_eq!(
+                        cell_neighbor(k, NeighborSide::PosU),
+                        CellKey {
+                            face,
+                            i: i + 1,
+                            j,
+                            lod
+                        }
+                    );
+                    assert_eq!(
+                        cell_neighbor(k, NeighborSide::NegV),
+                        CellKey {
+                            face,
+                            i,
+                            j: j - 1,
+                            lod
+                        }
+                    );
+                    assert_eq!(
+                        cell_neighbor(k, NeighborSide::PosV),
+                        CellKey {
+                            face,
+                            i,
+                            j: j + 1,
+                            lod
+                        }
+                    );
                 }
             }
         }
@@ -463,15 +505,24 @@ mod tests {
                 };
                 let edge_dir = uv_to_dir(face, eu, ev).normalize();
                 let (faxis, _) = face_axis_sign(face);
-                let adj_axis = if s == 0 || s == 1 { FACE_U_AXIS[face as usize] } else { FACE_V_AXIS[face as usize] };
+                let adj_axis = if s == 0 || s == 1 {
+                    FACE_U_AXIS[face as usize]
+                } else {
+                    FACE_V_AXIS[face as usize]
+                };
                 assert!(
-                    (axis_comp(edge_dir, faxis).abs() - axis_comp(edge_dir, adj_axis).abs()).abs() < 1e-9,
+                    (axis_comp(edge_dir, faxis).abs() - axis_comp(edge_dir, adj_axis).abs()).abs()
+                        < 1e-9,
                     "edge not on shared boundary"
                 );
                 // neighbor center must sit within ~1 cell of the shared edge
                 let ncenter = cell_to_dir(nb);
                 let ang = ncenter.dot(edge_dir).clamp(-1.0, 1.0).acos();
-                assert!(ang < 1.0 * cell_ang, "neighbor too far from edge: {ang} > {}", cell_ang);
+                assert!(
+                    ang < 1.0 * cell_ang,
+                    "neighbor too far from edge: {ang} > {}",
+                    cell_ang
+                );
             }
         }
     }
@@ -481,7 +532,11 @@ mod tests {
     fn cell_size_scales() {
         let r = 12000.0;
         for lod in 0..10u8 {
-            assert!((cell_size(lod, r) - r * std::f64::consts::FRAC_PI_2 / cells_per_edge(lod) as f64).abs() < 1e-9);
+            assert!(
+                (cell_size(lod, r) - r * std::f64::consts::FRAC_PI_2 / cells_per_edge(lod) as f64)
+                    .abs()
+                    < 1e-9
+            );
         }
         for lod in 0..9u8 {
             assert!((cell_size(lod, r) / cell_size(lod + 1, r) - 2.0).abs() < 1e-9);
@@ -496,7 +551,11 @@ mod tests {
         let r = world_to_render(p, origin);
         assert_eq!(r, RenderPos::new(0.5, 0.5, 0.5));
         assert!(!needs_recenter(p, origin, 1.0));
-        assert!(needs_recenter(WorldPos::new(102.0, 200.0, 300.0), origin, 1.0));
+        assert!(needs_recenter(
+            WorldPos::new(102.0, 200.0, 300.0),
+            origin,
+            1.0
+        ));
         let o2 = recenter(origin, WorldPos::new(123.4, 0.0, 0.0), 10.0);
         assert_eq!(o2, OriginOffset(DVec3::new(120.0, 0.0, 0.0)));
     }

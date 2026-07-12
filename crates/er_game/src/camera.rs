@@ -37,11 +37,17 @@ impl Default for OrbitCamera {
 
 pub struct CameraPlugin;
 
+/// Labels camera motion so terrain culling and test capture can use its current pose.
+#[derive(SystemSet, Clone, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct CameraUpdate;
+
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (orbit_camera_input, orbit_camera_update).chain(),
+            (orbit_camera_input, orbit_camera_update)
+                .chain()
+                .in_set(CameraUpdate),
         );
     }
 }
@@ -49,7 +55,15 @@ impl Plugin for CameraPlugin {
 use crate::space::{StarfieldComponent, SunLight, SunSphere};
 
 fn orbit_camera_update(
-    mut query: Query<(&mut OrbitCamera, &mut Transform), (With<Camera3d>, Without<SunLight>, Without<SunSphere>, Without<StarfieldComponent>)>,
+    mut query: Query<
+        (&mut OrbitCamera, &mut Transform),
+        (
+            With<Camera3d>,
+            Without<SunLight>,
+            Without<SunSphere>,
+            Without<StarfieldComponent>,
+        ),
+    >,
     time: Res<Time>,
     mut profiler: ResMut<FrameProfiler>,
 ) {

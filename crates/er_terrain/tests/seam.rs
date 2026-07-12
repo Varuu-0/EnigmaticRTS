@@ -4,9 +4,11 @@ use er_core::math::{cells_per_edge, CellKey};
 use er_core::seed::PlanetSeed;
 use er_terrain::{
     generate_chunk_mesh, ChunkComponent, TerrainMaterialUniform, ATTRIBUTE_GRID, ATTRIBUTE_MORPH,
+    ATTRIBUTE_NORMAL,
 };
 use er_world::elevation::{elevation_params, ElevationNoise, ElevationParams};
 use er_world::params::{climate_noise, planet_params, ClimateNoise, PlanetParams};
+use glam::Vec3;
 
 const ELEVATION_SCALE: f32 = 1000.0;
 
@@ -22,15 +24,31 @@ fn test_elevation() -> (ElevationNoise, ElevationParams, PlanetParams, ClimateNo
 #[test]
 fn chunk_mesh_vertex_and_index_counts() {
     let (noise, elev_params, pp, cn) = test_elevation();
-    let key = CellKey { face: 0, i: 0, j: 0, lod: 0 };
-    let mesh = generate_chunk_mesh(key, 12000.0, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
+    let key = CellKey {
+        face: 0,
+        i: 0,
+        j: 0,
+        lod: 0,
+    };
+    let mesh = generate_chunk_mesh(
+        key,
+        12000.0,
+        ELEVATION_SCALE,
+        &noise,
+        &elev_params,
+        &pp,
+        &cn,
+        None,
+    );
 
     let n = CHUNK_VERT_RES as usize;
     let quads = CHUNK_QUADS_PER_EDGE as usize;
     let expected_verts = n * n + 4 * n;
     let expected_indices = quads * quads * 6 + 4 * quads * 6;
 
-    let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION).expect("position attr");
+    let positions = mesh
+        .attribute(Mesh::ATTRIBUTE_POSITION)
+        .expect("position attr");
     match positions {
         VertexAttributeValues::Float32x3(vec) => {
             assert_eq!(vec.len(), expected_verts, "vertex count mismatch");
@@ -49,8 +67,22 @@ fn chunk_mesh_vertex_and_index_counts() {
 #[test]
 fn chunk_mesh_morph_values() {
     let (noise, elev_params, pp, cn) = test_elevation();
-    let key = CellKey { face: 0, i: 0, j: 0, lod: 0 };
-    let mesh = generate_chunk_mesh(key, 12000.0, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
+    let key = CellKey {
+        face: 0,
+        i: 0,
+        j: 0,
+        lod: 0,
+    };
+    let mesh = generate_chunk_mesh(
+        key,
+        12000.0,
+        ELEVATION_SCALE,
+        &noise,
+        &elev_params,
+        &pp,
+        &cn,
+        None,
+    );
 
     let n = CHUNK_VERT_RES as usize;
     let surface_count = n * n;
@@ -75,11 +107,39 @@ fn adjacent_chunks_share_edge_vertices() {
     let (noise, elev_params, pp, cn) = test_elevation();
     let radius = 12000.0;
     let lod = 2u8;
-    let key1 = CellKey { face: 0, i: 0, j: 0, lod };
-    let key2 = CellKey { face: 0, i: 1, j: 0, lod };
+    let key1 = CellKey {
+        face: 0,
+        i: 0,
+        j: 0,
+        lod,
+    };
+    let key2 = CellKey {
+        face: 0,
+        i: 1,
+        j: 0,
+        lod,
+    };
 
-    let mesh1 = generate_chunk_mesh(key1, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
-    let mesh2 = generate_chunk_mesh(key2, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
+    let mesh1 = generate_chunk_mesh(
+        key1,
+        radius,
+        ELEVATION_SCALE,
+        &noise,
+        &elev_params,
+        &pp,
+        &cn,
+        None,
+    );
+    let mesh2 = generate_chunk_mesh(
+        key2,
+        radius,
+        ELEVATION_SCALE,
+        &noise,
+        &elev_params,
+        &pp,
+        &cn,
+        None,
+    );
 
     let n = CHUNK_VERT_RES as usize;
 
@@ -109,8 +169,22 @@ fn adjacent_chunks_share_edge_vertices() {
 fn skirt_vertices_below_surface() {
     let (noise, elev_params, pp, cn) = test_elevation();
     let radius = 12000.0;
-    let key = CellKey { face: 0, i: 0, j: 0, lod: 3 };
-    let mesh = generate_chunk_mesh(key, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
+    let key = CellKey {
+        face: 0,
+        i: 0,
+        j: 0,
+        lod: 3,
+    };
+    let mesh = generate_chunk_mesh(
+        key,
+        radius,
+        ELEVATION_SCALE,
+        &noise,
+        &elev_params,
+        &pp,
+        &cn,
+        None,
+    );
 
     let n = CHUNK_VERT_RES as usize;
     let surface_count = n * n;
@@ -120,13 +194,122 @@ fn skirt_vertices_below_surface() {
         _ => panic!(),
     };
 
-    for i in surface_count..positions.len() {
-        let pos = positions[i];
-        let dist = (pos[0].powi(2) + pos[1].powi(2) + pos[2].powi(2)).sqrt();
+    for skirt_index in surface_count..positions.len() {
+        let strip = (skirt_index - surface_count) / n;
+        let surface_index = paired_surface_index(strip, (skirt_index - surface_count) % n, n);
+        let skirt = Vec3::from_array(positions[skirt_index]);
+        let surface = Vec3::from_array(positions[surface_index]);
         assert!(
-            dist < radius as f32,
-            "skirt vertex {i} at dist {dist} should be below surface radius {radius}"
+            skirt.length() < surface.length(),
+            "skirt vertex {skirt_index} should be below paired surface vertex {surface_index}"
         );
+    }
+}
+
+#[test]
+fn skirt_attributes_match_paired_surface_vertices() {
+    let (noise, elev_params, pp, cn) = test_elevation();
+    let n = CHUNK_VERT_RES as usize;
+    let surface_count = n * n;
+
+    for face in 0..6 {
+        let key = CellKey {
+            face,
+            i: 0,
+            j: 0,
+            lod: 1,
+        };
+        let mesh = generate_chunk_mesh(
+            key,
+            12000.0,
+            ELEVATION_SCALE,
+            &noise,
+            &elev_params,
+            &pp,
+            &cn,
+            None,
+        );
+        let positions = positions(&mesh);
+        let normals = match mesh.attribute(ATTRIBUTE_NORMAL).unwrap() {
+            VertexAttributeValues::Float32x3(values) => values,
+            _ => panic!("expected Float32x3 normals"),
+        };
+
+        for strip in 0..4 {
+            let strip_start = surface_count + strip * n;
+            for skirt_index in strip_start..strip_start + n {
+                let surface_index = paired_surface_index(strip, skirt_index - strip_start, n);
+                assert_eq!(
+                    normals[skirt_index], normals[surface_index],
+                    "face {face}: skirt normal {skirt_index} must reuse surface normal {surface_index}"
+                );
+
+                let skirt = Vec3::from_array(positions[skirt_index]);
+                let surface = Vec3::from_array(positions[surface_index]);
+                assert!(
+                    skirt.length() < surface.length(),
+                    "face {face}: skirt vertex {skirt_index} must be below paired surface vertex {surface_index}"
+                );
+                assert!(
+                    surface.length() - skirt.length() <= ELEVATION_SCALE + 0.1,
+                    "face {face}: skirt vertex {skirt_index} exceeds the elevation-scale depth cap"
+                );
+                assert!(
+                    skirt.normalize().distance(surface.normalize()) < 1e-5,
+                    "face {face}: skirt vertex {skirt_index} must remain radially aligned with surface vertex {surface_index}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn skirt_triangles_face_outward_on_every_face() {
+    let (noise, elev_params, pp, cn) = test_elevation();
+    let n = CHUNK_VERT_RES as usize;
+    let quads = CHUNK_QUADS_PER_EDGE as usize;
+    let surface_index_count = quads * quads * 6;
+    let strip_index_count = quads * 6;
+
+    for face in 0..6 {
+        let key = CellKey {
+            face,
+            i: 0,
+            j: 0,
+            lod: 0,
+        };
+        let mesh = generate_chunk_mesh(
+            key,
+            12000.0,
+            ELEVATION_SCALE,
+            &noise,
+            &elev_params,
+            &pp,
+            &cn,
+            None,
+        );
+        let positions = positions(&mesh);
+        let indices = match mesh.indices().unwrap() {
+            Indices::U32(values) => values,
+            _ => panic!("expected U32 indices"),
+        };
+
+        for (strip, edge_indices) in indices[surface_index_count..]
+            .chunks_exact(strip_index_count)
+            .enumerate()
+        {
+            let outward = skirt_outward_direction(&positions, n, strip);
+            for triangle in edge_indices.chunks_exact(3) {
+                let a = Vec3::from_array(positions[triangle[0] as usize]);
+                let b = Vec3::from_array(positions[triangle[1] as usize]);
+                let c = Vec3::from_array(positions[triangle[2] as usize]);
+                let normal = (b - a).cross(c - a);
+                assert!(
+                    normal.dot(outward) > 0.0,
+                    "face {face}, skirt strip {strip}: triangle {triangle:?} faces inward"
+                );
+            }
+        }
     }
 }
 
@@ -138,11 +321,39 @@ fn face_edge_chunks_adjacent_across_boundary() {
     let cells = cells_per_edge(lod);
     let n = CHUNK_VERT_RES as usize;
 
-    let key1 = CellKey { face: 0, i: cells - 1, j: cells / 2, lod };
-    let mesh1 = generate_chunk_mesh(key1, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
+    let key1 = CellKey {
+        face: 0,
+        i: cells - 1,
+        j: cells / 2,
+        lod,
+    };
+    let mesh1 = generate_chunk_mesh(
+        key1,
+        radius,
+        ELEVATION_SCALE,
+        &noise,
+        &elev_params,
+        &pp,
+        &cn,
+        None,
+    );
 
-    let key2 = CellKey { face: 2, i: cells - 1, j: cells / 2, lod };
-    let mesh2 = generate_chunk_mesh(key2, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
+    let key2 = CellKey {
+        face: 2,
+        i: cells - 1,
+        j: cells / 2,
+        lod,
+    };
+    let mesh2 = generate_chunk_mesh(
+        key2,
+        radius,
+        ELEVATION_SCALE,
+        &noise,
+        &elev_params,
+        &pp,
+        &cn,
+        None,
+    );
 
     let pos1 = match mesh1.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
         VertexAttributeValues::Float32x3(v) => v,
@@ -170,7 +381,12 @@ fn face_edge_chunks_adjacent_across_boundary() {
 
 #[test]
 fn chunk_component_neighbor_depth_default() {
-    let key = CellKey { face: 0, i: 1, j: 2, lod: 3 };
+    let key = CellKey {
+        face: 0,
+        i: 1,
+        j: 2,
+        lod: 3,
+    };
     let chunk = ChunkComponent::new(key);
     assert_eq!(chunk.neighbor_depth, [3, 3, 3, 3]);
 }
@@ -181,7 +397,12 @@ fn material_uniform_for_chunk_sets_edge_stitch_data() {
     let params = elevation_params(seed);
     let pp = planet_params(seed);
     let base = TerrainMaterialUniform::from_params(&params, 12000.0, 1000.0, &pp);
-    let key = CellKey { face: 2, i: 1, j: 0, lod: 5 };
+    let key = CellKey {
+        face: 2,
+        i: 1,
+        j: 0,
+        lod: 5,
+    };
     let cu = base.for_chunk(key);
     assert_eq!(cu.face, 2);
     assert_eq!(cu.chunk_depth, 5);
@@ -198,8 +419,22 @@ fn material_uniform_for_chunk_sets_edge_stitch_data() {
 #[test]
 fn grid_attribute_values() {
     let (noise, elev_params, pp, cn) = test_elevation();
-    let key = CellKey { face: 0, i: 0, j: 0, lod: 0 };
-    let mesh = generate_chunk_mesh(key, 12000.0, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None);
+    let key = CellKey {
+        face: 0,
+        i: 0,
+        j: 0,
+        lod: 0,
+    };
+    let mesh = generate_chunk_mesh(
+        key,
+        12000.0,
+        ELEVATION_SCALE,
+        &noise,
+        &elev_params,
+        &pp,
+        &cn,
+        None,
+    );
     let n = CHUNK_VERT_RES as usize;
     let n1 = (n - 1) as u32;
 
@@ -235,16 +470,66 @@ fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     ]
 }
 
+fn paired_surface_index(strip: usize, k: usize, n: usize) -> usize {
+    match strip {
+        0 => k,
+        1 => (n - 1) * n + k,
+        2 => k * n,
+        3 => k * n + (n - 1),
+        _ => panic!("invalid skirt strip {strip}"),
+    }
+}
+
+fn skirt_outward_direction(positions: &[[f32; 3]], n: usize, strip: usize) -> Vec3 {
+    let center = Vec3::from_array(positions[(n / 2) * n + n / 2]).normalize();
+    let edge_surface_index = match strip {
+        0 => n / 2,
+        1 => (n - 1) * n + n / 2,
+        2 => (n / 2) * n,
+        3 => (n / 2) * n + (n - 1),
+        _ => panic!("invalid skirt strip {strip}"),
+    };
+    (Vec3::from_array(positions[edge_surface_index]).normalize() - center).normalize()
+}
+
 #[test]
 fn finer_even_edge_vertices_coincide_with_coarser() {
     let (noise, elev_params, pp, cn) = test_elevation();
     let radius = 12000.0;
     let n = CHUNK_VERT_RES as usize;
-    let fine = CellKey { face: 0, i: 1, j: 0, lod: 2 };
-    let coarse = CellKey { face: 0, i: 1, j: 0, lod: 1 };
+    let fine = CellKey {
+        face: 0,
+        i: 1,
+        j: 0,
+        lod: 2,
+    };
+    let coarse = CellKey {
+        face: 0,
+        i: 1,
+        j: 0,
+        lod: 1,
+    };
 
-    let pf = positions(&generate_chunk_mesh(fine, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None));
-    let pc = positions(&generate_chunk_mesh(coarse, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None));
+    let pf = positions(&generate_chunk_mesh(
+        fine,
+        radius,
+        ELEVATION_SCALE,
+        &noise,
+        &elev_params,
+        &pp,
+        &cn,
+        None,
+    ));
+    let pc = positions(&generate_chunk_mesh(
+        coarse,
+        radius,
+        ELEVATION_SCALE,
+        &noise,
+        &elev_params,
+        &pp,
+        &cn,
+        None,
+    ));
 
     for k in 0..=(n / 2) {
         let gj_fine = 2 * k;
@@ -263,11 +548,39 @@ fn edge_stitch_snaps_inbetween_to_coarse_edge() {
     let (noise, elev_params, pp, cn) = test_elevation();
     let radius = 12000.0;
     let n = CHUNK_VERT_RES as usize;
-    let fine = CellKey { face: 0, i: 1, j: 0, lod: 2 };
-    let coarse = CellKey { face: 0, i: 1, j: 0, lod: 1 };
+    let fine = CellKey {
+        face: 0,
+        i: 1,
+        j: 0,
+        lod: 2,
+    };
+    let coarse = CellKey {
+        face: 0,
+        i: 1,
+        j: 0,
+        lod: 1,
+    };
 
-    let pf = positions(&generate_chunk_mesh(fine, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None));
-    let pc = positions(&generate_chunk_mesh(coarse, radius, ELEVATION_SCALE, &noise, &elev_params, &pp, &cn, None));
+    let pf = positions(&generate_chunk_mesh(
+        fine,
+        radius,
+        ELEVATION_SCALE,
+        &noise,
+        &elev_params,
+        &pp,
+        &cn,
+        None,
+    ));
+    let pc = positions(&generate_chunk_mesh(
+        coarse,
+        radius,
+        ELEVATION_SCALE,
+        &noise,
+        &elev_params,
+        &pp,
+        &cn,
+        None,
+    ));
 
     for k in 0..(n / 2) {
         let gj_lo = 2 * k;
@@ -284,6 +597,9 @@ fn edge_stitch_snaps_inbetween_to_coarse_edge() {
             gj_lo + 1
         );
         let raw_diff = manhattan(pf[fine_mid], coarse_mid);
-        assert!(raw_diff > 1e-3, "in-between vert already on coarse edge (raw_diff={raw_diff})");
+        assert!(
+            raw_diff > 1e-3,
+            "in-between vert already on coarse edge (raw_diff={raw_diff})"
+        );
     }
 }

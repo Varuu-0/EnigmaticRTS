@@ -12,7 +12,10 @@ use er_core::math::{cell_size, cell_to_dir, CellKey};
 use er_core::seed::PlanetSeed;
 use er_world::cache::WorldCache;
 use er_world::elevation::{elevation_params, ElevationNoise, ElevationParams};
-use er_world::params::{climate_noise as make_climate_noise, planet_params as make_planet_params, ClimateNoise, PlanetParams};
+use er_world::params::{
+    climate_noise as make_climate_noise, planet_params as make_planet_params, ClimateNoise,
+    PlanetParams,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,8 +26,11 @@ use crate::debug::TerrainDebugInfo;
 use crate::lod::{chunk_camera_distance, should_merge_parent, should_split};
 use crate::material::{TerrainMaterial, TerrainMaterialUniform, FRAGMENT_SHADER, VERTEX_SHADER};
 use crate::mesh_gen::generate_chunk_mesh;
-use crate::ocean::{OceanMaterial, setup_ocean, update_ocean_time};
-use crate::quadtree::{children_of, parent_of, root_chunks, ActiveChunks, RetainedMerge, RetainedMerges, RetainedSplit, RetainedSplits};
+use crate::ocean::{setup_ocean, update_ocean_time, OceanMaterial};
+use crate::quadtree::{
+    children_of, parent_of, root_chunks, ActiveChunks, RetainedMerge, RetainedMerges,
+    RetainedSplit, RetainedSplits,
+};
 
 #[derive(Resource, Clone, Copy)]
 pub struct SunDirection(pub Vec3);
@@ -366,7 +372,9 @@ fn process_lod_queue(
     }
     debug.pending_splits = splits_done;
 
-    let over_cap = active_chunks.len().saturating_sub(terrain_state.active_chunk_cap);
+    let over_cap = active_chunks
+        .len()
+        .saturating_sub(terrain_state.active_chunk_cap);
     let merge_budget = if over_cap > 0 {
         (budget * 4).max(over_cap * 4)
     } else {
@@ -484,7 +492,10 @@ fn process_lod_queue(
 
 fn cull_chunks(
     mut camera_query: Query<(&GlobalTransform, &mut Projection), With<Camera3d>>,
-    mut chunk_query: Query<(&ChunkComponent, &mut Visibility), (With<Mesh3d>, Without<HoldHidden>, Without<HoldForMerge>)>,
+    mut chunk_query: Query<
+        (&ChunkComponent, &mut Visibility),
+        (With<Mesh3d>, Without<HoldHidden>, Without<HoldForMerge>),
+    >,
     terrain_state: Res<TerrainState>,
     mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
@@ -545,8 +556,8 @@ fn cull_chunks(
 
         if let Some((cam_pos, forward, right, up, fov_cos, aspect)) = frustum {
             let sphere_center = chunk_center.as_vec3();
-            let sphere_radius =
-                cell_size(key.lod, terrain_state.planet_radius) as f32 + terrain_state.elevation_scale * 3.0;
+            let sphere_radius = cell_size(key.lod, terrain_state.planet_radius) as f32
+                + terrain_state.elevation_scale * 3.0;
             if frustum_cull_sphere(
                 sphere_center,
                 sphere_radius,
@@ -570,12 +581,22 @@ fn cull_chunks(
 fn update_debug_info(
     active_chunks: Res<ActiveChunks>,
     pending: Res<PendingChunkMeshes>,
+    chunk_query: Query<&Visibility, With<ChunkComponent>>,
     mut debug: ResMut<TerrainDebugInfo>,
     profiler: Res<crate::profiler::FrameProfiler>,
 ) {
     debug.active_chunks = active_chunks.len();
-    debug.max_depth = active_chunks.chunks.keys().map(|k| k.lod).max().unwrap_or(0);
+    debug.max_depth = active_chunks
+        .chunks
+        .keys()
+        .map(|k| k.lod)
+        .max()
+        .unwrap_or(0);
     debug.pending_meshes = pending.0.len();
+    debug.visible_chunks = chunk_query
+        .iter()
+        .filter(|visibility| matches!(visibility, Visibility::Visible))
+        .count();
     debug.frame_time_ms = profiler.total().as_secs_f32() * 1000.0;
 }
 
@@ -774,7 +795,14 @@ fn finalize_retained_merges(
 fn update_neighbor_lod(
     active_chunks: Res<ActiveChunks>,
     mut materials: ResMut<Assets<TerrainMaterial>>,
-    mut chunk_query: Query<(&mut ChunkComponent, &MeshMaterial3d<TerrainMaterial>, &Visibility), With<Mesh3d>>,
+    mut chunk_query: Query<
+        (
+            &mut ChunkComponent,
+            &MeshMaterial3d<TerrainMaterial>,
+            &Visibility,
+        ),
+        With<Mesh3d>,
+    >,
     mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
     let t0 = Instant::now();

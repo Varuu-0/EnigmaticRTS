@@ -149,6 +149,7 @@ fn run_benchmark(
     time: Res<Time>,
     mut camera_query: Query<(&mut OrbitCamera, &mut Transform), With<Camera3d>>,
     debug_info: Res<TerrainDebugInfo>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     if config.completed {
         return;
@@ -159,7 +160,7 @@ fn run_benchmark(
         write_report(&config, &report);
         config.completed = true;
         info!("Benchmark completed.\n{}", report);
-        std::process::exit(0);
+        exit.write(AppExit::Success);
     }
 
     let scenario_name = config.scenarios[config.current_index].name.clone();
@@ -168,10 +169,7 @@ fn run_benchmark(
 
     // Set camera position at the start of each scenario (frame 0 of warmup).
     if config.frames_in_phase == 0 && config.phase == BenchPhase::Warmup {
-        info!(
-            "Benchmark scenario: {} (distance={})",
-            scenario_name, dist
-        );
+        info!("Benchmark scenario: {} (distance={})", scenario_name, dist);
         if let Ok((mut orbit, mut transform)) = camera_query.single_mut() {
             orbit.distance = dist;
             orbit.smoothed_distance = dist;
@@ -258,7 +256,11 @@ fn generate_report(config: &BenchConfig) -> String {
 
     for result in &config.results {
         let avg = result.durations.iter().sum::<f32>() / result.durations.len().max(1) as f32;
-        let min = result.durations.iter().cloned().fold(f32::INFINITY, f32::min);
+        let min = result
+            .durations
+            .iter()
+            .cloned()
+            .fold(f32::INFINITY, f32::min);
         let max = result.durations.iter().cloned().fold(0.0_f32, f32::max);
         let p95 = percentile(&result.durations, 95.0);
         let fps = 1000.0 / avg.max(0.001);

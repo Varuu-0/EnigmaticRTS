@@ -1,5 +1,5 @@
-use bevy::render::mesh::{Indices, Mesh, MeshVertexAttribute};
 use bevy::asset::RenderAssetUsages;
+use bevy::render::mesh::{Indices, Mesh, MeshVertexAttribute};
 use bevy::render::render_resource::{PrimitiveTopology, VertexFormat};
 use er_core::config::{CHUNK_QUADS_PER_EDGE, CHUNK_VERT_RES};
 use er_core::math::{cell_size, cells_per_edge, uv_to_dir, CellKey, FACE_U, FACE_V};
@@ -33,6 +33,10 @@ pub const ATTRIBUTE_NORMAL: MeshVertexAttribute =
 pub const ATTRIBUTE_TEMPERATURE: MeshVertexAttribute =
     MeshVertexAttribute::new("Temperature", 988540925, VertexFormat::Float32);
 
+// Skirts only conceal sub-pixel LOD cracks. Scaling them directly with a root
+// chunk makes their radial walls visible beyond the planet silhouette.
+const SKIRT_CELL_DEPTH_FRACTION: f64 = 0.02;
+
 fn append_tri(indices: &mut Vec<u32>, a: u32, b: u32, c: u32, flip: bool) {
     if flip {
         indices.extend_from_slice(&[a, c, b]);
@@ -63,7 +67,11 @@ fn compute_cached_vertex(
     CachedWorldData {
         elevation: elev,
         low_freq_elev: split.low_freq_elev as f32,
-        warped_dir: [split.warped_dir.x as f32, split.warped_dir.y as f32, split.warped_dir.z as f32],
+        warped_dir: [
+            split.warped_dir.x as f32,
+            split.warped_dir.y as f32,
+            split.warped_dir.z as f32,
+        ],
         moisture: moist as f32,
         biome: b,
         mountain_influence: split.mountain_influence as f32,
@@ -105,7 +113,11 @@ fn vertex_data(
         let temp = temperature(dir, elev, planet_params, climate_noise);
         VertexData {
             low_freq: split.low_freq_elev as f32,
-            warped_dir: [split.warped_dir.x as f32, split.warped_dir.y as f32, split.warped_dir.z as f32],
+            warped_dir: [
+                split.warped_dir.x as f32,
+                split.warped_dir.y as f32,
+                split.warped_dir.z as f32,
+            ],
             moisture: moist as f32,
             elevation: elev,
             temperature: temp as f32,
@@ -122,9 +134,11 @@ fn cached_elevation(
     cache: Option<&WorldCache>,
 ) -> f64 {
     if let Some(cache) = cache {
-        cache.get_or_insert(dir, || {
-            compute_cached_vertex(dir, noise, elev_params, planet_params, climate_noise)
-        }).elevation
+        cache
+            .get_or_insert(dir, || {
+                compute_cached_vertex(dir, noise, elev_params, planet_params, climate_noise)
+            })
+            .elevation
     } else {
         elevation(dir, noise, elev_params)
     }
@@ -187,7 +201,8 @@ pub fn generate_chunk_mesh(
     let v_min = key.j as f64 / cells;
     let v_max = (key.j + 1) as f64 / cells;
 
-    let skirt_depth = cell_size(key.lod, radius) * 0.2;
+    let skirt_depth = (cell_size(key.lod, radius) * SKIRT_CELL_DEPTH_FRACTION)
+        .min(elevation_scale.abs().max(1.0) as f64);
 
     let total = n * n + 4 * n;
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(total);
@@ -369,8 +384,8 @@ pub fn generate_chunk_mesh(
         let g1 = ((n - 1) * n + gi + 1) as u32;
         let s0 = (bot_skirt + gi) as u32;
         let s1 = (bot_skirt + gi + 1) as u32;
-        append_tri(&mut indices, g0, s0, s1, flip_winding);
-        append_tri(&mut indices, g0, s1, g1, flip_winding);
+        append_tri(&mut indices, g0, s1, s0, flip_winding);
+        append_tri(&mut indices, g0, g1, s1, flip_winding);
     }
 
     for gj in 0..quads {
@@ -378,8 +393,8 @@ pub fn generate_chunk_mesh(
         let g1 = ((gj + 1) * n) as u32;
         let s0 = (left_skirt + gj) as u32;
         let s1 = (left_skirt + gj + 1) as u32;
-        append_tri(&mut indices, g0, s0, s1, flip_winding);
-        append_tri(&mut indices, g0, s1, g1, flip_winding);
+        append_tri(&mut indices, g0, s1, s0, flip_winding);
+        append_tri(&mut indices, g0, g1, s1, flip_winding);
     }
 
     for gj in 0..quads {
@@ -387,8 +402,8 @@ pub fn generate_chunk_mesh(
         let g1 = ((gj + 1) * n + (n - 1)) as u32;
         let s0 = (right_skirt + gj) as u32;
         let s1 = (right_skirt + gj + 1) as u32;
-        append_tri(&mut indices, g0, s1, s0, flip_winding);
-        append_tri(&mut indices, g0, g1, s1, flip_winding);
+        append_tri(&mut indices, g0, s0, s1, flip_winding);
+        append_tri(&mut indices, g0, s1, g1, flip_winding);
     }
 
     let mut mesh = Mesh::new(

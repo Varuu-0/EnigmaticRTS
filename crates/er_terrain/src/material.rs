@@ -1,4 +1,3 @@
-use std::sync::OnceLock;
 use bevy::asset::{Asset, Handle};
 use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey};
 use bevy::reflect::TypePath;
@@ -9,10 +8,11 @@ use bevy::render::render_resource::{
 use bevy::shader::{Shader, ShaderRef};
 use er_core::math::{cells_per_edge, CellKey};
 use er_world::elevation::ElevationParams;
+use std::sync::OnceLock;
 
 use crate::mesh_gen::{
-    ATTRIBUTE_GRID, ATTRIBUTE_MORPH, ATTRIBUTE_LOW_FREQ_ELEV, ATTRIBUTE_WARPED_DIR,
-    ATTRIBUTE_MOISTURE_LOW, ATTRIBUTE_ELEVATION, ATTRIBUTE_NORMAL, ATTRIBUTE_TEMPERATURE,
+    ATTRIBUTE_ELEVATION, ATTRIBUTE_GRID, ATTRIBUTE_LOW_FREQ_ELEV, ATTRIBUTE_MOISTURE_LOW,
+    ATTRIBUTE_MORPH, ATTRIBUTE_NORMAL, ATTRIBUTE_TEMPERATURE, ATTRIBUTE_WARPED_DIR,
 };
 
 pub static VERTEX_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
@@ -71,6 +71,7 @@ pub struct TerrainMaterialUniform {
     pub camera_pos_x: f32,
     pub camera_pos_y: f32,
     pub camera_pos_z: f32,
+    pub debug_skirt_highlight: f32,
 }
 
 impl TerrainMaterialUniform {
@@ -132,6 +133,7 @@ impl TerrainMaterialUniform {
             camera_pos_x: 0.0,
             camera_pos_y: 0.0,
             camera_pos_z: 0.0,
+            debug_skirt_highlight: 0.0,
         }
     }
 
@@ -161,11 +163,21 @@ pub struct TerrainMaterial {
 
 impl Material for TerrainMaterial {
     fn vertex_shader() -> ShaderRef {
-        ShaderRef::Handle(VERTEX_SHADER.get().expect("terrain vertex shader not initialized").clone())
+        ShaderRef::Handle(
+            VERTEX_SHADER
+                .get()
+                .expect("terrain vertex shader not initialized")
+                .clone(),
+        )
     }
 
     fn fragment_shader() -> ShaderRef {
-        ShaderRef::Handle(FRAGMENT_SHADER.get().expect("terrain fragment shader not initialized").clone())
+        ShaderRef::Handle(
+            FRAGMENT_SHADER
+                .get()
+                .expect("terrain fragment shader not initialized")
+                .clone(),
+        )
     }
 
     fn specialize(

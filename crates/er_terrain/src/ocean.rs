@@ -1,18 +1,18 @@
 use bevy::asset::{Asset, Handle, RenderAssetUsages};
+use bevy::ecs::resource::Resource;
+use bevy::ecs::system::{Commands, Res, ResMut};
 use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey};
+use bevy::prelude::*;
 use bevy::reflect::TypePath;
 use bevy::render::mesh::{Indices, Mesh, MeshVertexBufferLayoutRef};
 use bevy::render::render_resource::{
-    AsBindGroup, BlendState, ColorWrites, Face, PrimitiveTopology,
-    RenderPipelineDescriptor, SpecializedMeshPipelineError,
+    AsBindGroup, BlendState, ColorWrites, Face, PrimitiveTopology, RenderPipelineDescriptor,
+    SpecializedMeshPipelineError,
 };
 use bevy::shader::{Shader, ShaderRef};
-use bevy::ecs::system::{Commands, Res, ResMut};
-use bevy::ecs::resource::Resource;
-use bevy::prelude::*;
-use std::sync::OnceLock;
 use er_world::elevation::ElevationParams;
 use er_world::params::PlanetParams;
+use std::sync::OnceLock;
 
 pub static OCEAN_VERTEX_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
 pub static OCEAN_FRAGMENT_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
@@ -36,9 +36,9 @@ impl Material for OcclusionMaterial {
         layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        let vertex_layout = layout.0.get_layout(&[
-            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
-        ])?;
+        let vertex_layout = layout
+            .0
+            .get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         // Render both sides to create full occlusion sphere
         descriptor.primitive.cull_mode = None;
@@ -136,11 +136,21 @@ pub struct OceanMaterial {
 
 impl Material for OceanMaterial {
     fn vertex_shader() -> ShaderRef {
-        ShaderRef::Handle(OCEAN_VERTEX_SHADER.get().expect("ocean vertex shader not initialized").clone())
+        ShaderRef::Handle(
+            OCEAN_VERTEX_SHADER
+                .get()
+                .expect("ocean vertex shader not initialized")
+                .clone(),
+        )
     }
 
     fn fragment_shader() -> ShaderRef {
-        ShaderRef::Handle(OCEAN_FRAGMENT_SHADER.get().expect("ocean fragment shader not initialized").clone())
+        ShaderRef::Handle(
+            OCEAN_FRAGMENT_SHADER
+                .get()
+                .expect("ocean fragment shader not initialized")
+                .clone(),
+        )
     }
 
     fn specialize(
@@ -149,14 +159,17 @@ impl Material for OceanMaterial {
         layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        let vertex_layout = layout.0.get_layout(&[
-            Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
-        ])?;
+        let vertex_layout = layout
+            .0
+            .get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         descriptor.primitive.cull_mode = Some(Face::Back);
         // Enable alpha blending so transparent pixels (over land) don't write color
         // but still write depth to occlude far-side terrain
-        descriptor.fragment.as_mut().unwrap().targets[0].as_mut().unwrap().blend = Some(BlendState::ALPHA_BLENDING);
+        descriptor.fragment.as_mut().unwrap().targets[0]
+            .as_mut()
+            .unwrap()
+            .blend = Some(BlendState::ALPHA_BLENDING);
         Ok(())
     }
 }
@@ -228,9 +241,7 @@ pub fn setup_ocean(
     let fragment_handle = shaders.add(Shader::from_wgsl(fragment_source, "ocean_fragment"));
     let _ = OCEAN_FRAGMENT_SHADER.set(fragment_handle);
 
-    let ocean_radius = terrain_state.planet_radius as f32
-        + terrain_state.elevation_scale
-        + 100.0;
+    let ocean_radius = terrain_state.planet_radius as f32 + terrain_state.elevation_scale + 100.0;
 
     let uniform = OceanMaterialUniform::from_params(
         &terrain_state.params,

@@ -102,10 +102,22 @@ async fn run_gpu(faces: &[u32], us: &[f32], vs: &[f32]) -> Option<Vec<[f32; 4]>>
         label: Some("bind_group"),
         layout: &layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: faces_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: us_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 2, resource: vs_buf.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 3, resource: out_buf.as_entire_binding() },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: faces_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: us_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: vs_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: out_buf.as_entire_binding(),
+            },
         ],
     });
 
@@ -156,8 +168,16 @@ fn parity_uv_to_dir_wgsl_vs_cpu() {
         assert!(
             diff <= 1e-5,
             "uv_to_dir parity failed at i={}: face={} u={} v={} cpu={:?} gpu={:?} diff={diff}",
-            i, faces[i], us[i], vs[i], cpu, gpu_dir
+            i,
+            faces[i],
+            us[i],
+            vs[i],
+            cpu,
+            gpu_dir
         );
     }
-    eprintln!("uv_to_dir max diff: {max_diff} (tolerance 1e-5) over {} samples", faces.len());
+    eprintln!(
+        "uv_to_dir max diff: {max_diff} (tolerance 1e-5) over {} samples",
+        faces.len()
+    );
 }

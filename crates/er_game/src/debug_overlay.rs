@@ -21,8 +21,7 @@ impl Plugin for DebugOverlayPlugin {
             .add_systems(PostUpdate, update_debug_text)
             .add_systems(
                 Update,
-                (toggle_lod_debug, draw_lod_gizmos)
-                    .after(er_terrain::TerrainUpdate),
+                (toggle_lod_debug, draw_lod_gizmos).after(er_terrain::TerrainUpdate),
             );
     }
 }
@@ -61,8 +60,7 @@ fn update_debug_text(
         let mut sorted: Vec<(&'static str, std::time::Duration)> = profiler.timings.clone();
         sorted.sort_by(|a, b| b.1.cmp(&a.1));
 
-        let total_profiled: std::time::Duration =
-            sorted.iter().map(|(_, d)| *d).sum();
+        let total_profiled: std::time::Duration = sorted.iter().map(|(_, d)| *d).sum();
 
         let sun = sun_direction.0;
         let day_length = DEFAULT_DAY_LENGTH_SEC as f32;
@@ -76,8 +74,12 @@ fn update_debug_text(
         let mut lines = String::new();
         lines.push_str(&format!(
             "FPS: {:.0} | Frame: {:.1}ms | Chunks: {} | LOD: {} | S/M: {}/{}\n",
-            fps, frame_ms, debug.active_chunks, debug.max_depth,
-            debug.pending_splits, debug.pending_merges
+            fps,
+            frame_ms,
+            debug.active_chunks,
+            debug.max_depth,
+            debug.pending_splits,
+            debug.pending_merges
         ));
         lines.push_str(&format!(
             "Sun: ({:.2}, {:.2}, {:.2}) | Day: {:.0}% | Speed: {}\n",
@@ -99,10 +101,7 @@ fn update_debug_text(
             let ms = duration.as_secs_f32() * 1000.0;
             let bar_len = ((ms / max_ms) * 30.0) as usize;
             let bar = "#".repeat(bar_len);
-            lines.push_str(&format!(
-                "  {:<16} {:>6.2}ms {}\n",
-                name, ms, bar
-            ));
+            lines.push_str(&format!("  {:<16} {:>6.2}ms {}\n", name, ms, bar));
         }
 
         *text = Text::new(lines);
@@ -143,7 +142,13 @@ fn draw_lod_gizmos(
         let c3 = uv_to_dir(key.face, u0, v1);
 
         let to_render = |dir| world_to_render(dir_to_surface(dir, radius, 0.0), origin).0;
-        let pts = [to_render(c0), to_render(c1), to_render(c2), to_render(c3), to_render(c0)];
+        let pts = [
+            to_render(c0),
+            to_render(c1),
+            to_render(c2),
+            to_render(c3),
+            to_render(c0),
+        ];
 
         let hue = (key.lod as f32 / MAX_QUADTREE_DEPTH as f32) * 360.0;
         let color = Color::hsl(hue, 0.9, 0.5);

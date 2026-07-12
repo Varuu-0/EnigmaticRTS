@@ -82,9 +82,7 @@ pub fn load_settings() -> GraphicsSettings {
 pub fn save_settings(s: &GraphicsSettings) {
     let text = format!(
         "vsync={}\nmsaa={}\nfullscreen={}\n",
-        s.vsync as u8,
-        s.msaa,
-        s.fullscreen as u8
+        s.vsync as u8, s.msaa, s.fullscreen as u8
     );
     let _ = fs::write(settings_path(), text);
 }

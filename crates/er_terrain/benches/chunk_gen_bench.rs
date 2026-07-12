@@ -36,9 +36,9 @@ fn bench_generate_chunk_mesh(c: &mut Criterion) {
                     black_box(elevation_scale),
                     black_box(&noise),
                     black_box(&elev_params),
-                black_box(&pp),
-                black_box(&cn),
-                None,
+                    black_box(&pp),
+                    black_box(&cn),
+                    None,
                 ))
             })
         });

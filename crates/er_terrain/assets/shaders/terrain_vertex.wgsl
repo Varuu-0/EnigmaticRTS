@@ -22,6 +22,7 @@ struct VertexOutput {
     @location(4) low_freq_elev: f32,
     @location(5) temperature: f32,
     @location(6) normal: vec3<f32>,
+    @location(7) morph: f32,
 };
 
 // FACE_CORNER/FACE_U/FACE_V + uv_to_dir live in spherify.wgsl (prepended before
@@ -148,9 +149,16 @@ fn vertex(in: Vertex) -> VertexOutput {
     var displaced = in.position;
     var final_elev = in.elevation;
 
+    let s = stitch(in.grid.x, in.grid.y, displaced, final_elev, material, make_elev_params(material));
     if (in.morph > 0.5) {
-        let s = stitch(in.grid.x, in.grid.y, displaced, final_elev, material, make_elev_params(material));
         displaced = s.pos;
+        final_elev = s.elev;
+    } else {
+        // Preserve the CPU-generated skirt depth while moving its top edge with
+        // the stitched surface edge. This prevents coarse/fine T-junctions.
+        let base_surface_radius = material.planet_radius + final_elev * material.elevation_scale;
+        let skirt_depth = max(base_surface_radius - length(in.position), 0.0);
+        displaced = normalize(s.pos) * max(length(s.pos) - skirt_depth, 0.0);
         final_elev = s.elev;
     }
 
@@ -158,10 +166,11 @@ fn vertex(in: Vertex) -> VertexOutput {
     out.world_position = world_pos.xyz;
     out.clip_position = mesh_position_local_to_clip(model, vec4<f32>(displaced, 1.0));
     out.elevation = final_elev;
-    out.dir = normalize(in.position);
+    out.dir = normalize(displaced);
     out.moisture = in.moisture_low;
     out.low_freq_elev = in.low_freq_elev;
     out.temperature = in.temperature;
     out.normal = in.normal;
+    out.morph = in.morph;
     return out;
 }

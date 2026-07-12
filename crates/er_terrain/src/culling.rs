@@ -10,11 +10,7 @@ pub fn chunk_half_angle(key: CellKey, planet_radius: f64) -> f64 {
     (size / planet_radius).min(1.0).asin() * 0.5
 }
 
-pub fn is_below_horizon(
-    key: CellKey,
-    camera_pos: DVec3,
-    planet_radius: f64,
-) -> bool {
+pub fn is_below_horizon(key: CellKey, camera_pos: DVec3, planet_radius: f64) -> bool {
     let d = camera_pos.length();
     if d < 1.0 {
         return false;

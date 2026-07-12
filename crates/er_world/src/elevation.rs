@@ -186,8 +186,14 @@ mod tests {
         let noise = ElevationNoise::new(&params);
         let dirs = rand_dirs(0xABCDEF, 1000);
 
-        let pass1: Vec<f64> = dirs.iter().map(|d| elevation(*d, &noise, &params)).collect();
-        let pass2: Vec<f64> = dirs.iter().map(|d| elevation(*d, &noise, &params)).collect();
+        let pass1: Vec<f64> = dirs
+            .iter()
+            .map(|d| elevation(*d, &noise, &params))
+            .collect();
+        let pass2: Vec<f64> = dirs
+            .iter()
+            .map(|d| elevation(*d, &noise, &params))
+            .collect();
 
         for (a, b) in pass1.iter().zip(pass2.iter()) {
             assert_eq!(a.to_bits(), b.to_bits(), "elevation not bit-identical");

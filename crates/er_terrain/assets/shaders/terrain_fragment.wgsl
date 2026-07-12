@@ -6,6 +6,7 @@ struct FragmentInput {
     @location(4) low_freq_elev: f32,
     @location(5) temperature: f32,
     @location(6) normal: vec3<f32>,
+    @location(7) morph: f32,
 };
 
 // --- Simple value noise for detail/palette variation ---
@@ -120,6 +121,10 @@ fn biome_color_blended(
 
 @fragment
 fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
+    if (material.debug_skirt_highlight > 0.5 && input.morph < 0.5) {
+        return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+    }
+
     let sun_dir = normalize(vec3<f32>(material.sun_dir_x, material.sun_dir_y, material.sun_dir_z));
     let camera_pos = vec3<f32>(material.camera_pos_x, material.camera_pos_y, material.camera_pos_z);
     let view_dir = normalize(camera_pos - input.world_position);

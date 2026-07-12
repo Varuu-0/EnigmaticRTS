@@ -5,14 +5,14 @@ pub const MAX_QUADTREE_DEPTH: u8 = 12;
 pub const CHUNK_VERT_RES: u32 = 17;
 pub const CHUNK_QUADS_PER_EDGE: u32 = 16; // CHUNK_VERT_RES - 1
 pub const LOD_SPLIT_BUDGET_PER_FRAME: usize = 48;
-// Terrain displacement is at most a few percent of the planet radius, so the
-// previous 150px threshold over-tessellated distant curved terrain. A 1600px
-// geometric-error target keeps the silhouette continuous while avoiding
-// thousands of small draw calls near the surface.
-pub const SCREEN_ERROR_THRESHOLD: f32 = 1600.0;
-pub const MERGE_HYSTERESIS: f32 = 0.5;
+// Split once a chunk's projected geometric error exceeds 100 px. This refines
+// the six root cube faces at the default orbit while keeping close views within
+// a practical interactive mesh budget.
+pub const SCREEN_ERROR_THRESHOLD: f32 = 100.0;
+pub const MERGE_HYSTERESIS: f32 = 0.6;
 pub const MAX_RENDER_DISTANCE: f64 = PLANET_RADIUS_DEFAULT * 8.0;
-pub const ACTIVE_CHUNK_CAP: usize = 4000;
+// Safety limit for close camera views; normal play should remain well below it.
+pub const ACTIVE_CHUNK_CAP: usize = 2000;
 
 /// Converts angular-size ratio (chunk_size / distance) to approximate pixel
 /// error: viewport_height / (2 * tan(fov/2)) for 1080p + 60° FOV.

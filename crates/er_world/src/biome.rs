@@ -51,16 +51,10 @@ impl BiomeRegistry {
     }
 }
 
-pub fn temperature(
-    dir: DVec3,
-    elevation: f64,
-    params: &PlanetParams,
-    noise: &ClimateNoise,
-) -> f64 {
+pub fn temperature(dir: DVec3, elevation: f64, params: &PlanetParams, noise: &ClimateNoise) -> f64 {
     let latitude = dir.y.abs();
     let temp_noise = noise.temp_noise.get_noise_3d(dir.x, dir.y, dir.z);
-    let temp = 1.0 - latitude * params.temp_gradient
-        - elevation * params.lapse_rate
+    let temp = 1.0 - latitude * params.temp_gradient - elevation * params.lapse_rate
         + (temp_noise * params.temp_noise_amp) as f64;
     temp.clamp(0.0, 1.0)
 }
@@ -277,17 +271,32 @@ mod tests {
     fn classify_biome_ocean_bands() {
         let params = planet_params(PlanetSeed(0xC0FFEE));
         let sl = params.sea_level;
-        assert_eq!(classify_biome(sl - 0.1, 0.5, 0.5, 0.0, &params), Biome::OceanShallow);
-        assert_eq!(classify_biome(sl - 0.4, 0.5, 0.5, 0.0, &params), Biome::OceanMid);
-        assert_eq!(classify_biome(sl - 0.8, 0.5, 0.5, 0.0, &params), Biome::OceanDeep);
-        assert_eq!(classify_biome(sl - 1.5, 0.5, 0.5, 0.0, &params), Biome::OceanAbyss);
+        assert_eq!(
+            classify_biome(sl - 0.1, 0.5, 0.5, 0.0, &params),
+            Biome::OceanShallow
+        );
+        assert_eq!(
+            classify_biome(sl - 0.4, 0.5, 0.5, 0.0, &params),
+            Biome::OceanMid
+        );
+        assert_eq!(
+            classify_biome(sl - 0.8, 0.5, 0.5, 0.0, &params),
+            Biome::OceanDeep
+        );
+        assert_eq!(
+            classify_biome(sl - 1.5, 0.5, 0.5, 0.0, &params),
+            Biome::OceanAbyss
+        );
     }
 
     #[test]
     fn classify_biome_beach() {
         let params = planet_params(PlanetSeed(0xC0FFEE));
         let sl = params.sea_level;
-        assert_eq!(classify_biome(sl + 0.01, 0.5, 0.5, 0.0, &params), Biome::Beach);
+        assert_eq!(
+            classify_biome(sl + 0.01, 0.5, 0.5, 0.0, &params),
+            Biome::Beach
+        );
     }
 
     #[test]
@@ -308,14 +317,8 @@ mod tests {
     fn classify_biome_overrides() {
         let params = planet_params(PlanetSeed(0xC0FFEE));
         let el = params.sea_level + 0.2;
-        assert_eq!(
-            classify_biome(el, 0.8, 0.9, 0.0, &params),
-            Biome::ToxicBog
-        );
-        assert_eq!(
-            classify_biome(el, 0.5, 0.5, 1.5, &params),
-            Biome::Volcanic
-        );
+        assert_eq!(classify_biome(el, 0.8, 0.9, 0.0, &params), Biome::ToxicBog);
+        assert_eq!(classify_biome(el, 0.5, 0.5, 1.5, &params), Biome::Volcanic);
         assert_eq!(
             classify_biome(0.9, 0.5, 0.5, 0.0, &params),
             Biome::Mountains

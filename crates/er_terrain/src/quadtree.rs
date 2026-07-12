@@ -56,10 +56,30 @@ pub fn children_of(key: CellKey) -> [CellKey; 4] {
     let i = key.i * 2;
     let j = key.j * 2;
     [
-        CellKey { face: key.face, i, j, lod },
-        CellKey { face: key.face, i: i + 1, j, lod },
-        CellKey { face: key.face, i, j: j + 1, lod },
-        CellKey { face: key.face, i: i + 1, j: j + 1, lod },
+        CellKey {
+            face: key.face,
+            i,
+            j,
+            lod,
+        },
+        CellKey {
+            face: key.face,
+            i: i + 1,
+            j,
+            lod,
+        },
+        CellKey {
+            face: key.face,
+            i,
+            j: j + 1,
+            lod,
+        },
+        CellKey {
+            face: key.face,
+            i: i + 1,
+            j: j + 1,
+            lod,
+        },
     ]
 }
 
@@ -113,7 +133,12 @@ pub fn neighbor_lod_across_edge(
 
 pub fn root_chunks() -> Vec<CellKey> {
     (0..6)
-        .map(|face| CellKey { face, i: 0, j: 0, lod: 0 })
+        .map(|face| CellKey {
+            face,
+            i: 0,
+            j: 0,
+            lod: 0,
+        })
         .collect()
 }
 
