@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::chunk::{ChunkComponent, HoldForMerge, HoldHidden};
-use crate::culling::{frustum_cull_sphere, is_below_horizon, is_outside_render_distance};
+use crate::culling::{frustum_cull_sphere, is_below_horizon};
 use crate::debug::TerrainDebugInfo;
 use crate::lod::{chunk_camera_distance, should_merge_parent, should_split};
 use crate::material::{TerrainMaterial, TerrainMaterialUniform, FRAGMENT_SHADER, VERTEX_SHADER};
@@ -122,7 +122,6 @@ impl Plugin for TerrainPlugin {
         .insert_resource(SunDirection::default())
         .add_plugins(MaterialPlugin::<TerrainMaterial>::default())
         .add_plugins(MaterialPlugin::<OceanMaterial>::default())
-        .add_plugins(MaterialPlugin::<crate::ocean::OcclusionMaterial>::default())
         .add_systems(Startup, (setup_terrain, setup_ocean))
         .add_systems(PreUpdate, profiler_clear)
         .add_systems(
@@ -190,6 +189,7 @@ fn setup_terrain(
             &terrain_state.base_uniform,
             key,
             terrain_state.planet_radius,
+            terrain_state.elevation_scale,
             &terrain_state.params,
             &terrain_state.planet_params,
             &terrain_state.cache,
@@ -343,6 +343,7 @@ fn process_lod_queue(
                 &base_uniform,
                 child,
                 terrain_state.planet_radius,
+                terrain_state.elevation_scale,
                 &terrain_state.params,
                 &terrain_state.planet_params,
                 &terrain_state.cache,
@@ -436,6 +437,7 @@ fn process_lod_queue(
             &base_uniform,
             parent_key,
             terrain_state.planet_radius,
+            terrain_state.elevation_scale,
             &terrain_state.params,
             &terrain_state.planet_params,
             &terrain_state.cache,
@@ -523,15 +525,15 @@ fn cull_chunks(
         _ => None,
     };
 
+    let max_render_dist_sq = (terrain_state.max_render_distance * 1.15).powi(2);
+
     for (chunk, mut visibility) in &mut chunk_query {
         let key = chunk.key;
+        let chunk_dir = cell_to_dir(key);
+        let chunk_center = chunk_dir * terrain_state.planet_radius;
 
-        if is_outside_render_distance(
-            key,
-            camera_pos,
-            terrain_state.planet_radius,
-            terrain_state.max_render_distance,
-        ) {
+        let dist_sq = (chunk_center - camera_pos).length_squared();
+        if dist_sq > max_render_dist_sq {
             *visibility = Visibility::Hidden;
             continue;
         }
@@ -542,7 +544,7 @@ fn cull_chunks(
         }
 
         if let Some((cam_pos, forward, right, up, fov_cos, aspect)) = frustum {
-            let sphere_center = (cell_to_dir(key) * terrain_state.planet_radius).as_vec3();
+            let sphere_center = chunk_center.as_vec3();
             let sphere_radius =
                 cell_size(key.lod, terrain_state.planet_radius) as f32 + terrain_state.elevation_scale * 3.0;
             if frustum_cull_sphere(
@@ -585,6 +587,7 @@ fn spawn_chunk_entity(
     base_uniform: &TerrainMaterialUniform,
     key: CellKey,
     radius: f64,
+    elevation_scale: f32,
     elev_params: &ElevationParams,
     planet_params: &PlanetParams,
     cache: &Arc<WorldCache>,
@@ -618,6 +621,7 @@ fn spawn_chunk_entity(
         generate_chunk_mesh(
             key,
             radius,
+            elevation_scale,
             &noise,
             &elev_params,
             &planet_params,

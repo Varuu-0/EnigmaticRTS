@@ -8,6 +8,9 @@ struct Vertex {
     @location(3) low_freq_elev: f32,
     @location(4) warped_dir: vec3<f32>,
     @location(5) moisture_low: f32,
+    @location(6) elevation: f32,
+    @location(7) normal: vec3<f32>,
+    @location(8) temperature: f32,
 };
 
 struct VertexOutput {
@@ -70,15 +73,12 @@ struct StitchResult {
     elev: f32,
 }
 
-// Edge stitch: when the neighbor across an edge is coarser, collapse this chunk's
-// in-between edge vertices onto the coarser grid so no T-junction / crack remains.
-// Both position AND elevation are interpolated so the fragment color matches the
-// coarse neighbor exactly at the shared edge. Only surface verts (morph ~ 1) call
-// this; skirt verts (morph = 0) are unaffected.
+// Collapse fine edge vertices to a coarser neighbor's grid so LOD transitions
+// remain watertight. The CPU supplies the regular vertex data; only T-junctions
+// evaluate the elevation function on the GPU.
 fn stitch(gi: u32, gj: u32, base_pos: vec3<f32>, base_elev: f32, m: TerrainMaterialUniform, ep: ElevationParams) -> StitchResult {
     let cd = m.chunk_depth;
 
-    // NegU edge (gi == 0), along-edge index = gj, neighbor_depth_0.
     if (gi == 0u) {
         let step = 1u << u32(clamp(cd - i32(m.neighbor_depth_0), i32(0), i32(4)));
         if (step > 1u && (gj % step) != 0u) {
@@ -93,7 +93,6 @@ fn stitch(gi: u32, gj: u32, base_pos: vec3<f32>, base_elev: f32, m: TerrainMater
             return r;
         }
     }
-    // PosU edge (gi == 16), along-edge index = gj, neighbor_depth_1.
     if (gi == 16u) {
         let step = 1u << u32(clamp(cd - i32(m.neighbor_depth_1), i32(0), i32(4)));
         if (step > 1u && (gj % step) != 0u) {
@@ -108,7 +107,6 @@ fn stitch(gi: u32, gj: u32, base_pos: vec3<f32>, base_elev: f32, m: TerrainMater
             return r;
         }
     }
-    // NegV edge (gj == 0), along-edge index = gi, neighbor_depth_2.
     if (gj == 0u) {
         let step = 1u << u32(clamp(cd - i32(m.neighbor_depth_2), i32(0), i32(4)));
         if (step > 1u && (gi % step) != 0u) {
@@ -123,13 +121,12 @@ fn stitch(gi: u32, gj: u32, base_pos: vec3<f32>, base_elev: f32, m: TerrainMater
             return r;
         }
     }
-    // PosV edge (gj == 16), along-edge index = gi, neighbor_depth_3.
     if (gj == 16u) {
         let step = 1u << u32(clamp(cd - i32(m.neighbor_depth_3), i32(0), i32(4)));
         if (step > 1u && (gi % step) != 0u) {
             let k_lo = (gi / step) * step;
             let k_hi = min(k_lo + step, 16u);
-            let t = f32(gi - k_lo) / f32(step);
+            let t = f32(gj - k_lo) / f32(step);
             let a = grid(k_lo, 16u, m, ep);
             let b = grid(k_hi, 16u, m, ep);
             var r: StitchResult;
@@ -144,76 +141,15 @@ fn stitch(gi: u32, gj: u32, base_pos: vec3<f32>, base_elev: f32, m: TerrainMater
     return r;
 }
 
-fn compute_surface_normal(
-    dir: vec3<f32>,
-    elev: f32,
-    m: TerrainMaterialUniform,
-    ep: ElevationParams,
-) -> vec3<f32> {
-    let eps = 0.0008;
-    let ref_vec = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(1.0, 0.0, 0.0), abs(dir.y) > 0.99);
-    let t1 = normalize(cross(ref_vec, dir));
-    let t2 = cross(dir, t1);
-
-    let d1 = normalize(dir + t1 * eps);
-    let d2 = normalize(dir + t2 * eps);
-    let e1 = compute_elevation(d1, ep);
-    let e2 = compute_elevation(d2, ep);
-
-    let sr0 = m.planet_radius + elev * m.elevation_scale;
-    let sr1 = m.planet_radius + e1 * m.elevation_scale;
-    let sr2 = m.planet_radius + e2 * m.elevation_scale;
-
-    let p0 = dir * sr0;
-    let p1 = d1 * sr1;
-    let p2 = d2 * sr2;
-
-    return normalize(cross(p1 - p0, p2 - p0));
-}
-
-fn compute_temperature(dir: vec3<f32>, elevation: f32, m: TerrainMaterialUniform) -> f32 {
-    let temp_noise = fnl_fbm_opensimplex2_3d(
-        m.temp_noise_seed, dir, m.temp_noise_freq, 3, m.lacunarity, m.gain
-    );
-    let temp = 1.0 - abs(dir.y) * m.temp_gradient
-        - elevation * m.lapse_rate
-        + temp_noise * m.temp_noise_amp;
-    return clamp(temp, 0.0, 1.0);
-}
-
 @vertex
 fn vertex(in: Vertex) -> VertexOutput {
     var out: VertexOutput;
-
     let model = get_world_from_local(in.instance_index);
-
-    let dir = normalize(in.position);
-
-    let elev_params = make_elev_params(material);
-
-    let hills = fnl_fbm_opensimplex2_3d(
-        material.seed, in.warped_dir, material.hill_freq,
-        material.hill_octaves, material.lacunarity, material.gain
-    );
-    let detail = fnl_fbm_value_3d(
-        material.seed, in.warped_dir, material.detail_freq,
-        material.detail_octaves, material.lacunarity, material.gain
-    );
-    let high_freq = hills * material.hill_amp + detail * material.detail_amp;
-    let elev = in.low_freq_elev + high_freq;
-
-    let surface_radius = material.planet_radius + elev * material.elevation_scale;
-    var displaced = dir * surface_radius;
-    var final_elev = elev;
-
-    if (in.morph < 0.5) {
-        let cells_per_edge = f32(1u << u32(material.chunk_depth));
-        let chunk_size = material.planet_radius * 1.5707963 / cells_per_edge;
-        displaced = dir * (surface_radius - chunk_size * 0.2);
-    }
+    var displaced = in.position;
+    var final_elev = in.elevation;
 
     if (in.morph > 0.5) {
-        let s = stitch(in.grid.x, in.grid.y, displaced, elev, material, elev_params);
+        let s = stitch(in.grid.x, in.grid.y, displaced, final_elev, material, make_elev_params(material));
         displaced = s.pos;
         final_elev = s.elev;
     }
@@ -222,11 +158,10 @@ fn vertex(in: Vertex) -> VertexOutput {
     out.world_position = world_pos.xyz;
     out.clip_position = mesh_position_local_to_clip(model, vec4<f32>(displaced, 1.0));
     out.elevation = final_elev;
-    out.dir = dir;
+    out.dir = normalize(in.position);
     out.moisture = in.moisture_low;
     out.low_freq_elev = in.low_freq_elev;
-    out.temperature = compute_temperature(dir, final_elev, material);
-    out.normal = compute_surface_normal(dir, final_elev, material, elev_params);
-
+    out.temperature = in.temperature;
+    out.normal = in.normal;
     return out;
 }

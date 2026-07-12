@@ -12,7 +12,7 @@ use er_world::elevation::ElevationParams;
 
 use crate::mesh_gen::{
     ATTRIBUTE_GRID, ATTRIBUTE_MORPH, ATTRIBUTE_LOW_FREQ_ELEV, ATTRIBUTE_WARPED_DIR,
-    ATTRIBUTE_MOISTURE_LOW,
+    ATTRIBUTE_MOISTURE_LOW, ATTRIBUTE_ELEVATION, ATTRIBUTE_NORMAL, ATTRIBUTE_TEMPERATURE,
 };
 
 pub static VERTEX_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
@@ -181,6 +181,9 @@ impl Material for TerrainMaterial {
             ATTRIBUTE_LOW_FREQ_ELEV.at_shader_location(3),
             ATTRIBUTE_WARPED_DIR.at_shader_location(4),
             ATTRIBUTE_MOISTURE_LOW.at_shader_location(5),
+            ATTRIBUTE_ELEVATION.at_shader_location(6),
+            ATTRIBUTE_NORMAL.at_shader_location(7),
+            ATTRIBUTE_TEMPERATURE.at_shader_location(8),
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         descriptor.primitive.cull_mode = Some(Face::Back);

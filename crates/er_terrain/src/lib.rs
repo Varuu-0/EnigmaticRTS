@@ -17,7 +17,8 @@ pub use debug::TerrainDebugInfo;
 pub use material::{TerrainMaterial, TerrainMaterialUniform};
 pub use mesh_gen::{
     generate_chunk_mesh, ATTRIBUTE_GRID, ATTRIBUTE_MORPH, ATTRIBUTE_LOW_FREQ_ELEV,
-    ATTRIBUTE_WARPED_DIR, ATTRIBUTE_MOISTURE_LOW,
+    ATTRIBUTE_WARPED_DIR, ATTRIBUTE_MOISTURE_LOW, ATTRIBUTE_ELEVATION, ATTRIBUTE_NORMAL,
+    ATTRIBUTE_TEMPERATURE,
 };
 pub use profiler::FrameProfiler;
 pub use quadtree::{children_of, parent_of, root_chunks, ActiveChunks, RetainedMerge, RetainedMerges, RetainedSplit, RetainedSplits};

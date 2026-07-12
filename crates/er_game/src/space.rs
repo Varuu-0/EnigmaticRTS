@@ -12,7 +12,7 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::{Shader, ShaderRef};
 use er_core::config::DEFAULT_DAY_LENGTH_SEC;
-use er_terrain::SunDirection;
+use er_terrain::{ChunkComponent, SunDirection, TerrainMaterial};
 use std::sync::OnceLock;
 
 static ATMOSPHERE_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
@@ -602,7 +602,8 @@ fn update_sun(
 fn update_terrain_uniforms(
     sim_time: Res<SimTime>,
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
-    mut terrain_materials: ResMut<Assets<er_terrain::TerrainMaterial>>,
+    chunk_query: Query<(&MeshMaterial3d<TerrainMaterial>, &Visibility), With<ChunkComponent>>,
+    mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
     mut ocean_materials: ResMut<Assets<er_terrain::ocean::OceanMaterial>>,
 ) {
     let Ok(cam) = camera_query.single() else {
@@ -621,14 +622,19 @@ fn update_terrain_uniforms(
     let cy = cam_pos.y;
     let cz = cam_pos.z;
 
-    for (_, mat) in terrain_materials.iter_mut() {
-        let u = &mut mat.uniform;
-        u.sun_dir_x = sx;
-        u.sun_dir_y = sy;
-        u.sun_dir_z = sz;
-        u.camera_pos_x = cx;
-        u.camera_pos_y = cy;
-        u.camera_pos_z = cz;
+    for (mat_handle, vis) in &chunk_query {
+        if *vis == Visibility::Hidden {
+            continue;
+        }
+        if let Some(mut mat) = terrain_materials.get_mut(&mat_handle.0) {
+            let u = &mut mat.uniform;
+            u.sun_dir_x = sx;
+            u.sun_dir_y = sy;
+            u.sun_dir_z = sz;
+            u.camera_pos_x = cx;
+            u.camera_pos_y = cy;
+            u.camera_pos_z = cz;
+        }
     }
 
     for (_, mat) in ocean_materials.iter_mut() {

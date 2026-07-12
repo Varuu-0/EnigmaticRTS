@@ -14,6 +14,7 @@ pub struct CachedWorldData {
     pub moisture: f32,
     pub biome: Biome,
     pub mountain_influence: f32,
+    pub temperature: f32,
 }
 
 pub struct WorldCache {
@@ -101,6 +102,7 @@ mod tests {
             moisture: 0.5,
             biome: Biome::Grassland,
             mountain_influence: 0.1,
+            temperature: 0.5,
         };
         let result = cache.get_or_insert(dir, || data);
         assert_eq!(result.elevation, 0.42);
@@ -124,6 +126,7 @@ mod tests {
                 moisture: 0.0,
                 biome: Biome::OceanShallow,
                 mountain_influence: 0.0,
+                temperature: 0.0,
             });
         }
         assert!(cache.len() <= 12);

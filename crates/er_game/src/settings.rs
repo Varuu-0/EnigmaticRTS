@@ -27,7 +27,7 @@ impl Default for GraphicsSettings {
     fn default() -> Self {
         Self {
             vsync: false,
-            msaa: 4,
+            msaa: 1,
             fullscreen: false,
         }
     }

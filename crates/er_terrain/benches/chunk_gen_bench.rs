@@ -19,6 +19,7 @@ fn key_at(lod: u8) -> CellKey {
 
 fn bench_generate_chunk_mesh(c: &mut Criterion) {
     let radius = PLANET_RADIUS_DEFAULT;
+    let elevation_scale: f32 = 1000.0;
     let seed = PlanetSeed(0xC0FFEE);
     let elev_params = elevation_params(seed);
     let noise = ElevationNoise::new(&elev_params);
@@ -32,6 +33,7 @@ fn bench_generate_chunk_mesh(c: &mut Criterion) {
                 black_box(generate_chunk_mesh(
                     black_box(key),
                     black_box(radius),
+                    black_box(elevation_scale),
                     black_box(&noise),
                     black_box(&elev_params),
                 black_box(&pp),

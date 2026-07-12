@@ -3,7 +3,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::render::render_resource::{PrimitiveTopology, VertexFormat};
 use er_core::config::{CHUNK_QUADS_PER_EDGE, CHUNK_VERT_RES};
 use er_core::math::{cell_size, cells_per_edge, uv_to_dir, CellKey, FACE_U, FACE_V};
-use er_world::biome::{biome, elevation_low_freq, moisture};
+use er_world::biome::{biome, elevation_low_freq, moisture, temperature};
 use er_world::cache::{CachedWorldData, WorldCache};
 use er_world::elevation::{elevation, ElevationNoise, ElevationParams};
 use er_world::params::{ClimateNoise, PlanetParams};
@@ -24,6 +24,15 @@ pub const ATTRIBUTE_WARPED_DIR: MeshVertexAttribute =
 pub const ATTRIBUTE_MOISTURE_LOW: MeshVertexAttribute =
     MeshVertexAttribute::new("MoistureLow", 988540922, VertexFormat::Float32);
 
+pub const ATTRIBUTE_ELEVATION: MeshVertexAttribute =
+    MeshVertexAttribute::new("Elevation", 988540923, VertexFormat::Float32);
+
+pub const ATTRIBUTE_NORMAL: MeshVertexAttribute =
+    MeshVertexAttribute::new("Normal", 988540924, VertexFormat::Float32x3);
+
+pub const ATTRIBUTE_TEMPERATURE: MeshVertexAttribute =
+    MeshVertexAttribute::new("Temperature", 988540925, VertexFormat::Float32);
+
 fn append_tri(indices: &mut Vec<u32>, a: u32, b: u32, c: u32, flip: bool) {
     if flip {
         indices.extend_from_slice(&[a, c, b]);
@@ -42,6 +51,7 @@ fn compute_cached_vertex(
     let split = elevation_low_freq(dir, noise, elev_params);
     let moist = moisture(dir, split.mountain_influence, planet_params, climate_noise);
     let elev = elevation(dir, noise, elev_params);
+    let temp = temperature(dir, elev, planet_params, climate_noise);
     let b = biome(
         dir,
         elev,
@@ -57,6 +67,7 @@ fn compute_cached_vertex(
         moisture: moist as f32,
         biome: b,
         mountain_influence: split.mountain_influence as f32,
+        temperature: temp as f32,
     }
 }
 
@@ -64,6 +75,8 @@ struct VertexData {
     low_freq: f32,
     warped_dir: [f32; 3],
     moisture: f32,
+    elevation: f64,
+    temperature: f32,
 }
 
 fn vertex_data(
@@ -82,21 +95,82 @@ fn vertex_data(
             low_freq: c.low_freq_elev,
             warped_dir: c.warped_dir,
             moisture: c.moisture,
+            elevation: c.elevation,
+            temperature: c.temperature,
         }
     } else {
         let split = elevation_low_freq(dir, noise, elev_params);
         let moist = moisture(dir, split.mountain_influence, planet_params, climate_noise);
+        let elev = elevation(dir, noise, elev_params);
+        let temp = temperature(dir, elev, planet_params, climate_noise);
         VertexData {
             low_freq: split.low_freq_elev as f32,
             warped_dir: [split.warped_dir.x as f32, split.warped_dir.y as f32, split.warped_dir.z as f32],
             moisture: moist as f32,
+            elevation: elev,
+            temperature: temp as f32,
         }
     }
+}
+
+fn cached_elevation(
+    dir: DVec3,
+    noise: &ElevationNoise,
+    elev_params: &ElevationParams,
+    planet_params: &PlanetParams,
+    climate_noise: &ClimateNoise,
+    cache: Option<&WorldCache>,
+) -> f64 {
+    if let Some(cache) = cache {
+        cache.get_or_insert(dir, || {
+            compute_cached_vertex(dir, noise, elev_params, planet_params, climate_noise)
+        }).elevation
+    } else {
+        elevation(dir, noise, elev_params)
+    }
+}
+
+fn compute_surface_normal(
+    dir: DVec3,
+    elev: f64,
+    radius: f64,
+    elevation_scale: f32,
+    noise: &ElevationNoise,
+    elev_params: &ElevationParams,
+    planet_params: &PlanetParams,
+    climate_noise: &ClimateNoise,
+    cache: Option<&WorldCache>,
+) -> DVec3 {
+    let eps = 0.0008;
+    let ref_vec = if dir.y.abs() > 0.99 {
+        DVec3::new(1.0, 0.0, 0.0)
+    } else {
+        DVec3::new(0.0, 1.0, 0.0)
+    };
+    let t1 = ref_vec.cross(dir).normalize();
+    let t2 = dir.cross(t1);
+
+    let d1 = (dir + t1 * eps).normalize();
+    let d2 = (dir + t2 * eps).normalize();
+
+    let e1 = cached_elevation(d1, noise, elev_params, planet_params, climate_noise, cache);
+    let e2 = cached_elevation(d2, noise, elev_params, planet_params, climate_noise, cache);
+
+    let sr0 = radius + elev * elevation_scale as f64;
+    let sr1 = radius + e1 * elevation_scale as f64;
+    let sr2 = radius + e2 * elevation_scale as f64;
+
+    let p0 = dir * sr0;
+    let p1 = d1 * sr1;
+    let p2 = d2 * sr2;
+
+    (p1 - p0).cross(p2 - p0).normalize()
 }
 
 pub fn generate_chunk_mesh(
     key: CellKey,
     radius: f64,
+    elevation_scale: f32,
     noise: &ElevationNoise,
     elev_params: &ElevationParams,
     planet_params: &PlanetParams,
@@ -114,7 +188,6 @@ pub fn generate_chunk_mesh(
     let v_max = (key.j + 1) as f64 / cells;
 
     let skirt_depth = cell_size(key.lod, radius) * 0.2;
-    let skirt_radius = radius - skirt_depth;
 
     let total = n * n + 4 * n;
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(total);
@@ -123,17 +196,22 @@ pub fn generate_chunk_mesh(
     let mut low_freq_elevs: Vec<f32> = Vec::with_capacity(total);
     let mut warped_dirs: Vec<[f32; 3]> = Vec::with_capacity(total);
     let mut moisture_lows: Vec<f32> = Vec::with_capacity(total);
+    let mut elevations: Vec<f32> = Vec::with_capacity(total);
+    let mut normals: Vec<[f32; 3]> = Vec::with_capacity(total);
+    let mut temperatures: Vec<f32> = Vec::with_capacity(total);
 
     let mut surf_low_freq: Vec<f32> = vec![0.0; n * n];
     let mut surf_warped_dir: Vec<[f32; 3]> = vec![[0.0; 3]; n * n];
     let mut surf_moisture: Vec<f32> = vec![0.0; n * n];
+    let mut surf_elev: Vec<f64> = vec![0.0; n * n];
+    let mut surf_temp: Vec<f32> = vec![0.0; n * n];
+    let mut surf_normals: Vec<[f32; 3]> = vec![[0.0; 3]; n * n];
 
     for gj in 0..n {
         for gi in 0..n {
             let u = u_min + (u_max - u_min) * (gi as f64 / (n - 1) as f64);
             let v = v_min + (v_max - v_min) * (gj as f64 / (n - 1) as f64);
             let dir = uv_to_dir(key.face, u, v);
-            let pos = dir * radius;
             let vd = vertex_data(dir, noise, elev_params, planet_params, climate_noise, cache);
 
             let surf_idx = gj * n + gi;
@@ -142,6 +220,24 @@ pub fn generate_chunk_mesh(
             surf_low_freq[surf_idx] = lf;
             surf_warped_dir[surf_idx] = wd;
             surf_moisture[surf_idx] = vd.moisture;
+            surf_elev[surf_idx] = vd.elevation;
+            surf_temp[surf_idx] = vd.temperature;
+
+            let surface_radius = radius + vd.elevation * elevation_scale as f64;
+            let pos = dir * surface_radius;
+            let normal = compute_surface_normal(
+                dir,
+                vd.elevation,
+                radius,
+                elevation_scale,
+                noise,
+                elev_params,
+                planet_params,
+                climate_noise,
+                cache,
+            );
+            let normal = [normal.x as f32, normal.y as f32, normal.z as f32];
+            surf_normals[surf_idx] = normal;
 
             positions.push([pos.x as f32, pos.y as f32, pos.z as f32]);
             morphs.push(1.0);
@@ -149,6 +245,9 @@ pub fn generate_chunk_mesh(
             low_freq_elevs.push(lf);
             warped_dirs.push(wd);
             moisture_lows.push(vd.moisture);
+            elevations.push(vd.elevation as f32);
+            normals.push(normal);
+            temperatures.push(vd.temperature);
         }
     }
 
@@ -156,58 +255,82 @@ pub fn generate_chunk_mesh(
 
     let top_skirt = surface_count;
     for gi in 0..n {
+        let surf_idx = gi;
+        let se = surf_elev[surf_idx];
+        let surface_radius = radius + se * elevation_scale as f64;
+        let skirt_radius = surface_radius - skirt_depth;
         let u = u_min + (u_max - u_min) * (gi as f64 / (n - 1) as f64);
         let dir = uv_to_dir(key.face, u, v_min);
         let pos = dir * skirt_radius;
-        let surf_idx = gi;
         positions.push([pos.x as f32, pos.y as f32, pos.z as f32]);
         morphs.push(0.0);
         grids.push([gi as u32, 0]);
         low_freq_elevs.push(surf_low_freq[surf_idx]);
         warped_dirs.push(surf_warped_dir[surf_idx]);
         moisture_lows.push(surf_moisture[surf_idx]);
+        elevations.push(se as f32);
+        normals.push(surf_normals[surf_idx]);
+        temperatures.push(surf_temp[surf_idx]);
     }
 
     let bot_skirt = top_skirt + n;
     for gi in 0..n {
+        let surf_idx = (n - 1) * n + gi;
+        let se = surf_elev[surf_idx];
+        let surface_radius = radius + se * elevation_scale as f64;
+        let skirt_radius = surface_radius - skirt_depth;
         let u = u_min + (u_max - u_min) * (gi as f64 / (n - 1) as f64);
         let dir = uv_to_dir(key.face, u, v_max);
         let pos = dir * skirt_radius;
-        let surf_idx = (n - 1) * n + gi;
         positions.push([pos.x as f32, pos.y as f32, pos.z as f32]);
         morphs.push(0.0);
         grids.push([gi as u32, n1]);
         low_freq_elevs.push(surf_low_freq[surf_idx]);
         warped_dirs.push(surf_warped_dir[surf_idx]);
         moisture_lows.push(surf_moisture[surf_idx]);
+        elevations.push(se as f32);
+        normals.push(surf_normals[surf_idx]);
+        temperatures.push(surf_temp[surf_idx]);
     }
 
     let left_skirt = bot_skirt + n;
     for gj in 0..n {
+        let surf_idx = gj * n;
+        let se = surf_elev[surf_idx];
+        let surface_radius = radius + se * elevation_scale as f64;
+        let skirt_radius = surface_radius - skirt_depth;
         let v = v_min + (v_max - v_min) * (gj as f64 / (n - 1) as f64);
         let dir = uv_to_dir(key.face, u_min, v);
         let pos = dir * skirt_radius;
-        let surf_idx = gj * n;
         positions.push([pos.x as f32, pos.y as f32, pos.z as f32]);
         morphs.push(0.0);
         grids.push([0, gj as u32]);
         low_freq_elevs.push(surf_low_freq[surf_idx]);
         warped_dirs.push(surf_warped_dir[surf_idx]);
         moisture_lows.push(surf_moisture[surf_idx]);
+        elevations.push(se as f32);
+        normals.push(surf_normals[surf_idx]);
+        temperatures.push(surf_temp[surf_idx]);
     }
 
     let right_skirt = left_skirt + n;
     for gj in 0..n {
+        let surf_idx = gj * n + (n - 1);
+        let se = surf_elev[surf_idx];
+        let surface_radius = radius + se * elevation_scale as f64;
+        let skirt_radius = surface_radius - skirt_depth;
         let v = v_min + (v_max - v_min) * (gj as f64 / (n - 1) as f64);
         let dir = uv_to_dir(key.face, u_max, v);
         let pos = dir * skirt_radius;
-        let surf_idx = gj * n + (n - 1);
         positions.push([pos.x as f32, pos.y as f32, pos.z as f32]);
         morphs.push(0.0);
         grids.push([n1, gj as u32]);
         low_freq_elevs.push(surf_low_freq[surf_idx]);
         warped_dirs.push(surf_warped_dir[surf_idx]);
         moisture_lows.push(surf_moisture[surf_idx]);
+        elevations.push(se as f32);
+        normals.push(surf_normals[surf_idx]);
+        temperatures.push(surf_temp[surf_idx]);
     }
 
     let mut indices: Vec<u32> = Vec::with_capacity(quads * quads * 6 + 4 * quads * 6);
@@ -278,6 +401,9 @@ pub fn generate_chunk_mesh(
     mesh.insert_attribute(ATTRIBUTE_LOW_FREQ_ELEV, low_freq_elevs);
     mesh.insert_attribute(ATTRIBUTE_WARPED_DIR, warped_dirs);
     mesh.insert_attribute(ATTRIBUTE_MOISTURE_LOW, moisture_lows);
+    mesh.insert_attribute(ATTRIBUTE_ELEVATION, elevations);
+    mesh.insert_attribute(ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(ATTRIBUTE_TEMPERATURE, temperatures);
     mesh.insert_indices(Indices::U32(indices));
     mesh
 }

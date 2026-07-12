@@ -3,8 +3,8 @@ use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey};
 use bevy::reflect::TypePath;
 use bevy::render::mesh::{Indices, Mesh, MeshVertexBufferLayoutRef};
 use bevy::render::render_resource::{
-    AsBindGroup, Face, RenderPipelineDescriptor, SpecializedMeshPipelineError,
-    PrimitiveTopology, BlendState, ColorWrites,
+    AsBindGroup, BlendState, ColorWrites, Face, PrimitiveTopology,
+    RenderPipelineDescriptor, SpecializedMeshPipelineError,
 };
 use bevy::shader::{Shader, ShaderRef};
 use bevy::ecs::system::{Commands, Res, ResMut};
@@ -208,7 +208,6 @@ pub fn setup_ocean(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<OceanMaterial>>,
-    mut occlusion_materials: ResMut<Assets<OcclusionMaterial>>,
     mut shaders: ResMut<Assets<Shader>>,
     terrain_state: Res<crate::systems::TerrainState>,
 ) {
@@ -248,19 +247,6 @@ pub fn setup_ocean(
         OceanComponent,
         MeshMaterial3d(material.clone()),
         Mesh3d(mesh_handle),
-        Transform::default(),
-        Visibility::Visible,
-    ));
-
-    // Add depth-only occlusion sphere to prevent far-side terrain bleed-through
-    let occlusion_radius = terrain_state.planet_radius as f32 + terrain_state.elevation_scale + 200.0;
-    let occlusion_mesh = generate_ocean_sphere(occlusion_radius, 64, 32);
-    let occlusion_mesh_handle = meshes.add(occlusion_mesh);
-    let occlusion_mat = occlusion_materials.add(OcclusionMaterial { _dummy: 0 });
-    
-    commands.spawn((
-        MeshMaterial3d(occlusion_mat),
-        Mesh3d(occlusion_mesh_handle),
         Transform::default(),
         Visibility::Visible,
     ));

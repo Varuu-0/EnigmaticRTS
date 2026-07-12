@@ -9,6 +9,7 @@ use bevy::{
 };
 use bevy::camera::{PerspectiveProjection, Projection};
 
+mod bench;
 mod camera;
 mod debug_overlay;
 mod menu;
@@ -26,14 +27,29 @@ use er_terrain::TerrainPlugin;
 
 fn main() {
     let test_config = parse_test_args();
+    let bench_config = bench::parse_bench_args();
     let is_test_mode = test_config.is_some();
-    
+    let is_bench_mode = bench_config.is_some();
+    let headless = is_bench_mode;
+
     let settings = settings::load_settings();
     let present_mode = settings.present_mode();
 
     let mut app = App::new();
-    
-    if is_test_mode {
+
+    if headless {
+        app.add_plugins(
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window {
+                    title: "Planet Solar Sim (Bench)".into(),
+                    present_mode,
+                    visible: false,
+                    ..default()
+                }),
+                ..default()
+            }),
+        );
+    } else if is_test_mode {
         app.add_plugins(
             DefaultPlugins.set(WindowPlugin {
                 primary_window: Some(Window {
@@ -57,7 +73,7 @@ fn main() {
             }),
         );
     }
-    
+
     app.add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(LogDiagnosticsPlugin::default())
         .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
@@ -65,8 +81,12 @@ fn main() {
         .add_plugins(CameraPlugin)
         .add_plugins(TerrainPlugin::default())
         .add_plugins(SpacePlugin);
-    
-    if is_test_mode {
+
+    if is_bench_mode {
+        let config = bench_config.unwrap();
+        app.insert_resource(config);
+        app.add_plugins(bench::BenchPlugin);
+    } else if is_test_mode {
         let config = test_config.unwrap();
         app.insert_resource(config);
         app.add_plugins(ScreenshotTestPlugin);
@@ -74,9 +94,9 @@ fn main() {
         app.add_plugins(SettingsMenuPlugin)
             .add_plugins(DebugOverlayPlugin);
     }
-    
+
     app.add_systems(Startup, (setup, apply_startup_window_mode));
-    
+
     app.run();
 }
 

@@ -35,28 +35,6 @@ fn vnoise(p: vec3<f32>) -> f32 {
     return mix(nxy0, nxy1, u.z);
 }
 
-fn fbm_detail(p: vec3<f32>) -> f32 {
-    var sum = 0.0;
-    var amp = 0.5;
-    var freq = 1.0;
-    for (var i = 0; i < 3; i = i + 1) {
-        sum = sum + vnoise(p * freq) * amp;
-        freq = freq * 2.1;
-        amp = amp * 0.5;
-    }
-    return sum;
-}
-
-// --- Triplanar detail sampling ---
-fn triplanar(dir: vec3<f32>, normal: vec3<f32>, freq: f32) -> f32 {
-    let w = abs(normal);
-    let wt = w.x + w.y + w.z;
-    let nxy = fbm_detail(vec3<f32>(dir.xy * freq, 0.0));
-    let nyz = fbm_detail(vec3<f32>(0.0, dir.yz * freq));
-    let nxz = fbm_detail(vec3<f32>(dir.x * freq, 0.0, dir.z * freq));
-    return (nxy * w.x + nyz * w.y + nxz * w.z) / wt;
-}
-
 // --- Blended biome coloring (smoothstep transitions, richer palette) ---
 
 fn biome_color_blended(
@@ -130,10 +108,10 @@ fn biome_color_blended(
              * smoothstep(m.toxic_moisture_threshold - 0.04, m.toxic_moisture_threshold + 0.04, moist);
     color = mix(color, c_toxic, tox_b * 0.4);
 
-    // Multi-octave color variation: brightness + subtle hue jitter
-    let variation = fbm_detail(dir * 15.0) * 0.12 + vnoise(dir * 40.0) * 0.08;
-    color = color * (1.0 + variation - 0.05);
-    let hue = vnoise(dir * 55.0) - 0.5;
+    // One smooth sample preserves palette breakup without the former 14
+    // value-noise evaluations per shaded pixel.
+    let hue = detail - 0.5;
+    color = color * (1.0 + hue * 0.16);
     color.r = clamp(color.r + hue * 0.02, 0.0, 1.0);
     color.b = clamp(color.b - hue * 0.02, 0.0, 1.0);
 
@@ -150,7 +128,7 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
     let normal = normalize(input.normal);
     let slope = 1.0 - abs(dot(normal, up));
 
-    let detail = triplanar(input.dir, normal, 25.0);
+    let detail = vnoise(input.dir * 55.0);
 
     var color = biome_color_blended(
         input.elevation, input.temperature, input.moisture,
