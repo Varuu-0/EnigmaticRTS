@@ -310,7 +310,10 @@ fn process_lod_queue(
         if splits_done >= budget {
             break;
         }
-        if active_chunks.len() >= terrain_state.active_chunk_cap {
+        // A split replaces one active parent with four children. Enforce the
+        // budget before the replacement so every active terrain region remains
+        // covered; evicting live chunks after the fact creates permanent holes.
+        if active_chunks.len() + 3 > terrain_state.active_chunk_cap {
             break;
         }
         if !active_chunks.contains(&key) {
@@ -381,6 +384,7 @@ fn process_lod_queue(
         budget
     };
     let mut merges_done = 0usize;
+    let mut merged_keys = HashSet::new();
     let mut pending_merges: Vec<CellKey> = std::mem::take(&mut active_chunks.pending_merges);
     if over_cap > 0 {
         pending_merges.sort_by(|a, b| {
@@ -392,6 +396,9 @@ fn process_lod_queue(
     for parent_key in pending_merges {
         if merges_done >= merge_budget {
             break;
+        }
+        if has_conflicting_merge(parent_key, &merged_keys) {
+            continue;
         }
         // Don't merge a parent whose children are still meshing in a retained
         // split. Despawning those children before their queued HoldHidden /
@@ -415,6 +422,7 @@ fn process_lod_queue(
                 }
             }
             active_chunks.insert(parent_key, entry.parent_entity);
+            merged_keys.insert(parent_key);
             merges_done += 1;
             continue;
         }
@@ -461,32 +469,11 @@ fn process_lod_queue(
             },
         );
         active_chunks.insert(parent_key, parent_entity);
+        merged_keys.insert(parent_key);
         merges_done += 1;
     }
     debug.pending_merges = merges_done;
 
-    if active_chunks.len() > terrain_state.active_chunk_cap {
-        let mut distances: Vec<(CellKey, f64)> = active_chunks
-            .chunks
-            .keys()
-            .map(|&k| {
-                (
-                    k,
-                    chunk_camera_distance(k, camera_pos, terrain_state.planet_radius),
-                )
-            })
-            .collect();
-        distances.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        let to_evict = active_chunks.len() - terrain_state.active_chunk_cap;
-        for (key, _) in distances.into_iter().take(to_evict) {
-            if active_chunks.contains(&key) {
-                if let Some(entity) = active_chunks.remove(&key) {
-                    despawn_chunk(&mut commands, entity);
-                }
-            }
-        }
-    }
     profiler.record("process_lod_queue", t0.elapsed());
 }
 
@@ -768,13 +755,16 @@ fn finalize_retained_merges(
 
     for &key in &done {
         let entry = retained_merges.map.get(&key).unwrap();
-        // Reveal the parent and make sure cull_chunks will evaluate it again.
-        if let Ok(mut e) = commands.get_entity(entry.parent_entity) {
-            e.remove::<HoldForMerge>().insert(Visibility::Visible);
-        }
-        // If for some reason the parent entity was evicted, re-insert it.
-        if !active_chunks.contains(&key) {
-            active_chunks.insert(key, entry.parent_entity);
+        // An inner merge can finalize alongside its coarser parent. The inner
+        // parent is then a child scheduled for despawn, so revealing it would
+        // queue an insert/remove command against a dead entity.
+        if !despawn_children.contains(&entry.parent_entity) {
+            if let Ok(mut e) = commands.get_entity(entry.parent_entity) {
+                e.remove::<HoldForMerge>().insert(Visibility::Visible);
+            }
+            if !active_chunks.contains(&key) {
+                active_chunks.insert(key, entry.parent_entity);
+            }
         }
         // Despawn the fallback children.
         for &c in &entry.children {
@@ -790,6 +780,62 @@ fn finalize_retained_merges(
         retained_merges.map.remove(&key);
     }
     profiler.record("finalize_retained_merges", t0.elapsed());
+}
+
+fn has_merged_ancestor(key: CellKey, merged_keys: &HashSet<CellKey>) -> bool {
+    merged_keys
+        .iter()
+        .any(|&merged_key| is_ancestor_of(merged_key, key))
+}
+
+fn is_ancestor_of(ancestor_key: CellKey, key: CellKey) -> bool {
+    let mut ancestor = parent_of(key);
+    while let Some(parent) = ancestor {
+        if parent == ancestor_key {
+            return true;
+        }
+        ancestor = parent_of(parent);
+    }
+    false
+}
+
+fn has_conflicting_merge(key: CellKey, merged_keys: &HashSet<CellKey>) -> bool {
+    has_merged_ancestor(key, merged_keys)
+        || merged_keys
+            .iter()
+            .any(|&merged_key| is_ancestor_of(key, merged_key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{has_conflicting_merge, has_merged_ancestor};
+    use er_core::math::CellKey;
+    use std::collections::HashSet;
+
+    #[test]
+    fn detects_merged_ancestor_for_nested_merge() {
+        let grandparent = CellKey {
+            face: 0,
+            i: 0,
+            j: 0,
+            lod: 0,
+        };
+        let parent = CellKey {
+            face: 0,
+            i: 1,
+            j: 0,
+            lod: 1,
+        };
+        let mut merged = HashSet::new();
+        merged.insert(grandparent);
+
+        assert!(has_merged_ancestor(parent, &merged));
+        assert!(!has_merged_ancestor(grandparent, &merged));
+
+        merged.clear();
+        merged.insert(parent);
+        assert!(has_conflicting_merge(grandparent, &merged));
+    }
 }
 
 fn update_neighbor_lod(

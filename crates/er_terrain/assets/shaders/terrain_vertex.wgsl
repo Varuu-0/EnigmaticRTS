@@ -127,7 +127,7 @@ fn stitch(gi: u32, gj: u32, base_pos: vec3<f32>, base_elev: f32, m: TerrainMater
         if (step > 1u && (gi % step) != 0u) {
             let k_lo = (gi / step) * step;
             let k_hi = min(k_lo + step, 16u);
-            let t = f32(gj - k_lo) / f32(step);
+            let t = f32(gi - k_lo) / f32(step);
             let a = grid(k_lo, 16u, m, ep);
             let b = grid(k_hi, 16u, m, ep);
             var r: StitchResult;

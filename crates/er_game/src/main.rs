@@ -6,12 +6,14 @@
 use bevy::camera::{PerspectiveProjection, Projection};
 use bevy::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
+    log::{Level, LogPlugin},
     prelude::*,
     render::RenderPlugin,
 };
 
 mod bench;
 mod camera;
+mod crash;
 mod debug_overlay;
 mod menu;
 mod screenshot_test;
@@ -27,6 +29,9 @@ use settings::GraphicsSettings;
 use space::SpacePlugin;
 
 fn main() {
+    crash::install_crash_hook();
+    configure_log_filter();
+
     let test_config = parse_test_args();
     let bench_config = bench::parse_bench_args();
     let is_test_mode = test_config.is_some();
@@ -46,34 +51,49 @@ fn main() {
     };
 
     if headless {
-        app.add_plugins(DefaultPlugins.set(render_plugin).set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Planet Solar Sim (Bench)".into(),
-                present_mode,
-                visible: false,
-                ..default()
-            }),
-            ..default()
-        }));
+        app.add_plugins(
+            DefaultPlugins
+                .set(log_plugin())
+                .set(render_plugin)
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Planet Solar Sim (Bench)".into(),
+                        present_mode,
+                        visible: false,
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        );
     } else if is_test_mode {
-        app.add_plugins(DefaultPlugins.set(render_plugin).set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Planet Solar Sim (Test Mode)".into(),
-                present_mode,
-                visible: true,
-                ..default()
-            }),
-            ..default()
-        }));
+        app.add_plugins(
+            DefaultPlugins
+                .set(log_plugin())
+                .set(render_plugin)
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Planet Solar Sim (Test Mode)".into(),
+                        present_mode,
+                        visible: true,
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        );
     } else {
-        app.add_plugins(DefaultPlugins.set(render_plugin).set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Planet Solar Sim".into(),
-                present_mode,
-                ..default()
-            }),
-            ..default()
-        }));
+        app.add_plugins(
+            DefaultPlugins
+                .set(log_plugin())
+                .set(render_plugin)
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Planet Solar Sim".into(),
+                        present_mode,
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        );
     }
 
     app.add_plugins(FrameTimeDiagnosticsPlugin::default())
@@ -101,6 +121,27 @@ fn main() {
     app.add_systems(Startup, (setup, apply_startup_window_mode));
 
     app.run();
+}
+
+fn log_plugin() -> LogPlugin {
+    LogPlugin {
+        filter: "info,wgpu=warn,naga=warn".to_owned(),
+        level: Level::INFO,
+        ..default()
+    }
+}
+
+fn configure_log_filter() {
+    let args: Vec<String> = std::env::args().collect();
+    let mut index = 1;
+
+    while index + 1 < args.len() {
+        if args[index] == "--log-level" {
+            std::env::set_var("RUST_LOG", &args[index + 1]);
+            return;
+        }
+        index += 1;
+    }
 }
 
 fn setup(mut commands: Commands, settings: Res<GraphicsSettings>) {

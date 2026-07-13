@@ -603,3 +603,17 @@ fn edge_stitch_snaps_inbetween_to_coarse_edge() {
         );
     }
 }
+
+#[test]
+fn bottom_edge_stitch_interpolates_along_u() {
+    let shader = include_str!("../assets/shaders/terrain_vertex.wgsl");
+    let bottom_edge = shader
+        .split("if (gj == 16u)")
+        .nth(1)
+        .expect("bottom-edge stitch branch");
+
+    assert!(
+        bottom_edge.contains("let t = f32(gi - k_lo) / f32(step);"),
+        "bottom-edge stitch must interpolate along gi"
+    );
+}
