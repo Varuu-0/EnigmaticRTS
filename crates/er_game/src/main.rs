@@ -8,20 +8,28 @@ use bevy::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     log::{Level, LogPlugin},
     prelude::*,
-    render::RenderPlugin,
+    render::{
+        diagnostic::RenderDiagnosticsPlugin,
+        settings::{WgpuFeatures, WgpuSettings},
+        RenderPlugin,
+    },
 };
 
 mod bench;
 mod camera;
+mod chunk_cap_controller;
 mod crash;
 mod debug_overlay;
+mod diagnostics;
 mod menu;
 mod screenshot_test;
 mod settings;
 mod space;
 
 use camera::{CameraPlugin, CameraUpdate, OrbitCamera};
+use chunk_cap_controller::DynamicChunkCapControllerPlugin;
 use debug_overlay::DebugOverlayPlugin;
+use diagnostics::PerformanceDiagnosticsPlugin;
 use er_terrain::TerrainPlugin;
 use menu::SettingsMenuPlugin;
 use screenshot_test::{parse_test_args, ScreenshotTestPlugin};
@@ -36,6 +44,7 @@ fn main() {
     let bench_config = bench::parse_bench_args();
     let is_test_mode = test_config.is_some();
     let is_bench_mode = bench_config.is_some();
+    let gpu_diagnostics = has_gpu_diagnostics_flag();
     let headless = is_bench_mode;
 
     let settings = settings::load_settings();
@@ -43,10 +52,17 @@ fn main() {
 
     let mut app = App::new();
 
+    let mut wgpu_settings = WgpuSettings::default();
+    if gpu_diagnostics {
+        wgpu_settings.features |=
+            WgpuFeatures::TIMESTAMP_QUERY | WgpuFeatures::PIPELINE_STATISTICS_QUERY;
+    }
+
     let render_plugin = RenderPlugin {
         // Screenshot and benchmark modes need deterministic shader readiness before
         // their first captured frame.
         synchronous_pipeline_compilation: is_test_mode || is_bench_mode,
+        render_creation: wgpu_settings.into(),
         ..default()
     };
 
@@ -98,6 +114,8 @@ fn main() {
 
     app.add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(LogDiagnosticsPlugin::default())
+        .add_plugins(RenderDiagnosticsPlugin)
+        .add_plugins(PerformanceDiagnosticsPlugin)
         .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
         .insert_resource(settings)
         .add_plugins(CameraPlugin)
@@ -115,12 +133,17 @@ fn main() {
         app.add_plugins(ScreenshotTestPlugin);
     } else {
         app.add_plugins(SettingsMenuPlugin)
+            .add_plugins(DynamicChunkCapControllerPlugin)
             .add_plugins(DebugOverlayPlugin);
     }
 
     app.add_systems(Startup, (setup, apply_startup_window_mode));
 
     app.run();
+}
+
+fn has_gpu_diagnostics_flag() -> bool {
+    std::env::args().any(|arg| arg == "--gpu-diagnostics")
 }
 
 fn log_plugin() -> LogPlugin {

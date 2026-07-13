@@ -5,14 +5,19 @@ pub const MAX_QUADTREE_DEPTH: u8 = 12;
 pub const CHUNK_VERT_RES: u32 = 17;
 pub const CHUNK_QUADS_PER_EDGE: u32 = 16; // CHUNK_VERT_RES - 1
 pub const LOD_SPLIT_BUDGET_PER_FRAME: usize = 48;
-// Split once a chunk's projected geometric error exceeds 100 px. This refines
-// the six root cube faces at the default orbit while keeping close views within
-// a practical interactive mesh budget.
-pub const SCREEN_ERROR_THRESHOLD: f32 = 100.0;
+// Split once a chunk's projected geometric error exceeds 40 px. This keeps the
+// default orbit dense enough to render a continuous planet disk instead of the
+// sparse cube-face shell produced by coarser LODs.
+pub const SCREEN_ERROR_THRESHOLD: f32 = 40.0;
 pub const MERGE_HYSTERESIS: f32 = 0.6;
 pub const MAX_RENDER_DISTANCE: f64 = PLANET_RADIUS_DEFAULT * 8.0;
-// Safety limit for close camera views; normal play should remain well below it.
+// Never evict live terrain to satisfy this limit. Stop splitting before the
+// cap instead, preserving complete coverage without unbounded close-view cost.
 pub const ACTIVE_CHUNK_CAP: usize = 2000;
+// The six cube-face roots are the persistent coarse coverage floor. They bypass
+// only the distance cull at extreme zoom-out; horizon and frustum culling still
+// prevent rendering the planet's hidden side.
+pub const MINIMUM_TERRAIN_COVERAGE_LOD: u8 = 0;
 
 /// Converts angular-size ratio (chunk_size / distance) to approximate pixel
 /// error: viewport_height / (2 * tan(fov/2)) for 1080p + 60° FOV.

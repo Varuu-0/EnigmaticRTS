@@ -3,6 +3,8 @@ use er_core::config::{DEFAULT_DAY_LENGTH_SEC, MAX_QUADTREE_DEPTH};
 use er_core::math::{cells_per_edge, dir_to_surface, uv_to_dir, world_to_render, OriginOffset};
 use er_terrain::{ChunkComponent, FrameProfiler, TerrainDebugInfo, TerrainState};
 
+use crate::chunk_cap_controller::DynamicChunkCapController;
+use crate::diagnostics::PerformanceSnapshot;
 use crate::space::{SimTime, TimeScale};
 use er_terrain::SunDirection;
 
@@ -51,6 +53,8 @@ fn update_debug_text(
     sun_direction: Res<SunDirection>,
     sim_time: Res<SimTime>,
     time_scale: Res<TimeScale>,
+    performance: Res<PerformanceSnapshot>,
+    chunk_cap: Res<DynamicChunkCapController>,
     mut query: Query<&mut Text, With<DebugText>>,
 ) {
     if let Ok(mut text) = query.single_mut() {
@@ -73,14 +77,75 @@ fn update_debug_text(
 
         let mut lines = String::new();
         lines.push_str(&format!(
-            "FPS: {:.0} | Frame: {:.1}ms | Chunks: {} | LOD: {} | S/M: {}/{}\n",
+            "FPS: {:.0} | Frame: {:.1}ms | P95/P99: {:.1}/{:.1}ms | 1%: {:.0}\n",
             fps,
             frame_ms,
-            debug.active_chunks,
-            debug.max_depth,
-            debug.pending_splits,
-            debug.pending_merges
+            performance.frame_p95_ms,
+            performance.frame_p99_ms,
+            performance.one_percent_low_fps,
         ));
+        lines.push_str(&format!(
+            "Chunks: {}/{} | LOD: {} | Cap p95: {:.1}ms | S/M: {}/{} | Terrain mesh: {:.1} MiB | Built: {} | Draw work: {}\n",
+            debug.active_chunks,
+            chunk_cap.current_cap,
+            debug.max_depth,
+            chunk_cap.last_p95_ms,
+            debug.pending_splits,
+            debug.pending_merges,
+            debug.estimated_mesh_bytes as f64 / (1024.0 * 1024.0),
+            debug.meshes_built,
+            performance.visible_mesh_draw_estimate,
+        ));
+        let process_memory = performance
+            .process_memory_gib
+            .map(|memory| format!("{memory:.2} GiB"))
+            .unwrap_or_else(|| "waiting".to_owned());
+        let process_cpu = performance
+            .process_cpu_percent
+            .map(|cpu| format!("{cpu:.0}%"))
+            .unwrap_or_else(|| "waiting".to_owned());
+        let gpu_vram = match (
+            performance.gpu_vram_usage_bytes,
+            performance.gpu_vram_budget_bytes,
+        ) {
+            (Some(usage), Some(budget)) => format!(
+                "{:.2}/{:.2} GiB",
+                usage as f64 / (1024.0 * 1024.0 * 1024.0),
+                budget as f64 / (1024.0 * 1024.0 * 1024.0),
+            ),
+            _ => "unavailable".to_owned(),
+        };
+        let mesh_allocator = performance
+            .mesh_allocator_bytes
+            .map(|bytes| format!("{:.1} MiB", bytes / (1024.0 * 1024.0)))
+            .unwrap_or_else(|| "waiting".to_owned());
+        lines.push_str(&format!(
+            "CPU: {} | RAM: {} | VRAM: {} | Mesh slabs: {} | Hitches 16/33/50: {}/{}/{}\n",
+            process_cpu,
+            process_memory,
+            gpu_vram,
+            mesh_allocator,
+            performance.hitch_16ms_count,
+            performance.hitch_33ms_count,
+            performance.hitch_50ms_count,
+        ));
+        let opaque_gpu = performance
+            .opaque_render_gpu_ms
+            .map(|value| format!("{value:.2}ms"))
+            .unwrap_or_else(|| "enable --gpu-diagnostics".to_owned());
+        let opaque_cpu = performance
+            .opaque_render_cpu_ms
+            .map(|value| format!("{value:.2}ms"))
+            .unwrap_or_else(|| "waiting".to_owned());
+        lines.push_str(&format!(
+            "Opaque pass CPU/GPU: {}/{}\n",
+            opaque_cpu, opaque_gpu,
+        ));
+        let input_to_cpu = performance
+            .input_to_cpu_frame_end_ms
+            .map(|value| format!("{value:.2}ms"))
+            .unwrap_or_else(|| "press a key or mouse button".to_owned());
+        lines.push_str(&format!("Input to CPU frame end: {}\n", input_to_cpu));
         lines.push_str(&format!(
             "Sun: ({:.2}, {:.2}, {:.2}) | Day: {:.0}% | Speed: {}\n",
             sun.x, sun.y, sun.z, day_percent, speed_str

@@ -17,6 +17,7 @@ use bevy::prelude::*;
 use er_terrain::{TerrainDebugInfo, TerrainUpdate};
 
 use crate::camera::OrbitCamera;
+use crate::diagnostics::PerformanceSnapshot;
 
 const DEFAULT_WARMUP: u32 = 30;
 const DEFAULT_MEASURE: u32 = 60;
@@ -66,6 +67,18 @@ pub struct BenchDebugSnapshot {
     pub pending_meshes: usize,
     pub visible_chunks: usize,
     pub frame_time_ms: f32,
+    pub meshes_built: usize,
+    pub estimated_mesh_bytes: usize,
+    pub process_cpu_percent: Option<f64>,
+    pub process_memory_gib: Option<f64>,
+    pub gpu_vram_usage_bytes: Option<u64>,
+    pub gpu_vram_budget_bytes: Option<u64>,
+    pub opaque_render_cpu_ms: Option<f64>,
+    pub opaque_render_gpu_ms: Option<f64>,
+    pub mesh_allocator_bytes: Option<f64>,
+    pub mesh_allocator_allocations: Option<f64>,
+    pub input_to_cpu_frame_end_ms: Option<f32>,
+    pub visible_mesh_draw_estimate: usize,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -149,6 +162,7 @@ fn run_benchmark(
     time: Res<Time>,
     mut camera_query: Query<(&mut OrbitCamera, &mut Transform), With<Camera3d>>,
     debug_info: Res<TerrainDebugInfo>,
+    performance: Res<PerformanceSnapshot>,
     mut exit: MessageWriter<AppExit>,
 ) {
     if config.completed {
@@ -161,6 +175,7 @@ fn run_benchmark(
         config.completed = true;
         info!("Benchmark completed.\n{}", report);
         exit.write(AppExit::Success);
+        return;
     }
 
     let scenario_name = config.scenarios[config.current_index].name.clone();
@@ -229,6 +244,18 @@ fn run_benchmark(
                         pending_meshes: debug_info.pending_meshes,
                         visible_chunks: debug_info.visible_chunks,
                         frame_time_ms: debug_info.frame_time_ms,
+                        meshes_built: debug_info.meshes_built,
+                        estimated_mesh_bytes: debug_info.estimated_mesh_bytes,
+                        process_cpu_percent: performance.process_cpu_percent,
+                        process_memory_gib: performance.process_memory_gib,
+                        gpu_vram_usage_bytes: performance.gpu_vram_usage_bytes,
+                        gpu_vram_budget_bytes: performance.gpu_vram_budget_bytes,
+                        opaque_render_cpu_ms: performance.opaque_render_cpu_ms,
+                        opaque_render_gpu_ms: performance.opaque_render_gpu_ms,
+                        mesh_allocator_bytes: performance.mesh_allocator_bytes,
+                        mesh_allocator_allocations: performance.mesh_allocator_allocations,
+                        input_to_cpu_frame_end_ms: performance.input_to_cpu_frame_end_ms,
+                        visible_mesh_draw_estimate: performance.visible_mesh_draw_estimate,
                     },
                 });
                 config.current_index += 1;
@@ -281,8 +308,54 @@ fn generate_report(config: &BenchConfig) -> String {
     lines.push(String::new());
     lines.push("TerrainDebugInfo at end of each scenario:".to_string());
     for result in &config.results {
+        let process_cpu = result
+            .debug
+            .process_cpu_percent
+            .map(|value| format!("{value:.1}%"))
+            .unwrap_or_else(|| "waiting".to_owned());
+        let process_memory = result
+            .debug
+            .process_memory_gib
+            .map(|value| format!("{value:.2}GiB"))
+            .unwrap_or_else(|| "waiting".to_owned());
+        let gpu_vram = match (
+            result.debug.gpu_vram_usage_bytes,
+            result.debug.gpu_vram_budget_bytes,
+        ) {
+            (Some(usage), Some(budget)) => format!(
+                "{:.2}/{:.2}GiB",
+                usage as f64 / (1024.0 * 1024.0 * 1024.0),
+                budget as f64 / (1024.0 * 1024.0 * 1024.0),
+            ),
+            _ => "unavailable".to_owned(),
+        };
+        let opaque_cpu = result
+            .debug
+            .opaque_render_cpu_ms
+            .map(|value| format!("{value:.2}ms"))
+            .unwrap_or_else(|| "waiting".to_owned());
+        let opaque_gpu = result
+            .debug
+            .opaque_render_gpu_ms
+            .map(|value| format!("{value:.2}ms"))
+            .unwrap_or_else(|| "unavailable".to_owned());
+        let mesh_allocator = result
+            .debug
+            .mesh_allocator_bytes
+            .map(|bytes| format!("{:.2}MiB", bytes / (1024.0 * 1024.0)))
+            .unwrap_or_else(|| "waiting".to_owned());
+        let mesh_allocations = result
+            .debug
+            .mesh_allocator_allocations
+            .map(|count| format!("{count:.0}"))
+            .unwrap_or_else(|| "waiting".to_owned());
+        let input_latency = result
+            .debug
+            .input_to_cpu_frame_end_ms
+            .map(|value| format!("{value:.2}ms"))
+            .unwrap_or_else(|| "none".to_owned());
         lines.push(format!(
-            "  {:<12} dist={} active={} depth={} visible={} pending(s/m/mesh)={}/{}/{} frame_time_ms={:.2}",
+            "  {:<12} dist={} active={} depth={} visible={} pending(s/m/mesh)={}/{}/{} frame_time_ms={:.2} mesh={:.2}MiB built={} draw_work={} slabs={} allocs={} cpu={} ram={} vram={} opaque_cpu/gpu={}/{} input_to_cpu={}",
             result.name,
             result.distance,
             result.debug.active_chunks,
@@ -292,6 +365,17 @@ fn generate_report(config: &BenchConfig) -> String {
             result.debug.pending_merges,
             result.debug.pending_meshes,
             result.debug.frame_time_ms,
+            result.debug.estimated_mesh_bytes as f64 / (1024.0 * 1024.0),
+            result.debug.meshes_built,
+            result.debug.visible_mesh_draw_estimate,
+            mesh_allocator,
+            mesh_allocations,
+            process_cpu,
+            process_memory,
+            gpu_vram,
+            opaque_cpu,
+            opaque_gpu,
+            input_latency,
         ));
     }
 

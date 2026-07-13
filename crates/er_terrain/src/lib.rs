@@ -13,7 +13,7 @@ pub mod quadtree;
 pub mod systems;
 
 pub use chunk::{ChunkComponent, HoldForMerge, HoldHidden};
-pub use debug::TerrainDebugInfo;
+pub use debug::{TerrainDebugInfo, ESTIMATED_BYTES_PER_CHUNK_MESH};
 pub use material::{TerrainMaterial, TerrainMaterialUniform};
 pub use mesh_gen::{
     generate_chunk_mesh, ATTRIBUTE_ELEVATION, ATTRIBUTE_GRID, ATTRIBUTE_LOW_FREQ_ELEV,

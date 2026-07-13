@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::chunk::{ChunkComponent, HoldForMerge, HoldHidden};
-use crate::culling::{frustum_cull_sphere, is_below_horizon};
+use crate::culling::{frustum_cull_sphere, is_below_horizon, is_beyond_render_distance};
 use crate::debug::TerrainDebugInfo;
 use crate::lod::{chunk_camera_distance, should_merge_parent, should_split};
 use crate::material::{TerrainMaterial, TerrainMaterialUniform, FRAGMENT_SHADER, VERTEX_SHADER};
@@ -531,7 +531,10 @@ fn cull_chunks(
         let chunk_center = chunk_dir * terrain_state.planet_radius;
 
         let dist_sq = (chunk_center - camera_pos).length_squared();
-        if dist_sq > max_render_dist_sq {
+        // At maximum zoom-out, retain the six root faces as a coarse coverage
+        // floor. Finer chunks still obey the normal distance limit, and roots
+        // continue through horizon/frustum culling below.
+        if is_beyond_render_distance(key, dist_sq, max_render_dist_sq) {
             *visibility = Visibility::Hidden;
             continue;
         }
@@ -569,6 +572,7 @@ fn update_debug_info(
     active_chunks: Res<ActiveChunks>,
     pending: Res<PendingChunkMeshes>,
     chunk_query: Query<&Visibility, With<ChunkComponent>>,
+    mesh_query: Query<(), (With<ChunkComponent>, With<Mesh3d>)>,
     mut debug: ResMut<TerrainDebugInfo>,
     profiler: Res<crate::profiler::FrameProfiler>,
 ) {
@@ -584,6 +588,8 @@ fn update_debug_info(
         .iter()
         .filter(|visibility| matches!(visibility, Visibility::Visible))
         .count();
+    debug.estimated_mesh_bytes =
+        mesh_query.iter().count() * crate::debug::ESTIMATED_BYTES_PER_CHUNK_MESH;
     debug.frame_time_ms = profiler.total().as_secs_f32() * 1000.0;
 }
 
@@ -654,16 +660,19 @@ fn apply_pending_chunk_meshes(
     mut meshes: ResMut<Assets<Mesh>>,
     mut pending: ResMut<PendingChunkMeshes>,
     chunk_query: Query<&ChunkComponent>,
+    mut debug: ResMut<TerrainDebugInfo>,
     mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
     let t0 = Instant::now();
     let mut done = Vec::new();
+    let mut meshes_applied = 0usize;
     for (&entity, task) in &mut pending.0 {
         if let Some(mesh) = check_ready(task) {
             if chunk_query.get(entity).is_ok() {
                 let handle = meshes.add(mesh);
                 if let Ok(mut e) = commands.get_entity(entity) {
                     e.insert(Mesh3d(handle));
+                    meshes_applied += 1;
                 }
             }
             done.push(entity);
@@ -672,6 +681,7 @@ fn apply_pending_chunk_meshes(
     for entity in done {
         pending.0.remove(&entity);
     }
+    debug.meshes_built = meshes_applied;
     profiler.record("apply_meshes", t0.elapsed());
 }
 
