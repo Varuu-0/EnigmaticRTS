@@ -4,4 +4,9 @@
 AGENTS.md
 *.playwright-mcp
 /screenshots_retained/
+/screenshots/
 /crash_reports/
+/tools/terrain_diffusion/.venv/
+/tools/terrain_diffusion/upstream/
+.kilo/plans/earth-scale-natural-terrain-plan.md
+.kilo/plans/terrain-diffusion-integration-plan.md

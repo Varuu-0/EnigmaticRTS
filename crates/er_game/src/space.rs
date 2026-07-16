@@ -12,15 +12,24 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::{Shader, ShaderRef};
 use er_core::config::DEFAULT_DAY_LENGTH_SEC;
-use er_terrain::{ChunkComponent, SunDirection, TerrainMaterial};
+use er_terrain::{SharedTerrainMaterial, SunDirection, TerrainMaterial};
 use std::sync::OnceLock;
 
-static ATMOSPHERE_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
 static STARFIELD_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
 static SUN_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
 static CLOUD_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
 
-const SUN_DISTANCE: f32 = 300000.0;
+fn sun_distance(planet_radius: f32) -> f32 {
+    planet_radius * 8.333334
+}
+
+fn sun_radius(planet_radius: f32) -> f32 {
+    planet_radius * 0.4167
+}
+
+fn starfield_radius(planet_radius: f32) -> f32 {
+    planet_radius * 11.1112
+}
 
 /// Time scale for the simulation (1.0 = real-time, 0.0 = paused).
 #[derive(Resource, Clone, Copy)]
@@ -47,61 +56,6 @@ pub struct SunLight;
 
 #[derive(Component)]
 pub struct SunSphere;
-
-// ---------------------------------------------------------------------------
-// Atmosphere
-// ---------------------------------------------------------------------------
-
-#[derive(encase::ShaderType, Clone, Copy)]
-pub struct AtmosphereUniform {
-    pub camera_x: f32,
-    pub camera_y: f32,
-    pub camera_z: f32,
-    pub sun_x: f32,
-    pub sun_y: f32,
-    pub sun_z: f32,
-    pub planet_radius: f32,
-    pub atmosphere_radius: f32,
-}
-
-#[derive(Asset, TypePath, AsBindGroup, Clone)]
-pub struct AtmosphereMaterial {
-    #[uniform(0)]
-    pub uniform: AtmosphereUniform,
-}
-
-impl Material for AtmosphereMaterial {
-    fn vertex_shader() -> ShaderRef {
-        ShaderRef::Handle(ATMOSPHERE_SHADER.get().expect("atmosphere shader").clone())
-    }
-    fn fragment_shader() -> ShaderRef {
-        ShaderRef::Handle(ATMOSPHERE_SHADER.get().expect("atmosphere shader").clone())
-    }
-    fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
-    }
-    fn specialize(
-        _pipeline: &MaterialPipeline,
-        descriptor: &mut RenderPipelineDescriptor,
-        layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
-    ) -> Result<(), SpecializedMeshPipelineError> {
-        let vertex_layout = layout
-            .0
-            .get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?;
-        descriptor.vertex.buffers = vec![vertex_layout];
-        descriptor.primitive.cull_mode = Some(Face::Front);
-        Ok(())
-    }
-}
-
-#[derive(Component)]
-pub struct AtmosphereComponent;
-
-#[derive(Resource)]
-pub struct AtmosphereState {
-    pub material: Handle<AtmosphereMaterial>,
-}
 
 // ---------------------------------------------------------------------------
 // Starfield
@@ -306,7 +260,6 @@ impl Plugin for SpacePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(TimeScale::default())
             .insert_resource(SimTime::default())
-            .add_plugins(MaterialPlugin::<AtmosphereMaterial>::default())
             .add_plugins(MaterialPlugin::<StarfieldMaterial>::default())
             .add_plugins(MaterialPlugin::<SunMaterial>::default())
             .add_plugins(MaterialPlugin::<CloudMaterial>::default())
@@ -328,17 +281,12 @@ impl Plugin for SpacePlugin {
 fn setup_space(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<AtmosphereMaterial>>,
     mut star_materials: ResMut<Assets<StarfieldMaterial>>,
     mut sun_materials: ResMut<Assets<SunMaterial>>,
     mut cloud_materials: ResMut<Assets<CloudMaterial>>,
     mut shaders: ResMut<Assets<Shader>>,
     terrain_state: Res<er_terrain::TerrainState>,
 ) {
-    let atm_source = include_str!("../assets/shaders/atmosphere.wgsl");
-    let atm_handle = shaders.add(Shader::from_wgsl(atm_source, "atmosphere"));
-    let _ = ATMOSPHERE_SHADER.set(atm_handle);
-
     let star_source = include_str!("../assets/shaders/starfield.wgsl");
     let star_handle = shaders.add(Shader::from_wgsl(star_source, "starfield"));
     let _ = STARFIELD_SHADER.set(star_handle);
@@ -352,33 +300,6 @@ fn setup_space(
     let _ = CLOUD_SHADER.set(cloud_handle);
 
     let planet_radius = terrain_state.planet_radius as f32;
-
-    // Atmosphere shell
-    let atm_radius = planet_radius * 1.025;
-    let atm_uniform = AtmosphereUniform {
-        camera_x: 0.0,
-        camera_y: 0.0,
-        camera_z: 90000.0,
-        sun_x: 0.0,
-        sun_y: 1.0,
-        sun_z: 0.0,
-        planet_radius,
-        atmosphere_radius: atm_radius,
-    };
-    let atm_material = materials.add(AtmosphereMaterial {
-        uniform: atm_uniform,
-    });
-    let atm_mesh = meshes.add(make_sphere(atm_radius, 64, 32));
-    commands.spawn((
-        AtmosphereComponent,
-        MeshMaterial3d(atm_material.clone()),
-        Mesh3d(atm_mesh),
-        Transform::default(),
-        Visibility::Hidden,
-    ));
-    commands.insert_resource(AtmosphereState {
-        material: atm_material,
-    });
 
     // Starfield
     let star_uniform = StarfieldUniform {
@@ -394,7 +315,7 @@ fn setup_space(
     let star_mat = star_materials.add(StarfieldMaterial {
         uniform: star_uniform,
     });
-    let star_mesh = meshes.add(make_sphere(400000.0, 128, 64));
+    let star_mesh = meshes.add(make_sphere(starfield_radius(planet_radius), 128, 64));
     commands.spawn((
         StarfieldComponent,
         MeshMaterial3d(star_mat.clone()),
@@ -406,9 +327,8 @@ fn setup_space(
 
     // Sun
     let sun_dir = Vec3::new(0.0, 1.0, 0.0);
-    let sun_distance = SUN_DISTANCE;
-    let sun_radius = 15000.0;
-    let sun_pos = sun_dir * sun_distance;
+    let sun_pos = sun_dir * sun_distance(planet_radius);
+    let sun_radius = sun_radius(planet_radius);
     let sun_uniform = SunUniform {
         color_r: 1.0,
         color_g: 0.95,
@@ -482,20 +402,12 @@ fn setup_space(
 
 fn update_space(
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
-    mut atm_materials: ResMut<Assets<AtmosphereMaterial>>,
-    atm_state: Res<AtmosphereState>,
     mut starfield_query: Query<&mut Transform, With<StarfieldComponent>>,
 ) {
     let Ok(cam) = camera_query.single() else {
         return;
     };
     let cam_pos = cam.translation();
-
-    if let Some(mut mat) = atm_materials.get_mut(&atm_state.material) {
-        mat.uniform.camera_x = cam_pos.x;
-        mat.uniform.camera_y = cam_pos.y;
-        mat.uniform.camera_z = cam_pos.z;
-    }
 
     for mut tf in &mut starfield_query {
         tf.translation = cam_pos;
@@ -539,8 +451,6 @@ fn update_sun(
     light_query: Query<Entity, With<SunLight>>,
     sphere_query: Query<Entity, With<SunSphere>>,
     mut commands: Commands,
-    mut atm_materials: ResMut<Assets<AtmosphereMaterial>>,
-    atm_state: Res<AtmosphereState>,
     mut star_materials: ResMut<Assets<StarfieldMaterial>>,
     starfield_state: Res<StarfieldState>,
     mut sun_materials: ResMut<Assets<SunMaterial>>,
@@ -548,6 +458,7 @@ fn update_sun(
     mut cloud_materials: ResMut<Assets<CloudMaterial>>,
     cloud_state: Res<CloudState>,
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
+    terrain_state: Res<er_terrain::TerrainState>,
 ) {
     sim_time.0 += time.delta_secs() * time_scale.current;
 
@@ -557,7 +468,8 @@ fn update_sun(
 
     sun_direction.0 = sun_dir;
 
-    let sun_pos = sun_dir * SUN_DISTANCE;
+    let planet_radius = terrain_state.planet_radius as f32;
+    let sun_pos = sun_dir * sun_distance(planet_radius);
 
     let forward = -sun_dir;
     let up = if forward.y.abs() > 0.99 {
@@ -577,12 +489,6 @@ fn update_sun(
         if let Ok(mut e) = commands.get_entity(entity) {
             e.insert(Transform::from_translation(sun_pos));
         }
-    }
-
-    if let Some(mut mat) = atm_materials.get_mut(&atm_state.material) {
-        mat.uniform.sun_x = sun_dir.x;
-        mat.uniform.sun_y = sun_dir.y;
-        mat.uniform.sun_z = sun_dir.z;
     }
 
     if let Some(mut mat) = star_materials.get_mut(&starfield_state.material) {
@@ -613,7 +519,7 @@ fn update_sun(
 fn update_terrain_uniforms(
     sim_time: Res<SimTime>,
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
-    chunk_query: Query<(&MeshMaterial3d<TerrainMaterial>, &Visibility), With<ChunkComponent>>,
+    terrain_material: Res<SharedTerrainMaterial>,
     mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
     mut ocean_materials: ResMut<Assets<er_terrain::ocean::OceanMaterial>>,
 ) {
@@ -633,19 +539,14 @@ fn update_terrain_uniforms(
     let cy = cam_pos.y;
     let cz = cam_pos.z;
 
-    for (mat_handle, vis) in &chunk_query {
-        if *vis == Visibility::Hidden {
-            continue;
-        }
-        if let Some(mut mat) = terrain_materials.get_mut(&mat_handle.0) {
-            let u = &mut mat.uniform;
-            u.sun_dir_x = sx;
-            u.sun_dir_y = sy;
-            u.sun_dir_z = sz;
-            u.camera_pos_x = cx;
-            u.camera_pos_y = cy;
-            u.camera_pos_z = cz;
-        }
+    if let Some(mut mat) = terrain_materials.get_mut(&terrain_material.0) {
+        let u = &mut mat.uniform;
+        u.sun_dir_x = sx;
+        u.sun_dir_y = sy;
+        u.sun_dir_z = sz;
+        u.camera_pos_x = cx;
+        u.camera_pos_y = cy;
+        u.camera_pos_z = cz;
     }
 
     for (_, mat) in ocean_materials.iter_mut() {

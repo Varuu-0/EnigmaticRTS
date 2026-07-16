@@ -1,3 +1,4 @@
+use bevy::camera::visibility::NoFrustumCulling;
 use bevy::ecs::schedule::ApplyDeferred;
 use bevy::ecs::schedule::SystemSet;
 use bevy::pbr::MaterialPlugin;
@@ -5,23 +6,25 @@ use bevy::prelude::*;
 use bevy::shader::Shader;
 use bevy::tasks::{futures::check_ready, AsyncComputeTaskPool, Task};
 use er_core::config::{
-    ACTIVE_CHUNK_CAP, LOD_SPLIT_BUDGET_PER_FRAME, MAX_QUADTREE_DEPTH, MAX_RENDER_DISTANCE,
-    MERGE_HYSTERESIS, PLANET_RADIUS_DEFAULT, SCREEN_ERROR_THRESHOLD,
+    PlanetPreset, ACTIVE_CHUNK_CAP, LOD_SPLIT_BUDGET_PER_FRAME, MERGE_HYSTERESIS,
+    PLANET_RADIUS_DEFAULT, SCREEN_ERROR_THRESHOLD,
 };
 use er_core::math::{cell_size, cell_to_dir, CellKey};
 use er_core::seed::PlanetSeed;
 use er_world::cache::WorldCache;
-use er_world::elevation::{elevation_params, ElevationNoise, ElevationParams};
-use er_world::params::{
-    climate_noise as make_climate_noise, planet_params as make_planet_params, ClimateNoise,
-    PlanetParams,
+use er_world::elevation::{elevation_params, ElevationParams};
+use er_world::params::{planet_params as make_planet_params, PlanetParams};
+use er_world::terrain_field::{
+    HybridTerrainField, MacroTerrainField, ProceduralTerrainField, TerrainField, TerrainSourceMode,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::chunk::{ChunkComponent, HoldForMerge, HoldHidden};
-use crate::culling::{frustum_cull_sphere, is_below_horizon, is_beyond_render_distance};
+use crate::culling::{
+    frustum_cull_sphere, is_below_horizon, is_beyond_render_distance, is_minimum_coverage_chunk,
+};
 use crate::debug::TerrainDebugInfo;
 use crate::lod::{chunk_camera_distance, should_merge_parent, should_split};
 use crate::material::{TerrainMaterial, TerrainMaterialUniform, FRAGMENT_SHADER, VERTEX_SHADER};
@@ -49,9 +52,9 @@ pub struct TerrainState {
     pub planet_radius: f64,
     pub elevation_scale: f32,
     pub params: ElevationParams,
-    pub noise: ElevationNoise,
     pub planet_params: PlanetParams,
-    pub climate_noise: ClimateNoise,
+    pub source_mode: TerrainSourceMode,
+    pub field: Arc<dyn TerrainField>,
     pub base_uniform: TerrainMaterialUniform,
     pub max_quadtree_depth: u8,
     pub screen_error_threshold: f32,
@@ -59,15 +62,52 @@ pub struct TerrainState {
     pub max_render_distance: f64,
     pub active_chunk_cap: usize,
     pub lod_split_budget_per_frame: usize,
-    pub cache: Arc<WorldCache>,
 }
 
 impl TerrainState {
     pub fn new(planet_radius: f64, elevation_scale: f32, seed: PlanetSeed) -> Self {
+        Self::with_optional_macro_field(
+            planet_radius,
+            elevation_scale,
+            seed,
+            PlanetPreset::default(),
+            None,
+        )
+    }
+
+    fn with_optional_macro_field(
+        planet_radius: f64,
+        elevation_scale: f32,
+        seed: PlanetSeed,
+        preset: PlanetPreset,
+        macro_field: Option<Arc<dyn MacroTerrainField>>,
+    ) -> Self {
         let params = elevation_params(seed);
-        let noise = ElevationNoise::new(&params);
         let planet_params = make_planet_params(seed);
-        let climate_noise = make_climate_noise(&planet_params);
+        let (cache_capacity, cache_lod) = preset_cache_config(preset);
+        let cache = Arc::new(WorldCache::with_lod(cache_capacity, cache_lod));
+        let fallback: Arc<dyn TerrainField> = match preset {
+            PlanetPreset::MiniatureDebug => Arc::new(ProceduralTerrainField::with_cache(
+                params,
+                planet_params,
+                Arc::clone(&cache),
+            )),
+            PlanetPreset::EarthScale => Arc::new(ProceduralTerrainField::with_cache_metric(
+                params,
+                planet_params,
+                Arc::clone(&cache),
+                planet_radius,
+            )),
+        };
+        let (source_mode, field): (TerrainSourceMode, Arc<dyn TerrainField>) =
+            if let Some(macro_field) = macro_field {
+                (
+                    TerrainSourceMode::HybridLearned,
+                    Arc::new(HybridTerrainField::new(fallback, macro_field)),
+                )
+            } else {
+                (TerrainSourceMode::Procedural, fallback)
+            };
         let base_uniform = TerrainMaterialUniform::from_params(
             &params,
             planet_radius as f32,
@@ -78,28 +118,57 @@ impl TerrainState {
             planet_radius,
             elevation_scale,
             params,
-            noise,
             planet_params,
-            climate_noise,
+            source_mode,
+            field,
             base_uniform,
-            max_quadtree_depth: MAX_QUADTREE_DEPTH,
+            max_quadtree_depth: preset.max_quadtree_depth(),
             screen_error_threshold: SCREEN_ERROR_THRESHOLD,
             merge_hysteresis: MERGE_HYSTERESIS,
-            max_render_distance: MAX_RENDER_DISTANCE,
+            max_render_distance: preset.max_render_distance_m(),
             active_chunk_cap: ACTIVE_CHUNK_CAP,
             lod_split_budget_per_frame: LOD_SPLIT_BUDGET_PER_FRAME,
-            cache: Arc::new(WorldCache::new(262144)),
         }
+    }
+}
+
+fn preset_cache_config(preset: PlanetPreset) -> (usize, u8) {
+    match preset {
+        PlanetPreset::MiniatureDebug => (262144, 16),
+        PlanetPreset::EarthScale => (1048576, 22),
     }
 }
 
 #[derive(Resource, Default)]
 pub struct PendingChunkMeshes(pub HashMap<Entity, Task<Mesh>>);
 
+/// Chunks awaiting a rebuild after resident learned macro data changes. Work is
+/// throttled so a sidecar tile arrival cannot monopolize mesh worker capacity.
+#[derive(Resource, Default)]
+struct TerrainFieldRefresh {
+    revision: u64,
+    queued: VecDeque<(Entity, CellKey)>,
+}
+
+const LEARNED_FIELD_REBUILD_BUDGET: usize = 8;
+
+/// All terrain chunks share one bind group. Per-chunk geometry is baked into
+/// each mesh, which lets Bevy batch their render-phase work.
+#[derive(Resource, Clone)]
+pub struct SharedTerrainMaterial(pub Handle<TerrainMaterial>);
+
+/// A root mesh retained after it has been replaced by detailed children. It is
+/// hidden during normal play and becomes the guaranteed terrain coverage floor
+/// once detailed chunks are beyond the render distance.
+#[derive(Component)]
+struct FarCoverageRoot;
+
 pub struct TerrainPlugin {
     pub planet_radius: f64,
     pub elevation_scale: f32,
     pub seed: PlanetSeed,
+    pub preset: PlanetPreset,
+    macro_field: Option<Arc<dyn MacroTerrainField>>,
 }
 
 impl Default for TerrainPlugin {
@@ -108,22 +177,48 @@ impl Default for TerrainPlugin {
             planet_radius: PLANET_RADIUS_DEFAULT,
             elevation_scale: 1000.0,
             seed: PlanetSeed(0xC0FFEE),
+            preset: PlanetPreset::default(),
+            macro_field: None,
+        }
+    }
+}
+
+impl TerrainPlugin {
+    /// Enables the learned macro path while preserving procedural residuals and
+    /// fallback behavior for every tile that is not yet resident.
+    pub fn with_hybrid_macro_field(mut self, macro_field: Arc<dyn MacroTerrainField>) -> Self {
+        self.macro_field = Some(macro_field);
+        self
+    }
+
+    /// Use `PlanetPreset` parameters (radius, LOD depth, render distance) while
+    /// keeping the caller's `elevation_scale` and `seed`.
+    pub fn from_preset(preset: PlanetPreset, elevation_scale: f32, seed: PlanetSeed) -> Self {
+        Self {
+            planet_radius: preset.radius_m(),
+            elevation_scale,
+            seed,
+            preset,
+            macro_field: None,
         }
     }
 }
 
 impl Plugin for TerrainPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(TerrainState::new(
+        app.insert_resource(TerrainState::with_optional_macro_field(
             self.planet_radius,
             self.elevation_scale,
             self.seed,
+            self.preset,
+            self.macro_field.clone(),
         ))
         .insert_resource(ActiveChunks::default())
         .insert_resource(RetainedSplits::default())
         .insert_resource(RetainedMerges::default())
         .insert_resource(TerrainDebugInfo::default())
         .insert_resource(PendingChunkMeshes::default())
+        .insert_resource(TerrainFieldRefresh::default())
         .insert_resource(crate::profiler::FrameProfiler::default())
         .insert_resource(SunDirection::default())
         .add_plugins(MaterialPlugin::<TerrainMaterial>::default())
@@ -134,6 +229,7 @@ impl Plugin for TerrainPlugin {
             Update,
             (
                 update_lod,
+                queue_resident_field_refreshes,
                 process_lod_queue,
                 ApplyDeferred,
                 apply_pending_chunk_meshes,
@@ -142,7 +238,6 @@ impl Plugin for TerrainPlugin {
                 ApplyDeferred,
                 finalize_retained_merges,
                 ApplyDeferred,
-                update_neighbor_lod,
                 cull_chunks,
                 update_debug_info,
                 update_ocean_time,
@@ -186,19 +281,18 @@ fn setup_terrain(
         &terrain_state.planet_params,
     );
     terrain_state.base_uniform = uniform;
+    let material = materials.add(TerrainMaterial { uniform });
+    commands.insert_resource(SharedTerrainMaterial(material.clone()));
 
     for key in root_chunks() {
         let entity = spawn_chunk_entity(
             &mut commands,
-            &mut materials,
             &mut pending,
-            &terrain_state.base_uniform,
+            &material,
             key,
             terrain_state.planet_radius,
             terrain_state.elevation_scale,
-            &terrain_state.params,
-            &terrain_state.planet_params,
-            &terrain_state.cache,
+            Arc::clone(&terrain_state.field),
         );
         active_chunks.insert(key, entity);
     }
@@ -206,6 +300,45 @@ fn setup_terrain(
 
 fn profiler_clear(mut profiler: ResMut<crate::profiler::FrameProfiler>) {
     profiler.clear();
+}
+
+fn queue_resident_field_refreshes(
+    terrain_state: Res<TerrainState>,
+    mut refresh: ResMut<TerrainFieldRefresh>,
+    chunk_query: Query<(Entity, &ChunkComponent)>,
+    mut pending: ResMut<PendingChunkMeshes>,
+) {
+    let revision = terrain_state.field.revision();
+    if revision != refresh.revision {
+        refresh.revision = revision;
+        refresh.queued.clear();
+        refresh.queued.extend(
+            chunk_query
+                .iter()
+                .map(|(entity, chunk)| (entity, chunk.key)),
+        );
+    }
+
+    let attempts = refresh.queued.len().min(LEARNED_FIELD_REBUILD_BUDGET);
+    for _ in 0..attempts {
+        let Some((entity, key)) = refresh.queued.pop_front() else {
+            break;
+        };
+        if pending.0.contains_key(&entity) {
+            // Let the in-flight mesh finish, then rebuild it from the newest
+            // resident field data on a later frame.
+            refresh.queued.push_back((entity, key));
+            continue;
+        }
+        queue_chunk_mesh(
+            &mut pending,
+            entity,
+            key,
+            terrain_state.planet_radius,
+            terrain_state.elevation_scale,
+            Arc::clone(&terrain_state.field),
+        );
+    }
 }
 
 fn update_lod(
@@ -258,6 +391,12 @@ fn update_lod(
         }
     }
     for parent_key in parents_to_check {
+        // A retained root mesh is the far-distance coverage floor. Keep the
+        // active tree at least one level below it so merging cannot recreate a
+        // second root entity on top of that fallback.
+        if is_minimum_coverage_chunk(parent_key) {
+            continue;
+        }
         // Skip parents already splitting (retained split) or already waiting on
         // a retained merge parent mesh.
         if retained_splits.map.contains_key(&parent_key)
@@ -285,7 +424,7 @@ fn update_lod(
 #[allow(clippy::too_many_arguments)]
 fn process_lod_queue(
     mut commands: Commands,
-    mut materials: ResMut<Assets<TerrainMaterial>>,
+    terrain_material: Res<SharedTerrainMaterial>,
     mut active_chunks: ResMut<ActiveChunks>,
     mut retained: ResMut<RetainedSplits>,
     mut retained_merges: ResMut<RetainedMerges>,
@@ -301,7 +440,6 @@ fn process_lod_queue(
         return;
     };
     let camera_pos = camera_transform.translation().as_dvec3();
-    let base_uniform = terrain_state.base_uniform;
     let budget = terrain_state.lod_split_budget_per_frame;
 
     let mut splits_done = 0usize;
@@ -347,15 +485,12 @@ fn process_lod_queue(
             let child = children[idx];
             let entity = spawn_chunk_entity(
                 &mut commands,
-                &mut materials,
                 &mut pending,
-                &base_uniform,
+                &terrain_material.0,
                 child,
                 terrain_state.planet_radius,
                 terrain_state.elevation_scale,
-                &terrain_state.params,
-                &terrain_state.planet_params,
-                &terrain_state.cache,
+                Arc::clone(&terrain_state.field),
             );
             // Hold hidden until all four siblings are meshed (atomic reveal).
             if let Ok(mut e) = commands.get_entity(entity) {
@@ -448,15 +583,12 @@ fn process_lod_queue(
 
         let parent_entity = spawn_chunk_entity(
             &mut commands,
-            &mut materials,
             &mut pending,
-            &base_uniform,
+            &terrain_material.0,
             parent_key,
             terrain_state.planet_radius,
             terrain_state.elevation_scale,
-            &terrain_state.params,
-            &terrain_state.planet_params,
-            &terrain_state.cache,
+            Arc::clone(&terrain_state.field),
         );
         // Parent starts Hidden (spawn_chunk_entity default) and without a mesh.
         // finalize_retained_merges will reveal it once its mesh arrives.
@@ -480,7 +612,7 @@ fn process_lod_queue(
 fn cull_chunks(
     mut camera_query: Query<(&GlobalTransform, &mut Projection), With<Camera3d>>,
     mut chunk_query: Query<
-        (&ChunkComponent, &mut Visibility),
+        (&ChunkComponent, &mut Visibility, Option<&FarCoverageRoot>),
         (With<Mesh3d>, Without<HoldHidden>, Without<HoldForMerge>),
     >,
     terrain_state: Res<TerrainState>,
@@ -495,13 +627,7 @@ fn cull_chunks(
 
     let planet_radius = terrain_state.planet_radius as f32;
     let cam_dist = camera_transform.translation().length();
-    let (near, far) = if cam_dist < planet_radius * 1.1 {
-        (0.1, 500000.0)
-    } else if cam_dist < planet_radius * 5.0 {
-        (1.0, 500000.0)
-    } else {
-        (10.0, 5000000.0)
-    };
+    let (near, far) = camera_clip_planes(planet_radius, cam_dist);
     if let Projection::Perspective(p) = &mut *projection {
         p.near = near;
         p.far = far;
@@ -525,8 +651,15 @@ fn cull_chunks(
 
     let max_render_dist_sq = (terrain_state.max_render_distance * 1.15).powi(2);
 
-    for (chunk, mut visibility) in &mut chunk_query {
+    for (chunk, mut visibility, far_coverage_root) in &mut chunk_query {
         let key = chunk.key;
+
+        // Retained roots prevent the planet from becoming transparent while the
+        // detailed LOD tree asynchronously merges back after a large zoom-out.
+        if far_coverage_root.is_some() && cam_dist <= terrain_state.max_render_distance as f32 {
+            visibility.set_if_neq(Visibility::Hidden);
+            continue;
+        }
         let chunk_dir = cell_to_dir(key);
         let chunk_center = chunk_dir * terrain_state.planet_radius;
 
@@ -535,12 +668,12 @@ fn cull_chunks(
         // floor. Finer chunks still obey the normal distance limit, and roots
         // continue through horizon/frustum culling below.
         if is_beyond_render_distance(key, dist_sq, max_render_dist_sq) {
-            *visibility = Visibility::Hidden;
+            visibility.set_if_neq(Visibility::Hidden);
             continue;
         }
 
         if is_below_horizon(key, camera_pos, terrain_state.planet_radius) {
-            *visibility = Visibility::Hidden;
+            visibility.set_if_neq(Visibility::Hidden);
             continue;
         }
 
@@ -558,14 +691,31 @@ fn cull_chunks(
                 fov_cos,
                 aspect,
             ) {
-                *visibility = Visibility::Hidden;
+                visibility.set_if_neq(Visibility::Hidden);
                 continue;
             }
         }
 
-        *visibility = Visibility::Visible;
+        visibility.set_if_neq(Visibility::Visible);
     }
     profiler.record("cull_chunks", t0.elapsed());
+}
+
+fn camera_clip_planes(planet_radius: f32, camera_distance: f32) -> (f32, f32) {
+    let (near, baseline_far): (f32, f32) = if camera_distance < planet_radius * 1.1 {
+        (0.1, 500000.0)
+    } else if camera_distance < planet_radius * 5.0 {
+        (1.0, 500000.0)
+    } else {
+        (10.0, 5000000.0)
+    };
+
+    // The original fixed limits were calibrated for the 36 km diagnostic
+    // planet. Earth-scale close views need to reach the limb, which can be
+    // farther than 500 km even though the camera is only tens of kilometres
+    // above the surface.
+    let planet_far = (camera_distance + planet_radius) * 1.1;
+    (near, baseline_far.max(planet_far))
 }
 
 fn update_debug_info(
@@ -596,57 +746,43 @@ fn update_debug_info(
 #[allow(clippy::too_many_arguments)]
 fn spawn_chunk_entity(
     commands: &mut Commands,
-    materials: &mut Assets<TerrainMaterial>,
     pending: &mut PendingChunkMeshes,
-    base_uniform: &TerrainMaterialUniform,
+    material: &Handle<TerrainMaterial>,
     key: CellKey,
     radius: f64,
     elevation_scale: f32,
-    elev_params: &ElevationParams,
-    planet_params: &PlanetParams,
-    cache: &Arc<WorldCache>,
+    field: Arc<dyn TerrainField>,
 ) -> Entity {
-    let material = materials.add(TerrainMaterial {
-        uniform: base_uniform.for_chunk(key),
-    });
-
     // Spawn entity without mesh — it will be added by apply_pending_chunk_meshes
     // when the async mesh generation task completes.
     let entity = commands
         .spawn((
             ChunkComponent::new(key),
-            MeshMaterial3d(material),
+            MeshMaterial3d(material.clone()),
             Transform::default(),
             Visibility::Hidden,
+            // The custom culler includes horizon, distance, and frustum tests.
+            // Avoid repeating Bevy's AABB frustum walk for every terrain chunk.
+            NoFrustumCulling,
         ))
         .id();
 
-    // Copy/clone data for the async task.
-    // ElevationNoise and ClimateNoise don't derive Clone (FastNoiseLite
-    // isn't Clone), so we reconstruct both from their params inside the task
-    // — both constructors are deterministic from their params.
-    let elev_params = *elev_params;
-    let planet_params = *planet_params;
-    let cache = Arc::clone(cache);
-
-    let task = AsyncComputeTaskPool::get().spawn(async move {
-        let noise = ElevationNoise::new(&elev_params);
-        let climate_noise = make_climate_noise(&planet_params);
-        generate_chunk_mesh(
-            key,
-            radius,
-            elevation_scale,
-            &noise,
-            &elev_params,
-            &planet_params,
-            &climate_noise,
-            Some(&cache),
-        )
-    });
-
-    pending.0.insert(entity, task);
+    queue_chunk_mesh(pending, entity, key, radius, elevation_scale, field);
 
     entity
+}
+
+fn queue_chunk_mesh(
+    pending: &mut PendingChunkMeshes,
+    entity: Entity,
+    key: CellKey,
+    radius: f64,
+    elevation_scale: f32,
+    field: Arc<dyn TerrainField>,
+) {
+    let task = AsyncComputeTaskPool::get()
+        .spawn(async move { generate_chunk_mesh(key, radius, elevation_scale, field.as_ref()) });
+    pending.0.insert(entity, task);
 }
 
 fn despawn_chunk(commands: &mut Commands, entity: Entity) {
@@ -705,7 +841,7 @@ fn finalize_retirements(
     let mut despawn_parents = std::collections::HashSet::<Entity>::new();
     for (&key, entry) in retained.map.iter() {
         if entry.children.iter().all(|&c| mesh_query.get(c).is_ok()) {
-            if chunk_query.get(entry.parent_entity).is_ok() {
+            if chunk_query.get(entry.parent_entity).is_ok() && !is_minimum_coverage_chunk(key) {
                 despawn_parents.insert(entry.parent_entity);
             }
             done.push(key);
@@ -717,6 +853,10 @@ fn finalize_retirements(
         if despawn_parents.contains(&entry.parent_entity) {
             if let Ok(mut parent_cmd) = commands.get_entity(entry.parent_entity) {
                 parent_cmd.despawn();
+            }
+        } else if is_minimum_coverage_chunk(key) {
+            if let Ok(mut parent_cmd) = commands.get_entity(entry.parent_entity) {
+                parent_cmd.insert(FarCoverageRoot);
             }
         }
         for &c in &entry.children {
@@ -818,7 +958,7 @@ fn has_conflicting_merge(key: CellKey, merged_keys: &HashSet<CellKey>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_conflicting_merge, has_merged_ancestor};
+    use super::{camera_clip_planes, has_conflicting_merge, has_merged_ancestor};
     use er_core::math::CellKey;
     use std::collections::HashSet;
 
@@ -846,47 +986,12 @@ mod tests {
         merged.insert(parent);
         assert!(has_conflicting_merge(grandparent, &merged));
     }
-}
 
-fn update_neighbor_lod(
-    active_chunks: Res<ActiveChunks>,
-    mut materials: ResMut<Assets<TerrainMaterial>>,
-    mut chunk_query: Query<
-        (
-            &mut ChunkComponent,
-            &MeshMaterial3d<TerrainMaterial>,
-            &Visibility,
-        ),
-        With<Mesh3d>,
-    >,
-    mut profiler: ResMut<crate::profiler::FrameProfiler>,
-) {
-    let t0 = Instant::now();
-    let sides = [
-        er_core::math::NeighborSide::NegU,
-        er_core::math::NeighborSide::PosU,
-        er_core::math::NeighborSide::NegV,
-        er_core::math::NeighborSide::PosV,
-    ];
-    for (mut chunk, mat_handle, vis) in &mut chunk_query {
-        if *vis == Visibility::Hidden {
-            continue;
-        }
-        let key = chunk.key;
-        let mut nd = [key.lod; 4];
-        for (i, side) in sides.iter().enumerate() {
-            nd[i] = crate::quadtree::neighbor_lod_across_edge(key, *side, &active_chunks);
-        }
-        let prev = chunk.neighbor_depth;
-        chunk.neighbor_depth = nd;
-        if nd != prev {
-            if let Some(mut mat) = materials.get_mut(&mat_handle.0) {
-                mat.uniform.neighbor_depth_0 = nd[0] as f32;
-                mat.uniform.neighbor_depth_1 = nd[1] as f32;
-                mat.uniform.neighbor_depth_2 = nd[2] as f32;
-                mat.uniform.neighbor_depth_3 = nd[3] as f32;
-            }
-        }
+    #[test]
+    fn earth_scale_close_view_keeps_the_limb_inside_the_far_plane() {
+        let earth_radius = 6_371_000.0;
+        let (_, far) = camera_clip_planes(earth_radius, 6_400_000.0);
+
+        assert!(far > 12_000_000.0);
     }
-    profiler.record("neighbor_lod", t0.elapsed());
 }

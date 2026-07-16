@@ -48,6 +48,10 @@ fn biome_color_blended(
     dir: vec3<f32>,
 ) -> vec3<f32> {
     let sl = m.sea_level_climate;
+    // Shorelines follow the macro elevation rather than the fine residual used
+    // for mesh displacement. This prevents small residual hills and valleys
+    // from alternating between land and water at adjacent vertices.
+    let water_elev = lfe;
 
     // Ocean depth gradient — brighter, more varied
     let c_shallow = vec3<f32>(0.15, 0.5, 0.65);
@@ -55,7 +59,7 @@ fn biome_color_blended(
     let c_ocean_deep = vec3<f32>(0.04, 0.18, 0.35);
     let c_abyss = vec3<f32>(0.02, 0.10, 0.20);
 
-    let depth = max(sl - elev, 0.0);
+    let depth = max(sl - water_elev, 0.0);
     let t1 = smoothstep(0.15, 0.45, depth);
     let t2 = smoothstep(0.45, 0.75, depth);
     let t3 = smoothstep(0.75, 1.25, depth);
@@ -91,17 +95,27 @@ fn biome_color_blended(
     var land_col = cold_col * cold_w + temp_col * temp_w + hot_col * hot_w;
 
     // Shoreline blend (beach <-> ocean <-> land)
-    let shore_t = smoothstep(sl - m.beach_threshold, sl + m.beach_threshold, elev);
-    land_col = mix(c_beach, land_col, smoothstep(0.0, m.beach_threshold * 2.0, elev - sl));
+    let shore_t = smoothstep(sl - m.beach_threshold, sl + m.beach_threshold, water_elev);
+    land_col = mix(
+        c_beach,
+        land_col,
+        smoothstep(0.0, m.beach_threshold * 2.0, water_elev - sl),
+    );
 
     var color = mix(ocean_col, land_col, shore_t);
 
+    let is_earth = m.planet_radius >= 1000000.0;
+
     // Volcanic override (smooth)
-    let vol_b = smoothstep(m.volcanic_threshold - 0.08, m.volcanic_threshold + 0.08, lfe);
+    let vol_lo = select(m.volcanic_threshold - 0.08, 5.0, is_earth);
+    let vol_hi = select(m.volcanic_threshold + 0.08, 7.0, is_earth);
+    let vol_b = smoothstep(vol_lo, vol_hi, lfe);
     color = mix(color, c_volcanic, vol_b);
 
     // Mountain override (smooth, partial)
-    let mtn_b = smoothstep(m.high_alt_threshold - 0.04, m.high_alt_threshold + 0.04, elev);
+    let mtn_lo = select(m.high_alt_threshold - 0.04, 3.5, is_earth);
+    let mtn_hi = select(m.high_alt_threshold + 0.04, 5.5, is_earth);
+    let mtn_b = smoothstep(mtn_lo, mtn_hi, elev);
     color = mix(color, c_mtn, mtn_b * 0.65);
 
     // Toxic override (smooth, partial)
@@ -140,14 +154,24 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
         input.low_freq_elev, material, detail, input.dir,
     );
 
+    let is_earth = material.planet_radius >= 1000000.0;
+
     let rock_col = vec3<f32>(0.42, 0.38, 0.34) * (0.9 + detail * 0.2);
-    let rock_blend = smoothstep(0.35, 0.55, slope);
+    // The metric field retains fine procedural residuals. At globe scale those
+    // slopes should not read as exposed rock; reserve rock for steep relief.
+    let rock_lo = select(0.35, 0.65, is_earth);
+    let rock_hi = select(0.55, 0.85, is_earth);
+    let rock_blend = smoothstep(rock_lo, rock_hi, slope);
     color = mix(color, rock_col, rock_blend);
 
-    let snow_blend = smoothstep(0.75, 0.85, input.elevation) * (1.0 - rock_blend);
+    let snow_lo = select(0.75, 5.5, is_earth);
+    let snow_hi = select(0.85, 7.5, is_earth);
+    let snow_blend = smoothstep(snow_lo, snow_hi, input.elevation) * (1.0 - rock_blend);
     color = mix(color, vec3<f32>(0.92, 0.94, 0.96), snow_blend * 0.8);
 
-    let elev_ao = mix(0.55, 1.0, smoothstep(-0.5, 0.5, input.low_freq_elev));
+    let ao_lo = select(-0.5, -8.0, is_earth);
+    let ao_hi = select(0.5, 8.0, is_earth);
+    let elev_ao = mix(0.55, 1.0, smoothstep(ao_lo, ao_hi, input.low_freq_elev));
     let slope_ao = mix(1.0, 0.75, slope);
     let ao = elev_ao * slope_ao;
 
@@ -158,7 +182,11 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
 
     let diffuse = max(dot(normal, sun_dir), 0.0);
 
-    let is_wet = step(input.elevation, material.sea_level_climate);
+    let is_wet = 1.0 - smoothstep(
+        material.sea_level_climate - material.beach_threshold,
+        material.sea_level_climate + material.beach_threshold,
+        input.low_freq_elev,
+    );
     let half_vec = normalize(sun_dir + view_dir);
     let spec_power = mix(6.0, 48.0, is_wet);
     let spec_strength = mix(0.04, 0.25, is_wet);

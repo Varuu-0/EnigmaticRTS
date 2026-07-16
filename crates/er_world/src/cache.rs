@@ -4,7 +4,9 @@ use glam::DVec3;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-pub const CACHE_LOD: u8 = 16;
+/// Default cache LOD — ~0.86 m cells on the 36 km miniature planet. Used when
+/// no preset supplies an explicit LOD.
+pub const DEFAULT_CACHE_LOD: u8 = 16;
 
 #[derive(Clone, Copy, Debug)]
 pub struct CachedWorldData {
@@ -20,6 +22,7 @@ pub struct CachedWorldData {
 pub struct WorldCache {
     entries: RwLock<HashMap<CellKey, CachedWorldData>>,
     capacity: usize,
+    cache_lod: u8,
 }
 
 impl WorldCache {
@@ -27,6 +30,15 @@ impl WorldCache {
         Self {
             entries: RwLock::new(HashMap::with_capacity(capacity)),
             capacity,
+            cache_lod: DEFAULT_CACHE_LOD,
+        }
+    }
+
+    pub fn with_lod(capacity: usize, cache_lod: u8) -> Self {
+        Self {
+            entries: RwLock::new(HashMap::with_capacity(capacity)),
+            capacity,
+            cache_lod,
         }
     }
 
@@ -35,7 +47,7 @@ impl WorldCache {
         dir: DVec3,
         compute: impl FnOnce() -> CachedWorldData,
     ) -> CachedWorldData {
-        let key = dir_to_cell(dir, CACHE_LOD);
+        let key = dir_to_cell(dir, self.cache_lod);
 
         if let Ok(entries) = self.entries.read() {
             if let Some(data) = entries.get(&key) {
@@ -63,7 +75,7 @@ impl WorldCache {
     }
 
     pub fn contains(&self, dir: DVec3) -> bool {
-        let key = dir_to_cell(dir, CACHE_LOD);
+        let key = dir_to_cell(dir, self.cache_lod);
         self.entries
             .read()
             .map(|e| e.contains_key(&key))

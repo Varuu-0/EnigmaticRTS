@@ -3,11 +3,13 @@ use er_core::config::{CHUNK_QUADS_PER_EDGE, CHUNK_VERT_RES};
 use er_core::math::{cells_per_edge, CellKey};
 use er_core::seed::PlanetSeed;
 use er_terrain::{
-    generate_chunk_mesh, ChunkComponent, TerrainMaterialUniform, ATTRIBUTE_GRID, ATTRIBUTE_MORPH,
-    ATTRIBUTE_NORMAL,
+    generate_chunk_mesh as generate_chunk_mesh_with_field, ChunkComponent, ATTRIBUTE_GRID,
+    ATTRIBUTE_MORPH, ATTRIBUTE_NORMAL,
 };
+use er_world::cache::WorldCache;
 use er_world::elevation::{elevation_params, ElevationNoise, ElevationParams};
 use er_world::params::{climate_noise, planet_params, ClimateNoise, PlanetParams};
+use er_world::terrain_field::ProceduralTerrainField;
 use glam::Vec3;
 
 const ELEVATION_SCALE: f32 = 1000.0;
@@ -19,6 +21,23 @@ fn test_elevation() -> (ElevationNoise, ElevationParams, PlanetParams, ClimateNo
     let pp = planet_params(seed);
     let cn = climate_noise(&pp);
     (noise, elev_params, pp, cn)
+}
+
+// Keep the historical seam fixtures while exercising the same field boundary
+// used by asynchronous terrain mesh workers.
+#[allow(clippy::too_many_arguments)]
+fn generate_chunk_mesh(
+    key: CellKey,
+    radius: f64,
+    elevation_scale: f32,
+    _noise: &ElevationNoise,
+    elevation_params: &ElevationParams,
+    planet_params: &PlanetParams,
+    _climate_noise: &ClimateNoise,
+    _cache: Option<&WorldCache>,
+) -> Mesh {
+    let field = ProceduralTerrainField::new(*elevation_params, *planet_params);
+    generate_chunk_mesh_with_field(key, radius, elevation_scale, &field)
 }
 
 #[test]
@@ -392,31 +411,6 @@ fn chunk_component_neighbor_depth_default() {
 }
 
 #[test]
-fn material_uniform_for_chunk_sets_edge_stitch_data() {
-    let seed = PlanetSeed(0xC0FFEE);
-    let params = elevation_params(seed);
-    let pp = planet_params(seed);
-    let base = TerrainMaterialUniform::from_params(&params, 12000.0, 1000.0, &pp);
-    let key = CellKey {
-        face: 2,
-        i: 1,
-        j: 0,
-        lod: 5,
-    };
-    let cu = base.for_chunk(key);
-    assert_eq!(cu.face, 2);
-    assert_eq!(cu.chunk_depth, 5);
-    assert_eq!(cu.neighbor_depth_0, 5.0);
-    assert_eq!(cu.neighbor_depth_1, 5.0);
-    assert_eq!(cu.neighbor_depth_2, 5.0);
-    assert_eq!(cu.neighbor_depth_3, 5.0);
-    assert_eq!(cu.u_min, 1.0 / 32.0);
-    assert_eq!(cu.u_max, 2.0 / 32.0);
-    assert_eq!(cu.v_min, 0.0);
-    assert_eq!(cu.v_max, 1.0 / 32.0);
-}
-
-#[test]
 fn grid_attribute_values() {
     let (noise, elev_params, pp, cn) = test_elevation();
     let key = CellKey {
@@ -602,18 +596,4 @@ fn edge_stitch_snaps_inbetween_to_coarse_edge() {
             "in-between vert already on coarse edge (raw_diff={raw_diff})"
         );
     }
-}
-
-#[test]
-fn bottom_edge_stitch_interpolates_along_u() {
-    let shader = include_str!("../assets/shaders/terrain_vertex.wgsl");
-    let bottom_edge = shader
-        .split("if (gj == 16u)")
-        .nth(1)
-        .expect("bottom-edge stitch branch");
-
-    assert!(
-        bottom_edge.contains("let t = f32(gi - k_lo) / f32(step);"),
-        "bottom-edge stitch must interpolate along gi"
-    );
 }

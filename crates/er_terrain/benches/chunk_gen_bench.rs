@@ -4,8 +4,9 @@ use er_core::math::CellKey;
 use er_core::seed::PlanetSeed;
 use er_terrain::generate_chunk_mesh;
 use er_terrain::lod::screen_error;
-use er_world::elevation::{elevation_params, ElevationNoise};
-use er_world::params::{climate_noise, planet_params};
+use er_world::elevation::elevation_params;
+use er_world::params::planet_params;
+use er_world::terrain_field::ProceduralTerrainField;
 use glam::DVec3;
 
 fn key_at(lod: u8) -> CellKey {
@@ -22,9 +23,8 @@ fn bench_generate_chunk_mesh(c: &mut Criterion) {
     let elevation_scale: f32 = 1000.0;
     let seed = PlanetSeed(0xC0FFEE);
     let elev_params = elevation_params(seed);
-    let noise = ElevationNoise::new(&elev_params);
     let pp = planet_params(seed);
-    let cn = climate_noise(&pp);
+    let field = ProceduralTerrainField::new(elev_params, pp);
 
     for &lod in &[0u8, 6, 12] {
         let key = key_at(lod);
@@ -34,11 +34,7 @@ fn bench_generate_chunk_mesh(c: &mut Criterion) {
                     black_box(key),
                     black_box(radius),
                     black_box(elevation_scale),
-                    black_box(&noise),
-                    black_box(&elev_params),
-                    black_box(&pp),
-                    black_box(&cn),
-                    None,
+                    black_box(&field),
                 ))
             })
         });

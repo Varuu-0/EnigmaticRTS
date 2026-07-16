@@ -12,6 +12,7 @@ use bevy::render::render_resource::{
 use bevy::shader::{Shader, ShaderRef};
 use er_world::elevation::ElevationParams;
 use er_world::params::PlanetParams;
+use er_world::terrain_field::TerrainSourceMode;
 use std::sync::OnceLock;
 
 pub static OCEAN_VERTEX_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
@@ -182,6 +183,12 @@ pub struct OceanState {
     pub material: Handle<OceanMaterial>,
 }
 
+const OCEAN_SURFACE_OFFSET: f32 = 1.0;
+
+fn ocean_surface_radius(planet_radius: f32, elevation_scale: f32, sea_level: f64) -> f32 {
+    planet_radius + sea_level as f32 * elevation_scale + OCEAN_SURFACE_OFFSET
+}
+
 pub fn generate_ocean_sphere(radius: f32, segments: usize, rings: usize) -> Mesh {
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity((rings + 1) * (segments + 1));
     let mut indices: Vec<u32> = Vec::with_capacity(rings * segments * 6);
@@ -224,6 +231,16 @@ pub fn setup_ocean(
     mut shaders: ResMut<Assets<Shader>>,
     terrain_state: Res<crate::systems::TerrainState>,
 ) {
+    // Learned macro elevations are resident only on the CPU terrain field. The
+    // ocean shader can evaluate procedural elevations, but cannot classify the
+    // hybrid surface without disagreeing with the mesh and painting water over
+    // learned land. The terrain material already colors its baked hybrid water
+    // samples, so omit this procedural-only water surface in hybrid mode.
+    if terrain_state.source_mode != TerrainSourceMode::Procedural {
+        info!("Hybrid terrain active; terrain mesh owns water classification");
+        return;
+    }
+
     let vertex_source = format!(
         "{}\n{}",
         include_str!("../assets/shaders/ocean_uniform.wgsl"),
@@ -241,7 +258,14 @@ pub fn setup_ocean(
     let fragment_handle = shaders.add(Shader::from_wgsl(fragment_source, "ocean_fragment"));
     let _ = OCEAN_FRAGMENT_SHADER.set(fragment_handle);
 
-    let ocean_radius = terrain_state.planet_radius as f32 + terrain_state.elevation_scale + 100.0;
+    // The ocean writes depth even where its fragment shader is transparent over
+    // land. It must therefore sit at the procedural sea level, not above the
+    // highest terrain point, or it occludes the entire planet at long range.
+    let ocean_radius = ocean_surface_radius(
+        terrain_state.planet_radius as f32,
+        terrain_state.elevation_scale,
+        terrain_state.planet_params.sea_level,
+    );
 
     let uniform = OceanMaterialUniform::from_params(
         &terrain_state.params,
@@ -268,9 +292,23 @@ pub fn setup_ocean(
 pub fn update_ocean_time(
     time: Res<Time>,
     mut materials: ResMut<Assets<OceanMaterial>>,
-    ocean_state: Res<OceanState>,
+    ocean_state: Option<Res<OceanState>>,
 ) {
+    let Some(ocean_state) = ocean_state else {
+        return;
+    };
     if let Some(mut mat) = materials.get_mut(&ocean_state.material) {
         mat.uniform.time = time.elapsed_secs();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ocean_surface_radius;
+
+    #[test]
+    fn ocean_sits_at_sea_level_not_above_all_terrain() {
+        assert_eq!(ocean_surface_radius(36_000.0, 1_000.0, -0.1), 35_901.0);
+        assert_eq!(ocean_surface_radius(36_000.0, 1_000.0, 0.1), 36_101.0);
     }
 }

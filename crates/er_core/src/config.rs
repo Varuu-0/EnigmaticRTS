@@ -1,7 +1,12 @@
 //! Tunable configuration constants for the planet/terrain system.
 
-pub const PLANET_RADIUS_DEFAULT: f64 = 36000.0;
+/// The original small planet is retained for fast visual diagnostics. It is
+/// not a hidden scale factor for the Earth-scale preset.
+pub const MINIATURE_PLANET_RADIUS_M: f64 = 36_000.0;
+pub const EARTH_RADIUS_M: f64 = 6_371_000.0;
+pub const PLANET_RADIUS_DEFAULT: f64 = MINIATURE_PLANET_RADIUS_M;
 pub const MAX_QUADTREE_DEPTH: u8 = 12;
+pub const EARTH_MAX_QUADTREE_DEPTH: u8 = 17;
 pub const CHUNK_VERT_RES: u32 = 17;
 pub const CHUNK_QUADS_PER_EDGE: u32 = 16; // CHUNK_VERT_RES - 1
 pub const LOD_SPLIT_BUDGET_PER_FRAME: usize = 48;
@@ -13,7 +18,7 @@ pub const MERGE_HYSTERESIS: f32 = 0.6;
 pub const MAX_RENDER_DISTANCE: f64 = PLANET_RADIUS_DEFAULT * 8.0;
 // Never evict live terrain to satisfy this limit. Stop splitting before the
 // cap instead, preserving complete coverage without unbounded close-view cost.
-pub const ACTIVE_CHUNK_CAP: usize = 2000;
+pub const ACTIVE_CHUNK_CAP: usize = 5000;
 // The six cube-face roots are the persistent coarse coverage floor. They bypass
 // only the distance cull at extreme zoom-out; horizon and frustum culling still
 // prevent rendering the planet's hidden side.
@@ -26,6 +31,36 @@ pub const MINIMUM_TERRAIN_COVERAGE_LOD: u8 = 0;
 pub const LOD_PIXEL_SCALE: f32 = 935.0;
 pub const FIXED_TPS: i32 = 30;
 pub const DEFAULT_DAY_LENGTH_SEC: f64 = 180.0;
+
+/// Explicit planet-scale configurations. The miniature planet remains the
+/// default until camera-relative rendering is complete; `EarthScale` is
+/// selected with the game's `--earth-scale` flag.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlanetPreset {
+    #[default]
+    MiniatureDebug,
+    EarthScale,
+}
+
+impl PlanetPreset {
+    pub const fn radius_m(self) -> f64 {
+        match self {
+            Self::MiniatureDebug => MINIATURE_PLANET_RADIUS_M,
+            Self::EarthScale => EARTH_RADIUS_M,
+        }
+    }
+
+    pub const fn max_quadtree_depth(self) -> u8 {
+        match self {
+            Self::MiniatureDebug => MAX_QUADTREE_DEPTH,
+            Self::EarthScale => EARTH_MAX_QUADTREE_DEPTH,
+        }
+    }
+
+    pub const fn max_render_distance_m(self) -> f64 {
+        self.radius_m() * 8.0
+    }
+}
 
 /// Runtime-tunable parameters (defaults mirror the `const`s above). Game crates
 /// wrap this in a Bevy `Resource`; `er_core` itself stays Bevy-free.
@@ -55,5 +90,22 @@ impl Default for Tunables {
             fixed_tps: FIXED_TPS,
             default_day_length_sec: DEFAULT_DAY_LENGTH_SEC,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn earth_preset_uses_physical_radius_and_close_lod() {
+        assert_eq!(PlanetPreset::EarthScale.radius_m(), EARTH_RADIUS_M);
+        assert_eq!(PlanetPreset::EarthScale.max_quadtree_depth(), 17);
+    }
+
+    #[test]
+    fn miniature_preset_preserves_existing_default() {
+        assert_eq!(PlanetPreset::default(), PlanetPreset::MiniatureDebug);
+        assert_eq!(PlanetPreset::default().radius_m(), PLANET_RADIUS_DEFAULT);
     }
 }

@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+terrain_diffusion = []
+
 [dependencies]
 bevy = { workspace = true, features = [
     "3d_bevy_render",

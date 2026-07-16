@@ -10,7 +10,7 @@ use er_terrain::{TerrainDebugInfo, TerrainState};
 use crate::settings::GraphicsSettings;
 
 const MIN_CHUNK_CAP: usize = 1_000;
-const MAX_CHUNK_CAP: usize = 6_000;
+const MAX_CHUNK_CAP: usize = 10_000;
 const INCREASE_STEP: usize = 250;
 const DECREASE_STEP: usize = 500;
 const TARGET_FRAME_MS: f32 = 13.0;

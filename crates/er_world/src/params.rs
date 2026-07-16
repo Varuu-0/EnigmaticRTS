@@ -78,6 +78,26 @@ pub fn climate_noise(params: &PlanetParams) -> ClimateNoise {
     }
 }
 
+pub fn climate_noise_metric(params: &PlanetParams, planet_radius_m: f64) -> ClimateNoise {
+    let inv_r = 1.0 / planet_radius_m;
+    let mut temp_noise = FastNoiseLite::with_seed(params.temp_noise_seed);
+    temp_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
+    temp_noise.set_fractal_type(Some(FractalType::FBm));
+    temp_noise.set_fractal_octaves(Some(3));
+    temp_noise.set_frequency(Some((params.temp_noise_freq as f64 * inv_r) as f32));
+
+    let mut moisture_noise = FastNoiseLite::with_seed(params.moisture_noise_seed);
+    moisture_noise.set_noise_type(Some(NoiseType::OpenSimplex2));
+    moisture_noise.set_fractal_type(Some(FractalType::FBm));
+    moisture_noise.set_fractal_octaves(Some(3));
+    moisture_noise.set_frequency(Some((params.moisture_noise_freq as f64 * inv_r) as f32));
+
+    ClimateNoise {
+        temp_noise,
+        moisture_noise,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

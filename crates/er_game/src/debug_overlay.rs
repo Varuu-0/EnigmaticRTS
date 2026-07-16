@@ -5,8 +5,11 @@ use er_terrain::{ChunkComponent, FrameProfiler, TerrainDebugInfo, TerrainState};
 
 use crate::chunk_cap_controller::DynamicChunkCapController;
 use crate::diagnostics::PerformanceSnapshot;
+use crate::frame_timing::MainWorldFrameTimings;
 use crate::space::{SimTime, TimeScale};
 use er_terrain::SunDirection;
+
+const FRAME_GRAPH_WIDTH: usize = 40;
 
 #[derive(Component)]
 struct DebugText;
@@ -49,6 +52,7 @@ fn setup_debug_text(mut commands: Commands) {
 fn update_debug_text(
     debug: Res<TerrainDebugInfo>,
     profiler: Res<FrameProfiler>,
+    main_world_timings: Res<MainWorldFrameTimings>,
     time: Res<Time>,
     sun_direction: Res<SunDirection>,
     sim_time: Res<SimTime>,
@@ -65,6 +69,23 @@ fn update_debug_text(
         sorted.sort_by(|a, b| b.1.cmp(&a.1));
 
         let total_profiled: std::time::Duration = sorted.iter().map(|(_, d)| *d).sum();
+        let frame_duration = main_world_timings
+            .frame_duration
+            .unwrap_or_else(|| std::time::Duration::from_secs_f32(time.delta_secs()));
+        let attribution_ms = frame_duration.as_secs_f32() * 1000.0;
+        let total_main_world: std::time::Duration = main_world_timings
+            .stages
+            .iter()
+            .map(|(_, duration)| *duration)
+            .sum();
+        // Render submission, GPU synchronization, present, and frame pacing
+        // happen outside the main-world schedules. Render CPU spans below
+        // overlap the main world, so they are deliberately not subtracted here.
+        let render_present_wait = frame_duration.saturating_sub(total_main_world);
+        let render_present_stage = (
+            "render/present/frame pacing".to_owned(),
+            render_present_wait,
+        );
 
         let sun = sun_direction.0;
         let day_length = DEFAULT_DAY_LENGTH_SEC as f32;
@@ -151,22 +172,55 @@ fn update_debug_text(
             sun.x, sun.y, sun.z, day_percent, speed_str
         ));
         lines.push_str(&format!(
-            "Profiled: {:.2}ms / {:.1}ms\n",
-            total_profiled.as_secs_f32() * 1000.0,
-            frame_ms
+            "Completed-frame attribution: {:.2}ms main world + {:.2}ms render/present = {:.1}ms\n",
+            total_main_world.as_secs_f32() * 1000.0,
+            render_present_wait.as_secs_f32() * 1000.0,
+            attribution_ms,
         ));
 
-        let max_ms = sorted
-            .first()
-            .map(|(_, d)| d.as_secs_f32() * 1000.0)
-            .unwrap_or(1.0)
-            .max(0.1);
-
-        for (name, duration) in &sorted {
+        for (name, duration) in main_world_timings
+            .stages
+            .iter()
+            .chain(std::iter::once(&render_present_stage))
+        {
             let ms = duration.as_secs_f32() * 1000.0;
-            let bar_len = ((ms / max_ms) * 30.0) as usize;
+            let fraction = if attribution_ms > 0.0 {
+                ms / attribution_ms
+            } else {
+                0.0
+            };
+            let bar_len = (fraction * FRAME_GRAPH_WIDTH as f32).round() as usize;
             let bar = "#".repeat(bar_len);
-            lines.push_str(&format!("  {:<16} {:>6.2}ms {}\n", name, ms, bar));
+            lines.push_str(&format!(
+                "  {:<22} {:>6.2}ms {:>5.1}% |{:<width$}|\n",
+                name,
+                ms,
+                fraction * 100.0,
+                bar,
+                width = FRAME_GRAPH_WIDTH,
+            ));
+        }
+
+        lines.push_str(&format!(
+            "Instrumented Update detail: {:.2}ms (included in Update above)\n",
+            total_profiled.as_secs_f32() * 1000.0,
+        ));
+        for (name, duration) in &sorted {
+            lines.push_str(&format!(
+                "  {:<22} {:>6.2}ms\n",
+                name,
+                duration.as_secs_f32() * 1000.0,
+            ));
+        }
+
+        if !performance.render_cpu_spans.is_empty() {
+            lines.push_str("Render CPU spans (parallel; not additive):\n");
+            for (path, ms) in &performance.render_cpu_spans {
+                let name = path
+                    .trim_start_matches("render/")
+                    .trim_end_matches("/elapsed_cpu");
+                lines.push_str(&format!("  {:<22} {:>6.2}ms\n", name, ms));
+            }
         }
 
         *text = Text::new(lines);

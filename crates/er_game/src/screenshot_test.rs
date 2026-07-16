@@ -5,9 +5,7 @@ use er_terrain::{
 };
 use std::path::PathBuf;
 
-use crate::space::{
-    AtmosphereComponent, CloudComponent, SimTime, StarfieldComponent, SunSphere, TimeScale,
-};
+use crate::space::{CloudComponent, SimTime, StarfieldComponent, SunSphere, TimeScale};
 
 /// Consecutive frames with no pending chunk meshes required before the scene is
 /// considered settled enough for a screenshot. This also gives extracted meshes
@@ -76,7 +74,6 @@ fn apply_screenshot_diagnostics(
         &mut Visibility,
         Or<(
             With<OceanComponent>,
-            With<AtmosphereComponent>,
             With<CloudComponent>,
             With<StarfieldComponent>,
             With<SunSphere>,

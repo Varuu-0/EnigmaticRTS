@@ -3,10 +3,7 @@ use bevy::render::mesh::{Indices, Mesh, MeshVertexAttribute};
 use bevy::render::render_resource::{PrimitiveTopology, VertexFormat};
 use er_core::config::{CHUNK_QUADS_PER_EDGE, CHUNK_VERT_RES};
 use er_core::math::{cell_size, cells_per_edge, uv_to_dir, CellKey, FACE_U, FACE_V};
-use er_world::biome::{biome, elevation_low_freq, moisture, temperature};
-use er_world::cache::{CachedWorldData, WorldCache};
-use er_world::elevation::{elevation, ElevationNoise, ElevationParams};
-use er_world::params::{ClimateNoise, PlanetParams};
+use er_world::terrain_field::{TerrainField, TerrainSample};
 use glam::DVec3;
 
 pub const ATTRIBUTE_MORPH: MeshVertexAttribute =
@@ -37,45 +34,18 @@ pub const ATTRIBUTE_TEMPERATURE: MeshVertexAttribute =
 // chunk makes their radial walls visible beyond the planet silhouette.
 const SKIRT_CELL_DEPTH_FRACTION: f64 = 0.02;
 
+fn central_diff_eps_radians(chunk_lod: u8, radius: f64) -> f64 {
+    let vertex_spacing = cell_size(chunk_lod, radius) / CHUNK_QUADS_PER_EDGE as f64;
+    // Use one mesh vertex of arc length per side. This scales from the
+    // miniature diagnostic planet to Earth without a global angular blur.
+    (vertex_spacing / radius).clamp(1e-8, 0.25)
+}
+
 fn append_tri(indices: &mut Vec<u32>, a: u32, b: u32, c: u32, flip: bool) {
     if flip {
         indices.extend_from_slice(&[a, c, b]);
     } else {
         indices.extend_from_slice(&[a, b, c]);
-    }
-}
-
-fn compute_cached_vertex(
-    dir: DVec3,
-    noise: &ElevationNoise,
-    elev_params: &ElevationParams,
-    planet_params: &PlanetParams,
-    climate_noise: &ClimateNoise,
-) -> CachedWorldData {
-    let split = elevation_low_freq(dir, noise, elev_params);
-    let moist = moisture(dir, split.mountain_influence, planet_params, climate_noise);
-    let elev = elevation(dir, noise, elev_params);
-    let temp = temperature(dir, elev, planet_params, climate_noise);
-    let b = biome(
-        dir,
-        elev,
-        split.low_freq_elev,
-        split.mountain_influence,
-        planet_params,
-        climate_noise,
-    );
-    CachedWorldData {
-        elevation: elev,
-        low_freq_elev: split.low_freq_elev as f32,
-        warped_dir: [
-            split.warped_dir.x as f32,
-            split.warped_dir.y as f32,
-            split.warped_dir.z as f32,
-        ],
-        moisture: moist as f32,
-        biome: b,
-        mountain_influence: split.mountain_influence as f32,
-        temperature: temp as f32,
     }
 }
 
@@ -87,75 +57,26 @@ struct VertexData {
     temperature: f32,
 }
 
-fn vertex_data(
-    dir: DVec3,
-    noise: &ElevationNoise,
-    elev_params: &ElevationParams,
-    planet_params: &PlanetParams,
-    climate_noise: &ClimateNoise,
-    cache: Option<&WorldCache>,
-) -> VertexData {
-    if let Some(cache) = cache {
-        let c = cache.get_or_insert(dir, || {
-            compute_cached_vertex(dir, noise, elev_params, planet_params, climate_noise)
-        });
-        VertexData {
-            low_freq: c.low_freq_elev,
-            warped_dir: c.warped_dir,
-            moisture: c.moisture,
-            elevation: c.elevation,
-            temperature: c.temperature,
+impl From<TerrainSample> for VertexData {
+    fn from(value: TerrainSample) -> Self {
+        Self {
+            low_freq: value.low_freq_elev,
+            warped_dir: value.warped_dir,
+            moisture: value.moisture,
+            elevation: value.elevation,
+            temperature: value.temperature,
         }
-    } else {
-        let split = elevation_low_freq(dir, noise, elev_params);
-        let moist = moisture(dir, split.mountain_influence, planet_params, climate_noise);
-        let elev = elevation(dir, noise, elev_params);
-        let temp = temperature(dir, elev, planet_params, climate_noise);
-        VertexData {
-            low_freq: split.low_freq_elev as f32,
-            warped_dir: [
-                split.warped_dir.x as f32,
-                split.warped_dir.y as f32,
-                split.warped_dir.z as f32,
-            ],
-            moisture: moist as f32,
-            elevation: elev,
-            temperature: temp as f32,
-        }
-    }
-}
-
-fn cached_elevation(
-    dir: DVec3,
-    noise: &ElevationNoise,
-    elev_params: &ElevationParams,
-    planet_params: &PlanetParams,
-    climate_noise: &ClimateNoise,
-    cache: Option<&WorldCache>,
-) -> f64 {
-    if let Some(cache) = cache {
-        cache
-            .get_or_insert(dir, || {
-                compute_cached_vertex(dir, noise, elev_params, planet_params, climate_noise)
-            })
-            .elevation
-    } else {
-        elevation(dir, noise, elev_params)
     }
 }
 
 fn compute_surface_normal(
     dir: DVec3,
-    elev: f64,
     radius: f64,
     elevation_scale: f32,
-    noise: &ElevationNoise,
-    elev_params: &ElevationParams,
-    planet_params: &PlanetParams,
-    climate_noise: &ClimateNoise,
-    cache: Option<&WorldCache>,
+    field: &dyn TerrainField,
+    chunk_lod: u8,
 ) -> DVec3 {
-    let eps = 0.0008;
+    let eps = central_diff_eps_radians(chunk_lod, radius);
     let ref_vec = if dir.y.abs() > 0.99 {
         DVec3::new(1.0, 0.0, 0.0)
     } else {
@@ -164,32 +85,37 @@ fn compute_surface_normal(
     let t1 = ref_vec.cross(dir).normalize();
     let t2 = dir.cross(t1);
 
-    let d1 = (dir + t1 * eps).normalize();
-    let d2 = (dir + t2 * eps).normalize();
+    let d1_plus = (dir + t1 * eps).normalize();
+    let d1_minus = (dir - t1 * eps).normalize();
+    let d2_plus = (dir + t2 * eps).normalize();
+    let d2_minus = (dir - t2 * eps).normalize();
 
-    let e1 = cached_elevation(d1, noise, elev_params, planet_params, climate_noise, cache);
-    let e2 = cached_elevation(d2, noise, elev_params, planet_params, climate_noise, cache);
+    let e1_plus = field.sample(d1_plus).elevation;
+    let e1_minus = field.sample(d1_minus).elevation;
+    let e2_plus = field.sample(d2_plus).elevation;
+    let e2_minus = field.sample(d2_minus).elevation;
 
-    let sr0 = radius + elev * elevation_scale as f64;
-    let sr1 = radius + e1 * elevation_scale as f64;
-    let sr2 = radius + e2 * elevation_scale as f64;
+    let sr1_plus = radius + e1_plus * elevation_scale as f64;
+    let sr1_minus = radius + e1_minus * elevation_scale as f64;
+    let sr2_plus = radius + e2_plus * elevation_scale as f64;
+    let sr2_minus = radius + e2_minus * elevation_scale as f64;
 
-    let p0 = dir * sr0;
-    let p1 = d1 * sr1;
-    let p2 = d2 * sr2;
+    let p1 = d1_plus * sr1_plus - d1_minus * sr1_minus;
+    let p2 = d2_plus * sr2_plus - d2_minus * sr2_minus;
 
-    (p1 - p0).cross(p2 - p0).normalize()
+    let normal = p1.cross(p2);
+    if normal.length_squared() > f64::EPSILON {
+        normal.normalize()
+    } else {
+        dir
+    }
 }
 
 pub fn generate_chunk_mesh(
     key: CellKey,
     radius: f64,
     elevation_scale: f32,
-    noise: &ElevationNoise,
-    elev_params: &ElevationParams,
-    planet_params: &PlanetParams,
-    climate_noise: &ClimateNoise,
-    cache: Option<&WorldCache>,
+    field: &dyn TerrainField,
 ) -> Mesh {
     let n = CHUNK_VERT_RES as usize;
     let quads = CHUNK_QUADS_PER_EDGE as usize;
@@ -227,7 +153,7 @@ pub fn generate_chunk_mesh(
             let u = u_min + (u_max - u_min) * (gi as f64 / (n - 1) as f64);
             let v = v_min + (v_max - v_min) * (gj as f64 / (n - 1) as f64);
             let dir = uv_to_dir(key.face, u, v);
-            let vd = vertex_data(dir, noise, elev_params, planet_params, climate_noise, cache);
+            let vd = VertexData::from(field.sample(dir));
 
             let surf_idx = gj * n + gi;
             let lf = vd.low_freq;
@@ -240,17 +166,7 @@ pub fn generate_chunk_mesh(
 
             let surface_radius = radius + vd.elevation * elevation_scale as f64;
             let pos = dir * surface_radius;
-            let normal = compute_surface_normal(
-                dir,
-                vd.elevation,
-                radius,
-                elevation_scale,
-                noise,
-                elev_params,
-                planet_params,
-                climate_noise,
-                cache,
-            );
+            let normal = compute_surface_normal(dir, radius, elevation_scale, field, key.lod);
             let normal = [normal.x as f32, normal.y as f32, normal.z as f32];
             surf_normals[surf_idx] = normal;
 

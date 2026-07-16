@@ -25,7 +25,10 @@ pub use quadtree::{
     children_of, parent_of, root_chunks, ActiveChunks, RetainedMerge, RetainedMerges,
     RetainedSplit, RetainedSplits,
 };
-pub use systems::{PendingChunkMeshes, SunDirection, TerrainPlugin, TerrainState, TerrainUpdate};
+pub use systems::{
+    PendingChunkMeshes, SharedTerrainMaterial, SunDirection, TerrainPlugin, TerrainState,
+    TerrainUpdate,
+};
 
 pub fn version() -> &'static str {
     "0"

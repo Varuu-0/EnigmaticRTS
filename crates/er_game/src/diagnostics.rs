@@ -53,6 +53,9 @@ pub struct PerformanceSnapshot {
     /// GPU elapsed time for the primary opaque 3D render pass when timestamp
     /// queries were requested with `--gpu-diagnostics` and are supported.
     pub opaque_render_gpu_ms: Option<f64>,
+    /// Per-pass render-thread CPU timings reported by Bevy's render diagnostics.
+    /// These overlap the main-world schedules and are not additive frame time.
+    pub render_cpu_spans: Vec<(String, f64)>,
     pub gpu_vram_usage_bytes: Option<u64>,
     pub gpu_vram_budget_bytes: Option<u64>,
     pub gpu_name: Option<String>,
@@ -156,6 +159,7 @@ fn update_performance_snapshot(
     snapshot.visible_mesh_draw_estimate = visible_meshes.iter().count();
     snapshot.opaque_render_cpu_ms = render_diagnostic_value(&diagnostics, "elapsed_cpu");
     snapshot.opaque_render_gpu_ms = render_diagnostic_value(&diagnostics, "elapsed_gpu");
+    snapshot.render_cpu_spans = render_cpu_spans(&diagnostics);
 
     if history.last_gpu_sample.elapsed() >= SYSTEM_SAMPLE_INTERVAL {
         update_gpu_snapshot(&mut snapshot);
@@ -181,6 +185,20 @@ fn render_diagnostic_value(diagnostics: &DiagnosticsStore, metric: &str) -> Opti
             .then(|| diagnostic.value())
             .flatten()
     })
+}
+
+fn render_cpu_spans(diagnostics: &DiagnosticsStore) -> Vec<(String, f64)> {
+    let mut spans: Vec<_> = diagnostics
+        .iter()
+        .filter_map(|diagnostic| {
+            let path = diagnostic.path().as_str();
+            (path.starts_with("render/") && path.ends_with("/elapsed_cpu"))
+                .then(|| diagnostic.value().map(|value| (path.to_owned(), value)))
+                .flatten()
+        })
+        .collect();
+    spans.sort_by(|left, right| right.1.total_cmp(&left.1));
+    spans
 }
 
 fn diagnostic_value(

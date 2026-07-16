@@ -216,10 +216,94 @@ pub fn elevation_split(
     }
 }
 
+pub fn temperature_at(
+    pos: DVec3,
+    elevation: f64,
+    params: &PlanetParams,
+    noise: &ClimateNoise,
+) -> f64 {
+    let dir = pos.normalize();
+    let latitude = dir.y.abs();
+    let temp_noise = noise.temp_noise.get_noise_3d(pos.x, pos.y, pos.z);
+    let temp = 1.0 - latitude * params.temp_gradient - elevation * params.lapse_rate
+        + (temp_noise * params.temp_noise_amp) as f64;
+    temp.clamp(0.0, 1.0)
+}
+
+pub fn moisture_at(
+    pos: DVec3,
+    mountain_influence: f64,
+    params: &PlanetParams,
+    noise: &ClimateNoise,
+) -> f64 {
+    let m_noise = noise.moisture_noise.get_noise_3d(pos.x, pos.y, pos.z);
+    let m = (m_noise * params.moisture_noise_amp) as f64 * 0.5 + 0.5
+        - mountain_influence * params.rain_shadow_strength as f64;
+    m.clamp(0.0, 1.0)
+}
+
+pub fn biome_metric(
+    pos: DVec3,
+    elevation: f64,
+    low_freq_elev: f64,
+    mountain_influence: f64,
+    params: &PlanetParams,
+    noise: &ClimateNoise,
+) -> Biome {
+    let temp = temperature_at(pos, elevation, params, noise);
+    let moist = moisture_at(pos, mountain_influence, params, noise);
+    classify_biome(elevation, temp, moist, low_freq_elev, params)
+}
+
+pub fn elevation_low_freq_metric(pos: DVec3, noise: &ElevationNoise) -> LowFreqElevation {
+    const METRIC_CONTINENTAL_AMP: f64 = 8.0;
+    const METRIC_MOUNTAIN_AMP: f64 = 3.5;
+    let (wx, wy, wz) = noise.warp.domain_warp_3d(pos.x, pos.y, pos.z);
+    let warped_dir = DVec3::new(wx, wy, wz);
+    let continental = noise.continental.get_noise_3d(wx, wy, wz);
+    let mountain_raw = noise.mountain.get_noise_3d(wx, wy, wz);
+    let mountain_mask = continental.max(0.0);
+    let mountains = mountain_raw * mountain_mask;
+    let low_freq_elev = (continental as f64 * METRIC_CONTINENTAL_AMP
+        + mountains as f64 * METRIC_MOUNTAIN_AMP) as f64;
+    let mountain_influence = (mountain_raw.max(0.0) * mountain_mask) as f64;
+    LowFreqElevation {
+        low_freq_elev,
+        warped_dir,
+        mountain_influence,
+    }
+}
+
+pub fn elevation_split_metric(pos: DVec3, noise: &ElevationNoise) -> ElevationSplit {
+    const METRIC_CONTINENTAL_AMP: f64 = 8.0;
+    const METRIC_MOUNTAIN_AMP: f64 = 3.5;
+    const METRIC_HILL_AMP: f64 = 2.0;
+    const METRIC_DETAIL_AMP: f64 = 0.5;
+    let (wx, wy, wz) = noise.warp.domain_warp_3d(pos.x, pos.y, pos.z);
+    let warped_dir = DVec3::new(wx, wy, wz);
+    let continental = noise.continental.get_noise_3d(wx, wy, wz);
+    let mountain_raw = noise.mountain.get_noise_3d(wx, wy, wz);
+    let mountain_mask = continental.max(0.0);
+    let mountains = mountain_raw * mountain_mask;
+    let hills = noise.hill.get_noise_3d(wx, wy, wz);
+    let detail = noise.detail.get_noise_3d(wx, wy, wz);
+    let low_freq_elev = (continental as f64 * METRIC_CONTINENTAL_AMP
+        + mountains as f64 * METRIC_MOUNTAIN_AMP) as f64;
+    let high_freq = (hills as f64 * METRIC_HILL_AMP + detail as f64 * METRIC_DETAIL_AMP) as f64;
+    let full_elev = low_freq_elev + high_freq;
+    let mountain_influence = (mountain_raw.max(0.0) * mountain_mask) as f64;
+    ElevationSplit {
+        low_freq_elev,
+        warped_dir,
+        mountain_influence,
+        full_elev,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elevation::{elevation, elevation_params, ElevationNoise};
+    use crate::elevation::{elevation, elevation_at, elevation_params, ElevationNoise};
     use crate::params::{climate_noise, planet_params};
     use er_core::rng::rng_from_seed;
     use er_core::seed::PlanetSeed;
@@ -376,5 +460,85 @@ mod tests {
             }
         }
         assert!(any_diff, "different seeds produced identical temperatures");
+    }
+
+    // ---- metric tests ----
+
+    const TEST_R: f64 = 6_371_000.0;
+
+    fn metric_points(seed: u64, count: usize) -> Vec<DVec3> {
+        rand_dirs(seed, count)
+            .iter()
+            .map(|d| crate::terrain_space::metric_surface_point(*d, TEST_R))
+            .collect()
+    }
+
+    #[test]
+    fn metric_temperature_at_in_bounds() {
+        let pp = planet_params(PlanetSeed(0xC0FFEE));
+        let cn = crate::params::climate_noise_metric(&pp, TEST_R);
+        let points = metric_points(0x1111, 1000);
+        for p in &points {
+            let t = temperature_at(*p, 5.0, &pp, &cn);
+            assert!(t >= 0.0 && t <= 1.0, "temperature_at {t} out of [0,1]");
+        }
+    }
+
+    #[test]
+    fn metric_moisture_at_in_bounds() {
+        let params = planet_params(PlanetSeed(0xC0FFEE));
+        let noise = crate::params::climate_noise_metric(&params, TEST_R);
+        let points = metric_points(0x2222, 1000);
+        for p in &points {
+            let m = moisture_at(*p, 0.0, &params, &noise);
+            assert!(m >= 0.0 && m <= 1.0, "moisture_at {m} out of [0,1]");
+        }
+    }
+
+    #[test]
+    fn metric_split_matches_elevation_at() {
+        let params = crate::elevation::elevation_params(PlanetSeed(0xBEEF));
+        let noise = ElevationNoise::new_metric(&params);
+        let points = metric_points(0x5555, 500);
+        for p in &points {
+            let split = elevation_split_metric(*p, &noise);
+            let full = elevation_at(*p, &noise);
+            assert!(
+                (split.full_elev - full).abs() < 1e-10,
+                "diff {s} - {e} = {}",
+                (split.full_elev - full).abs(),
+                s = split.full_elev,
+                e = full
+            );
+        }
+    }
+
+    #[test]
+    fn metric_biome_determinism() {
+        let pp = planet_params(PlanetSeed(0xC0FFEE));
+        let cn = crate::params::climate_noise_metric(&pp, TEST_R);
+        let ep = crate::elevation::elevation_params(PlanetSeed(0xCAFE));
+        let en = ElevationNoise::new_metric(&ep);
+        let points = metric_points(0x4444, 500);
+
+        let pass1: Vec<Biome> = points
+            .iter()
+            .map(|p| {
+                let low = elevation_low_freq_metric(*p, &en);
+                let e = elevation_at(*p, &en);
+                biome_metric(*p, e, low.low_freq_elev, low.mountain_influence, &pp, &cn)
+            })
+            .collect();
+
+        let pass2: Vec<Biome> = points
+            .iter()
+            .map(|p| {
+                let low = elevation_low_freq_metric(*p, &en);
+                let e = elevation_at(*p, &en);
+                biome_metric(*p, e, low.low_freq_elev, low.mountain_influence, &pp, &cn)
+            })
+            .collect();
+
+        assert_eq!(pass1, pass2);
     }
 }
