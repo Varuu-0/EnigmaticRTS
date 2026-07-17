@@ -28,3 +28,24 @@ impl SystemSeed {
         PlanetSeed(u64::from_le_bytes(buf))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn planet_seed_is_repeatable_and_domain_separated() {
+        let system = SystemSeed(0xC0FFEE);
+        assert_eq!(system.planet_seed(3), system.planet_seed(3));
+        assert_ne!(system.planet_seed(0), system.planet_seed(1));
+        assert_ne!(system.planet_seed(0), SystemSeed(0xC0FFEF).planet_seed(0));
+    }
+
+    #[test]
+    fn planet_seed_remains_unique_over_a_deterministic_roster() {
+        let system = SystemSeed(0xD15EA5E);
+        let seeds: std::collections::HashSet<_> =
+            (0..64).map(|index| system.planet_seed(index)).collect();
+        assert_eq!(seeds.len(), 64);
+    }
+}

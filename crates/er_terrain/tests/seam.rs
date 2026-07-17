@@ -1,15 +1,17 @@
 use bevy::render::mesh::{Indices, Mesh, VertexAttributeValues};
 use er_core::config::{CHUNK_QUADS_PER_EDGE, CHUNK_VERT_RES};
-use er_core::math::{cells_per_edge, CellKey};
+use er_core::math::{cell_to_dir, cells_per_edge, CellKey};
 use er_core::seed::PlanetSeed;
 use er_terrain::{
-    generate_chunk_mesh as generate_chunk_mesh_with_field, ChunkComponent, ATTRIBUTE_GRID,
-    ATTRIBUTE_MORPH, ATTRIBUTE_NORMAL,
+    generate_chunk_mesh as generate_chunk_mesh_with_field, generate_chunk_mesh_stitched,
+    ChunkComponent, ATTRIBUTE_CURVATURE, ATTRIBUTE_DRAINAGE, ATTRIBUTE_GRID, ATTRIBUTE_MORPH,
+    ATTRIBUTE_NORMAL,
 };
 use er_world::cache::WorldCache;
 use er_world::elevation::{elevation_params, ElevationNoise, ElevationParams};
 use er_world::params::{climate_noise, planet_params, ClimateNoise, PlanetParams};
 use er_world::terrain_field::ProceduralTerrainField;
+use glam::DVec3;
 use glam::Vec3;
 
 const ELEVATION_SCALE: f32 = 1000.0;
@@ -162,14 +164,16 @@ fn adjacent_chunks_share_edge_vertices() {
 
     let n = CHUNK_VERT_RES as usize;
 
-    let pos1 = match mesh1.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+    let pos1_raw = match mesh1.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
         VertexAttributeValues::Float32x3(v) => v,
         _ => panic!(),
     };
-    let pos2 = match mesh2.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+    let pos2_raw = match mesh2.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
         VertexAttributeValues::Float32x3(v) => v,
         _ => panic!(),
     };
+    let pos1 = world_positions(key1, radius, pos1_raw);
+    let pos2 = world_positions(key2, radius, pos2_raw);
 
     for j in 0..n {
         let idx1 = j * n + (n - 1);
@@ -208,10 +212,11 @@ fn skirt_vertices_below_surface() {
     let n = CHUNK_VERT_RES as usize;
     let surface_count = n * n;
 
-    let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+    let positions_raw = match mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
         VertexAttributeValues::Float32x3(v) => v,
         _ => panic!(),
     };
+    let positions = world_positions(key, radius, positions_raw);
 
     for skirt_index in surface_count..positions.len() {
         let strip = (skirt_index - surface_count) / n;
@@ -230,6 +235,7 @@ fn skirt_attributes_match_paired_surface_vertices() {
     let (noise, elev_params, pp, cn) = test_elevation();
     let n = CHUNK_VERT_RES as usize;
     let surface_count = n * n;
+    let radius = 12000.0;
 
     for face in 0..6 {
         let key = CellKey {
@@ -240,7 +246,7 @@ fn skirt_attributes_match_paired_surface_vertices() {
         };
         let mesh = generate_chunk_mesh(
             key,
-            12000.0,
+            radius,
             ELEVATION_SCALE,
             &noise,
             &elev_params,
@@ -248,7 +254,8 @@ fn skirt_attributes_match_paired_surface_vertices() {
             &cn,
             None,
         );
-        let positions = positions(&mesh);
+        let positions_raw = positions(&mesh);
+        let positions = world_positions(key, radius, &positions_raw);
         let normals = match mesh.attribute(ATTRIBUTE_NORMAL).unwrap() {
             VertexAttributeValues::Float32x3(values) => values,
             _ => panic!("expected Float32x3 normals"),
@@ -289,6 +296,7 @@ fn skirt_triangles_face_outward_on_every_face() {
     let quads = CHUNK_QUADS_PER_EDGE as usize;
     let surface_index_count = quads * quads * 6;
     let strip_index_count = quads * 6;
+    let radius = 12000.0;
 
     for face in 0..6 {
         let key = CellKey {
@@ -299,7 +307,7 @@ fn skirt_triangles_face_outward_on_every_face() {
         };
         let mesh = generate_chunk_mesh(
             key,
-            12000.0,
+            radius,
             ELEVATION_SCALE,
             &noise,
             &elev_params,
@@ -307,7 +315,8 @@ fn skirt_triangles_face_outward_on_every_face() {
             &cn,
             None,
         );
-        let positions = positions(&mesh);
+        let positions_raw = positions(&mesh);
+        let positions = world_positions(key, radius, &positions_raw);
         let indices = match mesh.indices().unwrap() {
             Indices::U32(values) => values,
             _ => panic!("expected U32 indices"),
@@ -374,14 +383,16 @@ fn face_edge_chunks_adjacent_across_boundary() {
         None,
     );
 
-    let pos1 = match mesh1.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+    let pos1_raw = match mesh1.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
         VertexAttributeValues::Float32x3(v) => v,
         _ => panic!(),
     };
-    let pos2 = match mesh2.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+    let pos2_raw = match mesh2.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
         VertexAttributeValues::Float32x3(v) => v,
         _ => panic!(),
     };
+    let pos1 = world_positions(key1, radius, pos1_raw);
+    let pos2 = world_positions(key2, radius, pos2_raw);
 
     let mut max_diff = 0.0f32;
     for j in 0..n {
@@ -452,6 +463,25 @@ fn positions(mesh: &Mesh) -> Vec<[f32; 3]> {
     }
 }
 
+fn world_positions(key: CellKey, radius: f64, positions: &[[f32; 3]]) -> Vec<[f32; 3]> {
+    let anchor = cell_to_dir(key) * radius;
+    positions
+        .iter()
+        .map(|&p| {
+            let wp = DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64) + anchor;
+            [wp.x as f32, wp.y as f32, wp.z as f32]
+        })
+        .collect()
+}
+
+fn world_positions_f64(key: CellKey, radius: f64, positions: &[[f32; 3]]) -> Vec<DVec3> {
+    let anchor = cell_to_dir(key) * radius;
+    positions
+        .iter()
+        .map(|&p| DVec3::new(p[0] as f64, p[1] as f64, p[2] as f64) + anchor)
+        .collect()
+}
+
 fn manhattan(a: [f32; 3], b: [f32; 3]) -> f32 {
     (a[0] - b[0]).abs() + (a[1] - b[1]).abs() + (a[2] - b[2]).abs()
 }
@@ -504,7 +534,7 @@ fn finer_even_edge_vertices_coincide_with_coarser() {
         lod: 1,
     };
 
-    let pf = positions(&generate_chunk_mesh(
+    let pf_raw = positions(&generate_chunk_mesh(
         fine,
         radius,
         ELEVATION_SCALE,
@@ -514,7 +544,7 @@ fn finer_even_edge_vertices_coincide_with_coarser() {
         &cn,
         None,
     ));
-    let pc = positions(&generate_chunk_mesh(
+    let pc_raw = positions(&generate_chunk_mesh(
         coarse,
         radius,
         ELEVATION_SCALE,
@@ -524,6 +554,8 @@ fn finer_even_edge_vertices_coincide_with_coarser() {
         &cn,
         None,
     ));
+    let pf = world_positions(fine, radius, &pf_raw);
+    let pc = world_positions(coarse, radius, &pc_raw);
 
     for k in 0..=(n / 2) {
         let gj_fine = 2 * k;
@@ -555,7 +587,7 @@ fn edge_stitch_snaps_inbetween_to_coarse_edge() {
         lod: 1,
     };
 
-    let pf = positions(&generate_chunk_mesh(
+    let pf_raw2 = positions(&generate_chunk_mesh(
         fine,
         radius,
         ELEVATION_SCALE,
@@ -565,7 +597,7 @@ fn edge_stitch_snaps_inbetween_to_coarse_edge() {
         &cn,
         None,
     ));
-    let pc = positions(&generate_chunk_mesh(
+    let pc_raw2 = positions(&generate_chunk_mesh(
         coarse,
         radius,
         ELEVATION_SCALE,
@@ -575,6 +607,8 @@ fn edge_stitch_snaps_inbetween_to_coarse_edge() {
         &cn,
         None,
     ));
+    let pf2 = world_positions(fine, radius, &pf_raw2);
+    let pc2 = world_positions(coarse, radius, &pc_raw2);
 
     for k in 0..(n / 2) {
         let gj_lo = 2 * k;
@@ -582,18 +616,256 @@ fn edge_stitch_snaps_inbetween_to_coarse_edge() {
         let fine_lo = gj_lo * n + (n - 1);
         let fine_mid = (gj_lo + 1) * n + (n - 1);
         let fine_hi = gj_hi * n + (n - 1);
-        let stitched = lerp3(pf[fine_lo], pf[fine_hi], 0.5);
-        let coarse_mid = lerp3(pc[k * n], pc[(k + 1) * n], 0.5);
+        let stitched = lerp3(pf2[fine_lo], pf2[fine_hi], 0.5);
+        let coarse_mid = lerp3(pc2[k * n], pc2[(k + 1) * n], 0.5);
         let diff = manhattan(stitched, coarse_mid);
         assert!(
             diff < 0.01,
             "stitched in-between vert (gj={}) != coarse edge midpoint: diff={diff}",
             gj_lo + 1
         );
-        let raw_diff = manhattan(pf[fine_mid], coarse_mid);
+        let raw_diff = manhattan(pf2[fine_mid], coarse_mid);
         assert!(
             raw_diff > 1e-3,
             "in-between vert already on coarse edge (raw_diff={raw_diff})"
         );
+    }
+}
+
+#[test]
+fn generated_mixed_lod_edge_matches_coarse_mesh_segments() {
+    let (_, elev_params, pp, _) = test_elevation();
+    let field = ProceduralTerrainField::new(elev_params, pp);
+    let radius = 12000.0;
+    let n = CHUNK_VERT_RES as usize;
+    let fine = CellKey {
+        face: 0,
+        i: 2,
+        j: 0,
+        lod: 3,
+    };
+    let coarse = CellKey {
+        face: 0,
+        i: 0,
+        j: 0,
+        lod: 2,
+    };
+
+    let fine_mesh = generate_chunk_mesh_stitched(
+        fine,
+        radius,
+        ELEVATION_SCALE,
+        &field,
+        [Some(coarse), None, None, None],
+    );
+    let coarse_mesh = generate_chunk_mesh_with_field(coarse, radius, ELEVATION_SCALE, &field);
+    let fine_world = world_positions(fine, radius, &positions(&fine_mesh));
+    let coarse_world = world_positions(coarse, radius, &positions(&coarse_mesh));
+
+    for k in 0..n {
+        let coarse_grid = k as f32 * 0.5;
+        let segment = coarse_grid.floor().min((CHUNK_QUADS_PER_EDGE - 1) as f32) as usize;
+        let expected = lerp3(
+            coarse_world[segment * n + (n - 1)],
+            coarse_world[(segment + 1) * n + (n - 1)],
+            coarse_grid - segment as f32,
+        );
+        let actual = fine_world[k * n];
+        let diff = manhattan(actual, expected);
+        assert!(
+            diff < 0.02,
+            "stitched fine edge vertex {k} misses coarse segment by {diff}: {actual:?} vs {expected:?}"
+        );
+    }
+}
+
+// ---- Metric Earth-scale seam test (Milestone 2.2) ----
+//
+// Proves that adjacent/stitched chunk edges remain continuous when the
+// terrain field uses the full metric landform composition (continental +
+// mountain + tectonic + ridge + valley + drainage + erosion + talus).
+
+fn test_metric_field() -> ProceduralTerrainField {
+    let seed = PlanetSeed(0xC0FFEE);
+    let elev_params = elevation_params(seed);
+    let pp = planet_params(seed);
+    ProceduralTerrainField::new_metric(elev_params, pp, 6_371_000.0)
+}
+
+#[test]
+fn metric_earth_scale_adjacent_chunks_share_edge_vertices() {
+    let field = test_metric_field();
+    let radius = 6_371_000.0;
+    let lod = 2u8;
+    let key1 = CellKey {
+        face: 0,
+        i: 0,
+        j: 0,
+        lod,
+    };
+    let key2 = CellKey {
+        face: 0,
+        i: 1,
+        j: 0,
+        lod,
+    };
+
+    let mesh1 = generate_chunk_mesh_with_field(key1, radius, ELEVATION_SCALE, &field);
+    let mesh2 = generate_chunk_mesh_with_field(key2, radius, ELEVATION_SCALE, &field);
+
+    let n = CHUNK_VERT_RES as usize;
+    let pos1_raw = match mesh1.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+        VertexAttributeValues::Float32x3(v) => v,
+        _ => panic!(),
+    };
+    let pos2_raw = match mesh2.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+        VertexAttributeValues::Float32x3(v) => v,
+        _ => panic!(),
+    };
+    let pos1 = world_positions_f64(key1, radius, pos1_raw);
+    let pos2 = world_positions_f64(key2, radius, pos2_raw);
+
+    // Local f32 offsets retain sub-meter precision; reconstruct in f64 so the
+    // test does not add absolute Earth-radius f32 quantization.
+    let max_error_m = 0.5;
+    for j in 0..n {
+        let idx1 = j * n + (n - 1);
+        let idx2 = j * n;
+        let p1 = pos1[idx1];
+        let p2 = pos2[idx2];
+        let diff = (p1 - p2).abs().element_sum();
+        assert!(
+            diff < max_error_m,
+            "metric edge vertex mismatch at j={j}: {p1:?} vs {p2:?} (diff={diff})"
+        );
+    }
+}
+
+#[test]
+fn metric_earth_scale_face_edge_adjacent_across_boundary() {
+    let field = test_metric_field();
+    let radius = 6_371_000.0;
+    let lod = 2u8;
+    let cells = cells_per_edge(lod);
+    let n = CHUNK_VERT_RES as usize;
+
+    let key1 = CellKey {
+        face: 0,
+        i: cells - 1,
+        j: cells / 2,
+        lod,
+    };
+    let mesh1 = generate_chunk_mesh_with_field(key1, radius, ELEVATION_SCALE, &field);
+
+    let key2 = CellKey {
+        face: 2,
+        i: cells - 1,
+        j: cells / 2,
+        lod,
+    };
+    let mesh2 = generate_chunk_mesh_with_field(key2, radius, ELEVATION_SCALE, &field);
+
+    let pos1_raw = match mesh1.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+        VertexAttributeValues::Float32x3(v) => v,
+        _ => panic!(),
+    };
+    let pos2_raw = match mesh2.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
+        VertexAttributeValues::Float32x3(v) => v,
+        _ => panic!(),
+    };
+    let pos1 = world_positions_f64(key1, radius, pos1_raw);
+    let pos2 = world_positions_f64(key2, radius, pos2_raw);
+
+    let mut max_diff = 0.0f64;
+    for j in 0..n {
+        let idx1 = j * n + (n - 1);
+        let idx2 = j * n + (n - 1);
+        let p1 = pos1[idx1];
+        let p2 = pos2[idx2];
+        let diff = (p1 - p2).abs().element_sum();
+        max_diff = max_diff.max(diff);
+    }
+    assert!(
+        max_diff < 0.5,
+        "metric cross-face edge mismatch: max_diff={max_diff}"
+    );
+}
+
+#[test]
+fn metric_earth_scale_edge_stitch_snaps_to_coarse() {
+    let field = test_metric_field();
+    let radius = 6_371_000.0;
+    let n = CHUNK_VERT_RES as usize;
+    // Fine chunk's left edge must be adjacent to the coarse chunk's
+    // right edge (same pattern as the miniature-scale test above).
+    let fine = CellKey {
+        face: 0,
+        i: 2,
+        j: 0,
+        lod: 3,
+    };
+    let coarse = CellKey {
+        face: 0,
+        i: 0,
+        j: 0,
+        lod: 2,
+    };
+
+    let fine_mesh = generate_chunk_mesh_stitched(
+        fine,
+        radius,
+        ELEVATION_SCALE,
+        &field,
+        [Some(coarse), None, None, None],
+    );
+    let coarse_mesh = generate_chunk_mesh_with_field(coarse, radius, ELEVATION_SCALE, &field);
+    let fine_world = world_positions_f64(fine, radius, &positions(&fine_mesh));
+    let coarse_world = world_positions_f64(coarse, radius, &positions(&coarse_mesh));
+
+    let max_error_m = 0.5;
+    for k in 0..n {
+        let coarse_grid = k as f64 * 0.5;
+        let segment = coarse_grid.floor().min((CHUNK_QUADS_PER_EDGE - 1) as f64) as usize;
+        let expected = coarse_world[segment * n + (n - 1)].lerp(
+            coarse_world[(segment + 1) * n + (n - 1)],
+            coarse_grid - segment as f64,
+        );
+        let actual = fine_world[k * n];
+        let diff = (actual - expected).abs().element_sum();
+        assert!(
+            diff < max_error_m,
+            "metric stitched fine edge vertex {k} misses coarse segment by {diff}"
+        );
+    }
+}
+
+#[test]
+fn metric_material_inputs_are_finite_bounded_and_nonconstant() {
+    let field = test_metric_field();
+    let key = CellKey {
+        face: 0,
+        i: 512,
+        j: 512,
+        lod: 10,
+    };
+    let mesh = generate_chunk_mesh_with_field(key, 6_371_000.0, ELEVATION_SCALE, &field);
+    let surface_count = (CHUNK_VERT_RES as usize).pow(2);
+
+    for (name, attribute) in [
+        ("drainage", ATTRIBUTE_DRAINAGE),
+        ("curvature", ATTRIBUTE_CURVATURE),
+    ] {
+        let values = match mesh.attribute(attribute).expect("material attribute") {
+            VertexAttributeValues::Float32(values) => values,
+            _ => panic!("{name} must use Float32"),
+        };
+        assert_eq!(values.len(), surface_count + 4 * CHUNK_VERT_RES as usize);
+        let surface = &values[..surface_count];
+        assert!(surface.iter().all(|value| value.is_finite()));
+        let min = surface.iter().copied().fold(f32::INFINITY, f32::min);
+        let max = surface.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        eprintln!("metric material {name} range: [{min:.4}, {max:.4}]");
+        assert!(min >= -1.0 && max <= 1.0, "{name} range [{min}, {max}]");
+        assert!(max - min > 1e-6, "{name} is constant at {min}");
     }
 }

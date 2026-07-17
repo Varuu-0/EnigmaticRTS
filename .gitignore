@@ -3,7 +3,6 @@
 *.pdb
 AGENTS.md
 *.playwright-mcp
-/screenshots_retained/
 /screenshots/
 /crash_reports/
 /tools/terrain_diffusion/.venv/

@@ -10,8 +10,9 @@ use er_world::elevation::ElevationParams;
 use std::sync::OnceLock;
 
 use crate::mesh_gen::{
-    ATTRIBUTE_ELEVATION, ATTRIBUTE_GRID, ATTRIBUTE_LOW_FREQ_ELEV, ATTRIBUTE_MOISTURE_LOW,
-    ATTRIBUTE_MORPH, ATTRIBUTE_NORMAL, ATTRIBUTE_TEMPERATURE, ATTRIBUTE_WARPED_DIR,
+    ATTRIBUTE_CURVATURE, ATTRIBUTE_DIRECTION, ATTRIBUTE_DRAINAGE, ATTRIBUTE_ELEVATION,
+    ATTRIBUTE_GRID, ATTRIBUTE_LOW_FREQ_ELEV, ATTRIBUTE_MOISTURE_LOW, ATTRIBUTE_MORPH,
+    ATTRIBUTE_NORMAL, ATTRIBUTE_TEMPERATURE,
 };
 
 pub static VERTEX_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
@@ -60,6 +61,9 @@ pub struct TerrainMaterialUniform {
     pub camera_pos_x: f32,
     pub camera_pos_y: f32,
     pub camera_pos_z: f32,
+    pub render_origin_x: f32,
+    pub render_origin_y: f32,
+    pub render_origin_z: f32,
     pub debug_skirt_highlight: f32,
 }
 
@@ -112,6 +116,9 @@ impl TerrainMaterialUniform {
             camera_pos_x: 0.0,
             camera_pos_y: 0.0,
             camera_pos_z: 0.0,
+            render_origin_x: 0.0,
+            render_origin_y: 0.0,
+            render_origin_z: 0.0,
             debug_skirt_highlight: 0.0,
         }
     }
@@ -153,11 +160,13 @@ impl Material for TerrainMaterial {
             ATTRIBUTE_MORPH.at_shader_location(1),
             ATTRIBUTE_GRID.at_shader_location(2),
             ATTRIBUTE_LOW_FREQ_ELEV.at_shader_location(3),
-            ATTRIBUTE_WARPED_DIR.at_shader_location(4),
-            ATTRIBUTE_MOISTURE_LOW.at_shader_location(5),
-            ATTRIBUTE_ELEVATION.at_shader_location(6),
-            ATTRIBUTE_NORMAL.at_shader_location(7),
-            ATTRIBUTE_TEMPERATURE.at_shader_location(8),
+            ATTRIBUTE_MOISTURE_LOW.at_shader_location(4),
+            ATTRIBUTE_ELEVATION.at_shader_location(5),
+            ATTRIBUTE_NORMAL.at_shader_location(6),
+            ATTRIBUTE_TEMPERATURE.at_shader_location(7),
+            ATTRIBUTE_DRAINAGE.at_shader_location(8),
+            ATTRIBUTE_CURVATURE.at_shader_location(9),
+            ATTRIBUTE_DIRECTION.at_shader_location(10),
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         descriptor.primitive.cull_mode = Some(Face::Back);

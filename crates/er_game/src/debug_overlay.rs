@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use er_core::config::{DEFAULT_DAY_LENGTH_SEC, MAX_QUADTREE_DEPTH};
 use er_core::math::{cells_per_edge, dir_to_surface, uv_to_dir, world_to_render, OriginOffset};
-use er_terrain::{ChunkComponent, FrameProfiler, TerrainDebugInfo, TerrainState};
+use er_terrain::{ChunkComponent, FrameProfiler, RenderOrigin, TerrainDebugInfo, TerrainState};
 
 use crate::chunk_cap_controller::DynamicChunkCapController;
 use crate::diagnostics::PerformanceSnapshot;
@@ -117,6 +117,22 @@ fn update_debug_text(
             debug.meshes_built,
             performance.visible_mesh_draw_estimate,
         ));
+        lines.push_str(&format!(
+            "Alt: {:.2} km | Origin: ({:.1},{:.1},{:.1}) gen {} | Near-LOD {} width {:.0}m | Vtx/Nsp {:.2}/{:.2}m span {:.2}m eps {:.3e}rad | {:?} p:{:.0}% l:{:.0}%\n",
+            debug.camera_altitude_m / 1000.0,
+            debug.render_origin_world.x, debug.render_origin_world.y, debug.render_origin_world.z,
+            debug.render_origin_generation,
+            debug.nearest_chunk_lod,
+            debug.nearest_chunk_width_m,
+            debug.vertex_spacing_m,
+            debug.normal_diff_spacing_m,
+            debug.normal_difference_span_m,
+            debug.normal_diff_epsilon_radians,
+            debug.source_mode,
+            debug.procedural_source_coverage_percent,
+            debug.learned_source_coverage_percent,
+        ));
+
         let process_memory = performance
             .process_memory_gib
             .map(|memory| format!("{memory:.2} GiB"))
@@ -237,6 +253,7 @@ fn toggle_lod_debug(keys: Res<ButtonInput<KeyCode>>, mut draw: ResMut<LodDebugDr
 fn draw_lod_gizmos(
     draw: Res<LodDebugDraw>,
     terrain_state: Res<TerrainState>,
+    render_origin: Res<RenderOrigin>,
     chunks: Query<&ChunkComponent>,
     mut gizmos: Gizmos,
 ) {
@@ -245,7 +262,7 @@ fn draw_lod_gizmos(
     }
 
     let radius = terrain_state.planet_radius;
-    let origin = OriginOffset::default();
+    let origin = OriginOffset(render_origin.world);
 
     for chunk in &chunks {
         let key = chunk.key;
@@ -272,5 +289,68 @@ fn draw_lod_gizmos(
         let hue = (key.lod as f32 / MAX_QUADTREE_DEPTH as f32) * 360.0;
         let color = Color::hsl(hue, 0.9, 0.5);
         gizmos.linestrip(pts, color);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use er_core::config::CHUNK_QUADS_PER_EDGE;
+    use er_core::math::cell_size;
+    use er_terrain::RenderOrigin;
+
+    #[test]
+    fn altitude_from_radius_and_field_zero() {
+        let info = TerrainDebugInfo::default();
+        assert_eq!(info.camera_altitude_m, 0.0);
+    }
+
+    #[test]
+    fn render_origin_default_holds_zero_world() {
+        let info = TerrainDebugInfo::default();
+        assert_eq!(info.render_origin_world, glam::DVec3::ZERO);
+        assert_eq!(info.render_origin_generation, 0);
+    }
+
+    #[test]
+    fn debug_source_check_initially_procedural() {
+        let info = TerrainDebugInfo::default();
+        assert_eq!(
+            info.source_mode,
+            er_world::terrain_field::TerrainSourceMode::Procedural
+        );
+    }
+
+    #[test]
+    fn vertex_spacing_consistent_with_cell_size_for_miniature() {
+        let lod = 12u8;
+        let radius = 36_000.0;
+        let cs = cell_size(lod, radius);
+        let vs = cs / CHUNK_QUADS_PER_EDGE as f64;
+        assert!(vs > 0.0);
+        assert!(
+            (vs * CHUNK_QUADS_PER_EDGE as f64 - cs).abs() < 1e-10,
+            "vertex spacing * quads_per_edge should equal cell_size"
+        );
+    }
+
+    #[test]
+    fn normal_diff_spacing_is_finite_for_miniature_and_earth() {
+        for (radius, lod) in [(36_000.0, 12u8), (6_371_000.0, 17u8)] {
+            let vs = cell_size(lod, radius) / CHUNK_QUADS_PER_EDGE as f64;
+            let nd = (vs / radius).clamp(1e-8, 0.25);
+            assert!(nd > 0.0 && nd.is_finite());
+        }
+    }
+
+    #[test]
+    fn gizmo_origin_matches_parameter() {
+        let origin_render = RenderOrigin {
+            world: glam::DVec3::new(1_000.0, 2_000.0, 3_000.0),
+            generation: 42,
+            cell_size_m: 1000.0,
+        };
+        let origin_offset = OriginOffset(origin_render.world);
+        assert_eq!(origin_offset.0, glam::DVec3::new(1_000.0, 2_000.0, 3_000.0));
     }
 }

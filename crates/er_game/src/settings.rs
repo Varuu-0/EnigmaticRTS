@@ -14,6 +14,7 @@ use bevy::{
 };
 
 const SETTINGS_FILE: &str = "er_game_settings.txt";
+const VALID_MSAA_SAMPLES: [u32; 4] = [1, 2, 4, 8];
 
 #[derive(Resource, Reflect)]
 #[reflect(Resource)]
@@ -34,6 +35,10 @@ impl Default for GraphicsSettings {
 }
 
 impl GraphicsSettings {
+    fn has_valid_msaa(&self) -> bool {
+        VALID_MSAA_SAMPLES.contains(&self.msaa)
+    }
+
     pub fn present_mode(&self) -> PresentMode {
         if self.vsync {
             PresentMode::AutoVsync
@@ -51,7 +56,9 @@ impl GraphicsSettings {
     }
 
     pub fn msaa(&self) -> Msaa {
-        Msaa::from_samples(self.msaa)
+        // Settings files are user-editable; never let an invalid persisted value
+        // reach Bevy's panic-on-invalid constructor.
+        Msaa::from_samples(if self.has_valid_msaa() { self.msaa } else { 1 })
     }
 }
 
@@ -69,7 +76,13 @@ pub fn load_settings() -> GraphicsSettings {
             if let Some((k, v)) = line.split_once('=') {
                 match k.trim() {
                     "vsync" => s.vsync = v.trim() == "1",
-                    "msaa" => s.msaa = v.trim().parse().unwrap_or(s.msaa),
+                    "msaa" => {
+                        if let Ok(samples) = v.trim().parse() {
+                            if VALID_MSAA_SAMPLES.contains(&samples) {
+                                s.msaa = samples;
+                            }
+                        }
+                    }
                     "fullscreen" => s.fullscreen = v.trim() == "1",
                     _ => {}
                 }
@@ -77,6 +90,21 @@ pub fn load_settings() -> GraphicsSettings {
         }
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_msaa_uses_safe_default() {
+        let settings = GraphicsSettings {
+            msaa: 0,
+            ..default()
+        };
+
+        assert_eq!(settings.msaa(), Msaa::Off);
+    }
 }
 
 pub fn save_settings(s: &GraphicsSettings) {

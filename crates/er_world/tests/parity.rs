@@ -1,6 +1,10 @@
 use er_core::rng::rng_from_seed;
 use er_core::seed::PlanetSeed;
-use er_world::elevation::{elevation, elevation_params, ElevationNoise, ElevationParams};
+use er_world::biome::elevation_low_freq_metric;
+use er_world::elevation::{
+    elevation, elevation_at, elevation_params, ElevationNoise, ElevationParams,
+};
+use er_world::terrain_space::metric_surface_point;
 use glam::DVec3;
 use rand::RngCore;
 use wgpu::util::DeviceExt;
@@ -27,7 +31,11 @@ fn generate_dirs(seed: u64, count: usize) -> Vec<DVec3> {
     out
 }
 
-async fn run_compute(params: &ElevationParams, dirs: &[DVec3]) -> Option<Vec<f32>> {
+async fn run_compute(
+    params: &ElevationParams,
+    dirs: &[DVec3],
+    entry_point: &str,
+) -> Option<Vec<f32>> {
     let instance = wgpu::Instance::default();
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
@@ -52,7 +60,7 @@ async fn run_compute(params: &ElevationParams, dirs: &[DVec3]) -> Option<Vec<f32
         label: Some("elevation_eval"),
         layout: None,
         module: &shader,
-        entry_point: Some("elevation_eval"),
+        entry_point: Some(entry_point),
         compilation_options: wgpu::PipelineCompilationOptions::default(),
         cache: None,
     });
@@ -154,7 +162,7 @@ fn parity_cpu_vs_wgsl() {
         .map(|d| elevation(*d, &noise, &params))
         .collect();
 
-    let gpu_elevs = match pollster::block_on(run_compute(&params, &dirs)) {
+    let gpu_elevs = match pollster::block_on(run_compute(&params, &dirs, "elevation_eval")) {
         Some(e) => e,
         None => {
             eprintln!("No GPU adapter available; skipping parity test");
@@ -178,4 +186,73 @@ fn parity_cpu_vs_wgsl() {
         );
     }
     eprintln!("Max diff: {max_diff} (tolerance 1e-4)");
+}
+
+#[test]
+fn metric_low_frequency_parity_cpu_vs_wgsl() {
+    let radius = 6_371_000.0;
+    let params = elevation_params(PlanetSeed(0xC0FFEE));
+    let noise = ElevationNoise::new_metric(&params);
+    let dirs = generate_dirs(0x51_0A_E1, 10_000);
+    let cpu_elevs: Vec<f64> = dirs
+        .iter()
+        .map(|dir| {
+            elevation_low_freq_metric(metric_surface_point(*dir, radius), &noise).low_freq_elev
+        })
+        .collect();
+
+    let gpu_elevs = match pollster::block_on(run_compute(
+        &params,
+        &dirs,
+        "elevation_metric_low_freq_eval",
+    )) {
+        Some(elevations) => elevations,
+        None => {
+            eprintln!("No GPU adapter available; skipping parity test");
+            return;
+        }
+    };
+
+    let mut max_diff = 0.0_f64;
+    for (index, (cpu, gpu)) in cpu_elevs.iter().zip(gpu_elevs.iter()).enumerate() {
+        let diff = (*cpu - *gpu as f64).abs();
+        max_diff = max_diff.max(diff);
+        assert!(
+            diff <= 1e-3,
+            "metric macro parity failed at index {index}: cpu={cpu}, gpu={gpu}, diff={diff}"
+        );
+    }
+    eprintln!("Metric macro max diff: {max_diff} (tolerance 1e-3)");
+}
+
+#[test]
+fn metric_full_elevation_parity_cpu_vs_wgsl() {
+    let radius = 6_371_000.0;
+    let params = elevation_params(PlanetSeed(0xC0FFEE));
+    let noise = ElevationNoise::new_metric(&params);
+    let dirs = generate_dirs(0x7A_11_E2, 10_000);
+    let cpu_elevs: Vec<f64> = dirs
+        .iter()
+        .map(|dir| elevation_at(metric_surface_point(*dir, radius), &noise))
+        .collect();
+
+    let gpu_elevs =
+        match pollster::block_on(run_compute(&params, &dirs, "elevation_metric_full_eval")) {
+            Some(elevations) => elevations,
+            None => {
+                eprintln!("No GPU adapter available; skipping parity test");
+                return;
+            }
+        };
+
+    let mut max_diff = 0.0_f64;
+    for (index, (cpu, gpu)) in cpu_elevs.iter().zip(gpu_elevs.iter()).enumerate() {
+        let diff = (*cpu - *gpu as f64).abs();
+        max_diff = max_diff.max(diff);
+        assert!(
+            diff <= 1e-2,
+            "metric full parity failed at index {index}: cpu={cpu}, gpu={gpu}, diff={diff}"
+        );
+    }
+    eprintln!("Metric full max diff: {max_diff} (tolerance 1e-2)");
 }

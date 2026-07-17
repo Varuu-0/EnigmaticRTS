@@ -106,11 +106,21 @@ pub fn neighbor_lod_across_edge(
     side: NeighborSide,
     active_chunks: &ActiveChunks,
 ) -> u8 {
+    coarser_neighbor_across_edge(key, side, active_chunks).map_or(key.lod, |neighbor| neighbor.lod)
+}
+
+/// Returns the active coarser leaf whose boundary touches `key` across `side`.
+/// Same-LOD and finer neighbors require no stitching from this chunk.
+pub fn coarser_neighbor_across_edge(
+    key: CellKey,
+    side: NeighborSide,
+    active_chunks: &ActiveChunks,
+) -> Option<CellKey> {
     let mut current = key;
     loop {
         let nb = cell_neighbor(current, side);
         if active_chunks.contains(&nb) {
-            return nb.lod;
+            return (nb.lod < key.lod).then_some(nb);
         }
         // Only ascend when current is on the queried edge of its parent.
         // If current is an inner child, the neighbor across this edge is a
@@ -122,11 +132,11 @@ pub fn neighbor_lod_across_edge(
             NeighborSide::PosV => current.j % 2 == 1,
         };
         if !on_parent_edge {
-            return key.lod;
+            return None;
         }
         match parent_of(current) {
             Some(parent) => current = parent,
-            None => return key.lod,
+            None => return None,
         }
     }
 }
@@ -171,4 +181,105 @@ pub struct RetainedMerge {
 #[derive(Resource, Default)]
 pub struct RetainedMerges {
     pub map: HashMap<CellKey, RetainedMerge>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roots_cover_each_cube_face_once() {
+        let roots = root_chunks();
+        assert_eq!(roots.len(), 6);
+        for (face, root) in roots.iter().enumerate() {
+            assert_eq!(root.face, face as u8);
+            assert_eq!(root.lod, 0);
+        }
+    }
+
+    #[test]
+    fn children_and_parent_form_a_split_merge_roundtrip() {
+        let parent = CellKey {
+            face: 3,
+            i: 4,
+            j: 7,
+            lod: 5,
+        };
+        let children = children_of(parent);
+        for child in children {
+            assert_eq!(parent_of(child), Some(parent));
+            assert_eq!(child.lod, parent.lod + 1);
+        }
+        assert_eq!(parent_of(root_chunks()[0]), None);
+    }
+}
+
+#[cfg(test)]
+mod deterministic_tests {
+    use super::*;
+    use er_core::math::{cell_neighbor, NeighborSide};
+    use std::collections::HashSet;
+
+    fn key(i: u32, j: u32, lod: u8) -> CellKey {
+        CellKey { face: 0, i, j, lod }
+    }
+
+    #[test]
+    fn children_round_trip_to_their_parent_and_are_unique() {
+        let parent = key(3, 5, 4);
+        let children = children_of(parent);
+        assert_eq!(children.iter().copied().collect::<HashSet<_>>().len(), 4);
+        for child in children {
+            assert_eq!(parent_of(child), Some(parent));
+            assert_eq!(child.lod, parent.lod + 1);
+        }
+        assert_eq!(parent_of(key(0, 0, 0)), None);
+    }
+
+    #[test]
+    fn roots_cover_each_face_exactly_once() {
+        let roots = root_chunks();
+        assert_eq!(roots.len(), 6);
+        assert_eq!(
+            roots
+                .iter()
+                .map(|key| key.face)
+                .collect::<HashSet<_>>()
+                .len(),
+            6
+        );
+        assert!(roots
+            .iter()
+            .all(|key| key.i == 0 && key.j == 0 && key.lod == 0));
+    }
+
+    #[test]
+    fn finds_a_coarser_neighbor_across_a_parent_boundary() {
+        let child = key(0, 2, 3);
+        let parent = parent_of(child).unwrap();
+        let neighbor = cell_neighbor(parent, NeighborSide::NegU);
+        let mut active = ActiveChunks::default();
+        active.chunks.insert(neighbor, Entity::PLACEHOLDER);
+
+        assert_eq!(
+            neighbor_lod_across_edge(child, NeighborSide::NegU, &active),
+            parent.lod
+        );
+    }
+
+    #[test]
+    fn inner_child_does_not_search_for_a_coarser_neighbor() {
+        let child = key(1, 2, 3);
+        let parent = parent_of(child).unwrap();
+        let mut active = ActiveChunks::default();
+        active.chunks.insert(
+            cell_neighbor(parent, NeighborSide::NegU),
+            Entity::PLACEHOLDER,
+        );
+
+        assert_eq!(
+            neighbor_lod_across_edge(child, NeighborSide::NegU, &active),
+            child.lod
+        );
+    }
 }

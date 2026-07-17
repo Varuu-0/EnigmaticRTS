@@ -1,0 +1,20 @@
+# Primary evidence profile: Windows Optimus laptop.
+# AutoNoVsync is deliberate: Immediate has caused Vulkan DeviceLost failures.
+name = "rtx3060_optimus"
+
+[gpu]
+vendor_id = 4318 # 0x10DE, NVIDIA
+adapter_substring = "NVIDIA"
+hybrid_graphics = true
+
+[presentation]
+present_mode = "AutoNoVsync"
+fullscreen = false
+msaa_samples = 1
+disable_immediate = true
+
+[evidence]
+planet_preset = "EarthScale"
+seed = "0xC0FFEE"
+fixed_sim_time_seconds = 0.0
+dynamic_chunk_cap = false

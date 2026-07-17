@@ -1,0 +1,20 @@
+# Reference fixture for a future discrete desktop baseline.
+# Fill adapter_substring and device_id once the reference machine is selected.
+name = "desktop_reference"
+
+[gpu]
+vendor_id = 4318 # 0x10DE, NVIDIA
+adapter_substring = "UNSPECIFIED"
+hybrid_graphics = false
+
+[presentation]
+present_mode = "AutoVsync"
+fullscreen = false
+msaa_samples = 1
+disable_immediate = true
+
+[evidence]
+planet_preset = "EarthScale"
+seed = "0xC0FFEE"
+fixed_sim_time_seconds = 0.0
+dynamic_chunk_cap = false

@@ -86,6 +86,9 @@ pub struct OceanMaterialUniform {
     pub camera_pos_x: f32,
     pub camera_pos_y: f32,
     pub camera_pos_z: f32,
+    pub render_origin_x: f32,
+    pub render_origin_y: f32,
+    pub render_origin_z: f32,
 }
 
 impl OceanMaterialUniform {
@@ -125,6 +128,9 @@ impl OceanMaterialUniform {
             camera_pos_x: 0.0,
             camera_pos_y: 0.0,
             camera_pos_z: 0.0,
+            render_origin_x: 0.0,
+            render_origin_y: 0.0,
+            render_origin_z: 0.0,
         }
     }
 }
@@ -230,6 +236,7 @@ pub fn setup_ocean(
     mut materials: ResMut<Assets<OceanMaterial>>,
     mut shaders: ResMut<Assets<Shader>>,
     terrain_state: Res<crate::systems::TerrainState>,
+    render_origin: Res<crate::RenderOrigin>,
 ) {
     // Learned macro elevations are resident only on the CPU terrain field. The
     // ocean shader can evaluate procedural elevations, but cannot classify the
@@ -282,7 +289,7 @@ pub fn setup_ocean(
         OceanComponent,
         MeshMaterial3d(material.clone()),
         Mesh3d(mesh_handle),
-        Transform::default(),
+        Transform::from_translation(-render_origin.to_vec3()),
         Visibility::Visible,
     ));
 

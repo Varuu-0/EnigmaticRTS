@@ -9,6 +9,10 @@ struct CloudUniform {
     camera_pos_y: f32,
     camera_pos_z: f32,
     planet_radius: f32,
+    render_origin_x: f32,
+    render_origin_y: f32,
+    render_origin_z: f32,
+    _pad: f32,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> cloud: CloudUniform;
@@ -81,42 +85,43 @@ fn smoothstep_f(edge0: f32, edge1: f32, x: f32) -> f32 {
 
 @fragment
 fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
-    let dir = normalize(input.world_position)
-    let sun_dir = normalize(vec3<f32>(cloud.sun_dir_x, cloud.sun_dir_y, cloud.sun_dir_z))
-    let cam_pos = vec3<f32>(cloud.camera_pos_x, cloud.camera_pos_y, cloud.camera_pos_z)
-    let view_dir = normalize(cam_pos - input.world_position)
+    let render_origin = vec3<f32>(cloud.render_origin_x, cloud.render_origin_y, cloud.render_origin_z);
+    let planet_dir = normalize(input.world_position + render_origin);
+    let sun_dir = normalize(vec3<f32>(cloud.sun_dir_x, cloud.sun_dir_y, cloud.sun_dir_z));
+    let cam_pos = vec3<f32>(cloud.camera_pos_x, cloud.camera_pos_y, cloud.camera_pos_z);
+    let view_dir = normalize(cam_pos - input.world_position);
 
-    let t = cloud.time * 0.003
+    let t = cloud.time * 0.003;
 
     // Large-scale cloud formations
-    let cp = dir * 3.0 + vec3<f32>(t, 0.0, t * 0.5)
-    var n = fbm(cp)
+    let cp = planet_dir * 3.0 + vec3<f32>(t, 0.0, t * 0.5);
+    var n = fbm(cp);
     // Fine detail
-    let n2 = fbm(dir * 8.0 + vec3<f32>(t * 1.3, 0.0, t * 0.7))
-    n = n * 0.7 + n2 * 0.3
+    let n2 = fbm(planet_dir * 8.0 + vec3<f32>(t * 1.3, 0.0, t * 0.7));
+    n = n * 0.7 + n2 * 0.3;
 
-    let density = smoothstep_f(0.42, 0.6, n)
+    let density = smoothstep_f(0.42, 0.6, n);
 
     if (density < 0.01) {
-        discard
+        discard;
     }
 
     // Sun lighting on clouds
-    let sun_facing = max(dot(dir, sun_dir), 0.0)
-    let sun_up = max(sun_dir.y, 0.0)
-    let cloud_light = mix(0.25, 1.0, sun_facing)
+    let sun_facing = max(dot(planet_dir, sun_dir), 0.0);
+    let sun_up = max(sun_dir.y, 0.0);
+    let cloud_light = mix(0.25, 1.0, sun_facing);
 
     let cloud_color = mix(
         vec3<f32>(0.35, 0.38, 0.45),
         vec3<f32>(0.9, 0.92, 0.95),
         cloud_light * (0.5 + sun_up * 0.5),
-    )
+    );
 
     // Edge fade at planet limb
-    let cos_view = max(dot(dir, view_dir), 0.0)
-    let edge_fade = smoothstep_f(0.0, 0.12, cos_view)
+    let cos_view = max(dot(planet_dir, view_dir), 0.0);
+    let edge_fade = smoothstep_f(0.0, 0.12, cos_view);
 
-    let alpha = density * edge_fade * 0.88
+    let alpha = density * edge_fade * 0.88;
 
-    return vec4<f32>(cloud_color, alpha)
+    return vec4<f32>(cloud_color, alpha);
 }

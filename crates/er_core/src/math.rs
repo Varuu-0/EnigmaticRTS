@@ -120,6 +120,10 @@ pub fn uv_to_dir(face: u8, u: f64, v: f64) -> DVec3 {
 /// only on component ratios). Returns exact uv (may be marginally outside
 /// [0,1] due to fp); `dir_to_cell` clamps for indexing.
 pub fn dir_to_uv(dir: DVec3) -> (u8, f64, f64) {
+    assert!(
+        dir.is_finite() && dir.length_squared() > 0.0,
+        "dir_to_uv requires a finite non-zero direction"
+    );
     let d = dir;
     let ax = d.x.abs();
     let ay = d.y.abs();
@@ -185,14 +189,14 @@ pub fn world_to_render(pos: WorldPos, origin: OriginOffset) -> RenderPos {
     pos.to_render(origin)
 }
 
-/// Snap the origin to a `snap`-sized grid cell containing the camera, so we only
-/// re-center in steps (avoids touching the origin every frame). Call
-/// `needs_recenter` first and only re-center when it flips.
+/// Snap the origin to the nearest `snap`-sized grid point, keeping the camera
+/// inside the threshold sphere after a recenter instead of in a far corner of
+/// a floor-quantized cube.
 pub fn recenter(_origin: OriginOffset, camera: WorldPos, snap: f64) -> OriginOffset {
     let c = camera.0;
-    let sx = (c.x / snap).floor() * snap;
-    let sy = (c.y / snap).floor() * snap;
-    let sz = (c.z / snap).floor() * snap;
+    let sx = (c.x / snap).round() * snap;
+    let sy = (c.y / snap).round() * snap;
+    let sz = (c.z / snap).round() * snap;
     OriginOffset(DVec3::new(sx, sy, sz))
 }
 
@@ -368,6 +372,12 @@ mod tests {
             }
         }
         let _ = max_err;
+    }
+
+    #[test]
+    #[should_panic(expected = "finite non-zero direction")]
+    fn dir_to_uv_rejects_zero_direction() {
+        let _ = dir_to_uv(DVec3::ZERO);
     }
 
     // 1.6 tangent frame orthonormal within 1e-6 and matches finite-difference
@@ -558,5 +568,10 @@ mod tests {
         ));
         let o2 = recenter(origin, WorldPos::new(123.4, 0.0, 0.0), 10.0);
         assert_eq!(o2, OriginOffset(DVec3::new(120.0, 0.0, 0.0)));
+
+        let earth_camera = WorldPos::new(3_181_969.6, 1_883_150.2, 5_189_924.1);
+        let earth_origin = recenter(OriginOffset::default(), earth_camera, 1000.0);
+        assert!(!needs_recenter(earth_camera, earth_origin, 1000.0));
+        assert_eq!(recenter(earth_origin, earth_camera, 1000.0), earth_origin);
     }
 }

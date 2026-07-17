@@ -40,9 +40,14 @@ fn ocean_depth_color(depth: f32) -> vec3<f32> {
 
 @fragment
 fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
-    let dir = normalize(input.world_position);
+    let render_origin = vec3<f32>(ocean_material.render_origin_x, ocean_material.render_origin_y, ocean_material.render_origin_z);
+    let planet_dir = normalize(input.world_position + render_origin);
     let ep = make_elev_params(ocean_material);
-    let elev = compute_elevation(dir, ep);
+    let elev = select(
+        compute_low_freq_elevation(planet_dir, ep),
+        compute_low_freq_elevation_metric(planet_dir, ep, ocean_material.planet_radius),
+        ocean_material.planet_radius >= 1000000.0,
+    );
 
     // Don't discard over land - return transparent but still write depth
     // This ensures the ocean sphere occludes far-side terrain
@@ -58,7 +63,7 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
         ocean_material.sun_dir_y,
         ocean_material.sun_dir_z,
     ));
-    let sun_dot = max(dot(dir, sun_dir), 0.0);
+    let sun_dot = max(dot(planet_dir, sun_dir), 0.0);
 
     // Fresnel reflection — sky tint at grazing angles
     let camera_pos = vec3<f32>(
@@ -67,7 +72,7 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
         ocean_material.camera_pos_z,
     );
     let view_dir = normalize(camera_pos - input.world_position);
-    let fresnel = pow(1.0 - max(dot(view_dir, dir), 0.0), 3.0);
+    let fresnel = pow(1.0 - max(dot(view_dir, planet_dir), 0.0), 3.0);
     let sky_color = vec3<f32>(0.4, 0.6, 0.9);
     color = mix(color, sky_color, fresnel * 0.5);
 
@@ -76,9 +81,9 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
     color = color + vec3<f32>(0.1, 0.2, 0.15) * shallow_glow;
 
     // Multi-frequency ripples
-    let ripple1 = sin(ocean_material.time * 1.5 + dir.x * 20.0 + dir.z * 15.0) * 0.015;
-    let ripple2 = sin(ocean_material.time * 3.0 + dir.y * 35.0 - dir.x * 10.0) * 0.008;
-    let ripple3 = sin(ocean_material.time * 0.7 + dir.z * 12.0 + dir.y * 18.0) * 0.005;
+    let ripple1 = sin(ocean_material.time * 1.5 + planet_dir.x * 20.0 + planet_dir.z * 15.0) * 0.015;
+    let ripple2 = sin(ocean_material.time * 3.0 + planet_dir.y * 35.0 - planet_dir.x * 10.0) * 0.008;
+    let ripple3 = sin(ocean_material.time * 0.7 + planet_dir.z * 12.0 + planet_dir.y * 18.0) * 0.005;
     let ripple = ripple1 + ripple2 + ripple3;
     color = color + vec3<f32>(ripple);
 

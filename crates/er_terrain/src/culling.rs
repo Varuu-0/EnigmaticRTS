@@ -39,12 +39,10 @@ pub fn is_below_horizon(key: CellKey, camera_pos: DVec3, planet_radius: f64) -> 
     let dot = chunk_dir.dot(cam_dir);
     let half_angle = chunk_half_angle(key, planet_radius);
 
-    let horizon_cos = if d > planet_radius * 1.5 {
-        let angle = (planet_radius / d).clamp(0.0, 1.0).acos() + half_angle + HORIZON_MARGIN;
-        angle.cos()
-    } else {
-        (std::f64::consts::FRAC_PI_2 + half_angle + HORIZON_MARGIN).cos()
-    };
+    let horizon_angle = (planet_radius / d).clamp(0.0, 1.0).acos();
+    let horizon_cos = (horizon_angle + half_angle + HORIZON_MARGIN)
+        .min(std::f64::consts::PI)
+        .cos();
 
     dot < horizon_cos
 }
@@ -101,6 +99,7 @@ pub fn frustum_cull_sphere(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use er_core::math::dir_to_cell;
 
     #[test]
     fn only_root_faces_are_minimum_coverage_chunks() {
@@ -130,5 +129,126 @@ mod tests {
 
         assert!(!is_beyond_render_distance(root, 101.0, 100.0));
         assert!(is_beyond_render_distance(child, 101.0, 100.0));
+    }
+
+    fn key(face: u8, lod: u8) -> CellKey {
+        CellKey {
+            face,
+            i: 0,
+            j: 0,
+            lod,
+        }
+    }
+
+    #[test]
+    fn chunk_half_angle_is_positive_and_shrinks_with_lod() {
+        let radius = 36_000.0;
+        let coarse = chunk_half_angle(key(0, 1), radius);
+        let fine = chunk_half_angle(key(0, 2), radius);
+        assert!(coarse.is_finite() && fine.is_finite());
+        assert!(coarse > fine && fine > 0.0);
+    }
+
+    #[test]
+    fn horizon_culling_keeps_near_side_and_hides_far_side() {
+        let radius = 36_000.0;
+        let camera = DVec3::X * radius * 3.0;
+        assert!(!is_below_horizon(key(0, 3), camera, radius));
+        assert!(is_below_horizon(key(1, 3), camera, radius));
+        assert!(!is_below_horizon(key(1, 3), DVec3::ZERO, radius));
+    }
+
+    #[test]
+    fn close_earth_horizon_rejects_chunks_beyond_the_margin() {
+        let radius = 6_371_000.0;
+        let camera = DVec3::X * (radius + 100.0);
+        let nadir = dir_to_cell(DVec3::X, 8);
+        let angle = 30.0_f64.to_radians();
+        let beyond_horizon = dir_to_cell(DVec3::new(angle.cos(), angle.sin(), 0.0), 8);
+
+        assert!(!is_below_horizon(nadir, camera, radius));
+        assert!(is_below_horizon(beyond_horizon, camera, radius));
+    }
+
+    #[test]
+    fn horizon_angle_grows_with_camera_altitude() {
+        let radius = 6_371_000.0;
+        let angle = 30.0_f64.to_radians();
+        let key = dir_to_cell(DVec3::new(angle.cos(), angle.sin(), 0.0), 8);
+
+        assert!(is_below_horizon(key, DVec3::X * (radius + 100.0), radius));
+        assert!(!is_below_horizon(key, DVec3::X * (radius * 3.0), radius));
+    }
+
+    #[test]
+    fn render_distance_has_a_deliberate_margin() {
+        let radius = 36_000.0;
+        let key = key(0, 2);
+        let max_distance = 10_000.0;
+        let center = cell_to_dir(key) * radius;
+        let within_margin = center + cell_to_dir(key) * (max_distance * 1.15);
+        let outside_margin = center + cell_to_dir(key) * (max_distance * 1.151);
+        assert!(!is_outside_render_distance(
+            key,
+            within_margin,
+            radius,
+            max_distance
+        ));
+        assert!(is_outside_render_distance(
+            key,
+            outside_margin,
+            radius,
+            max_distance
+        ));
+    }
+
+    #[test]
+    fn frustum_culling_rejects_behind_and_side_spheres() {
+        let camera = Vec3::ZERO;
+        let forward = -Vec3::Z;
+        let right = Vec3::X;
+        let up = Vec3::Y;
+        let fov_cos = (std::f32::consts::FRAC_PI_3 * 0.5).cos();
+
+        assert!(!frustum_cull_sphere(
+            -Vec3::Z * 10.0,
+            1.0,
+            camera,
+            forward,
+            right,
+            up,
+            fov_cos,
+            16.0 / 9.0
+        ));
+        assert!(frustum_cull_sphere(
+            Vec3::Z * 10.0,
+            1.0,
+            camera,
+            forward,
+            right,
+            up,
+            fov_cos,
+            16.0 / 9.0
+        ));
+        assert!(frustum_cull_sphere(
+            Vec3::X * 100.0,
+            1.0,
+            camera,
+            forward,
+            right,
+            up,
+            fov_cos,
+            16.0 / 9.0
+        ));
+        assert!(!frustum_cull_sphere(
+            Vec3::ZERO,
+            1.0,
+            camera,
+            forward,
+            right,
+            up,
+            fov_cos,
+            16.0 / 9.0
+        ));
     }
 }

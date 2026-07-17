@@ -12,7 +12,9 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::{Shader, ShaderRef};
 use er_core::config::DEFAULT_DAY_LENGTH_SEC;
-use er_terrain::{SharedTerrainMaterial, SunDirection, TerrainMaterial};
+use er_terrain::{
+    ocean::OceanComponent, RenderOrigin, SharedTerrainMaterial, SunDirection, TerrainMaterial,
+};
 use std::sync::OnceLock;
 
 static STARFIELD_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
@@ -162,6 +164,10 @@ pub struct CloudUniform {
     pub camera_pos_y: f32,
     pub camera_pos_z: f32,
     pub planet_radius: f32,
+    pub render_origin_x: f32,
+    pub render_origin_y: f32,
+    pub render_origin_z: f32,
+    pub _pad: f32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
@@ -256,6 +262,9 @@ fn make_sphere(radius: f32, segments: usize, rings: usize) -> Mesh {
 
 pub struct SpacePlugin;
 
+#[derive(SystemSet, Clone, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct SpaceUpdate;
+
 impl Plugin for SpacePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(TimeScale::default())
@@ -273,6 +282,7 @@ impl Plugin for SpacePlugin {
                     update_space,
                 )
                     .chain()
+                    .in_set(SpaceUpdate)
                     .before(er_terrain::TerrainUpdate),
             );
     }
@@ -286,6 +296,7 @@ fn setup_space(
     mut cloud_materials: ResMut<Assets<CloudMaterial>>,
     mut shaders: ResMut<Assets<Shader>>,
     terrain_state: Res<er_terrain::TerrainState>,
+    render_origin: Res<er_terrain::RenderOrigin>,
 ) {
     let star_source = include_str!("../assets/shaders/starfield.wgsl");
     let star_handle = shaders.add(Shader::from_wgsl(star_source, "starfield"));
@@ -300,6 +311,8 @@ fn setup_space(
     let _ = CLOUD_SHADER.set(cloud_handle);
 
     let planet_radius = terrain_state.planet_radius as f32;
+
+    let origin_off = render_origin.to_vec3();
 
     // Starfield
     let star_uniform = StarfieldUniform {
@@ -327,7 +340,7 @@ fn setup_space(
 
     // Sun
     let sun_dir = Vec3::new(0.0, 1.0, 0.0);
-    let sun_pos = sun_dir * sun_distance(planet_radius);
+    let sun_pos = sun_dir * sun_distance(planet_radius) - origin_off;
     let sun_radius = sun_radius(planet_radius);
     let sun_uniform = SunUniform {
         color_r: 1.0,
@@ -363,6 +376,10 @@ fn setup_space(
         camera_pos_y: 0.0,
         camera_pos_z: 90000.0,
         planet_radius,
+        render_origin_x: 0.0,
+        render_origin_y: 0.0,
+        render_origin_z: 0.0,
+        _pad: 0.0,
     };
     let cloud_mat = cloud_materials.add(CloudMaterial {
         uniform: cloud_uniform,
@@ -372,7 +389,7 @@ fn setup_space(
         CloudComponent,
         MeshMaterial3d(cloud_mat.clone()),
         Mesh3d(cloud_mesh),
-        Transform::default(),
+        Transform::from_translation(-origin_off),
         Visibility::Hidden,
     ));
     commands.insert_resource(CloudState {
@@ -380,14 +397,7 @@ fn setup_space(
     });
 
     // Directional light (illuminates PBR terrain/ocean materials)
-    let mut light_transform = Transform::from_translation(sun_pos);
-    let forward = -sun_dir;
-    let up = if forward.y.abs() > 0.99 {
-        Vec3::new(0.0, 0.0, 1.0)
-    } else {
-        Vec3::new(0.0, 1.0, 0.0)
-    };
-    light_transform.look_at(Vec3::ZERO, up);
+    let light_transform = Transform::from_translation(sun_pos).looking_to(-sun_dir, Vec3::Y);
     commands.spawn((
         SunLight,
         DirectionalLight {
@@ -403,6 +413,23 @@ fn setup_space(
 fn update_space(
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
     mut starfield_query: Query<&mut Transform, With<StarfieldComponent>>,
+    mut cloud_query: Query<
+        &mut Transform,
+        (
+            With<CloudComponent>,
+            Without<StarfieldComponent>,
+            Without<OceanComponent>,
+        ),
+    >,
+    mut ocean_query: Query<
+        &mut Transform,
+        (
+            With<OceanComponent>,
+            Without<StarfieldComponent>,
+            Without<CloudComponent>,
+        ),
+    >,
+    render_origin: Res<RenderOrigin>,
 ) {
     let Ok(cam) = camera_query.single() else {
         return;
@@ -411,6 +438,16 @@ fn update_space(
 
     for mut tf in &mut starfield_query {
         tf.translation = cam_pos;
+    }
+
+    if render_origin.is_changed() {
+        let planet_center = -render_origin.to_vec3();
+        for mut tf in &mut cloud_query {
+            tf.translation = planet_center;
+        }
+        for mut tf in &mut ocean_query {
+            tf.translation = planet_center;
+        }
     }
 }
 
@@ -459,6 +496,7 @@ fn update_sun(
     cloud_state: Res<CloudState>,
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
     terrain_state: Res<er_terrain::TerrainState>,
+    render_origin: Res<er_terrain::RenderOrigin>,
 ) {
     sim_time.0 += time.delta_secs() * time_scale.current;
 
@@ -470,6 +508,8 @@ fn update_sun(
 
     let planet_radius = terrain_state.planet_radius as f32;
     let sun_pos = sun_dir * sun_distance(planet_radius);
+    let origin_off = render_origin.to_vec3();
+    let sun_pos_rebased = sun_pos - origin_off;
 
     let forward = -sun_dir;
     let up = if forward.y.abs() > 0.99 {
@@ -477,7 +517,7 @@ fn update_sun(
     } else {
         Vec3::new(0.0, 1.0, 0.0)
     };
-    let light_tf = Transform::from_translation(sun_pos).looking_to(-sun_dir, up);
+    let light_tf = Transform::from_translation(sun_pos_rebased).looking_to(-sun_dir, up);
 
     for entity in &light_query {
         if let Ok(mut e) = commands.get_entity(entity) {
@@ -487,7 +527,7 @@ fn update_sun(
 
     for entity in &sphere_query {
         if let Ok(mut e) = commands.get_entity(entity) {
-            e.insert(Transform::from_translation(sun_pos));
+            e.insert(Transform::from_translation(sun_pos_rebased));
         }
     }
 
@@ -513,20 +553,21 @@ fn update_sun(
         mat.uniform.camera_pos_x = cam_pos.x;
         mat.uniform.camera_pos_y = cam_pos.y;
         mat.uniform.camera_pos_z = cam_pos.z;
+        mat.uniform.render_origin_x = origin_off.x;
+        mat.uniform.render_origin_y = origin_off.y;
+        mat.uniform.render_origin_z = origin_off.z;
     }
 }
 
 fn update_terrain_uniforms(
     sim_time: Res<SimTime>,
-    camera_query: Query<&GlobalTransform, With<Camera3d>>,
+    camera_world: Res<er_terrain::CameraWorldPosition>,
     terrain_material: Res<SharedTerrainMaterial>,
     mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
     mut ocean_materials: ResMut<Assets<er_terrain::ocean::OceanMaterial>>,
+    render_origin: Res<er_terrain::RenderOrigin>,
 ) {
-    let Ok(cam) = camera_query.single() else {
-        return;
-    };
-    let cam_pos = cam.translation();
+    let cam_pos = (camera_world.0 - render_origin.world).as_vec3();
 
     let day_length = DEFAULT_DAY_LENGTH_SEC as f32;
     let t = (sim_time.0 % day_length) * (2.0 * std::f32::consts::PI / day_length);
@@ -538,6 +579,9 @@ fn update_terrain_uniforms(
     let cx = cam_pos.x;
     let cy = cam_pos.y;
     let cz = cam_pos.z;
+    let ox = render_origin.world.x as f32;
+    let oy = render_origin.world.y as f32;
+    let oz = render_origin.world.z as f32;
 
     if let Some(mut mat) = terrain_materials.get_mut(&terrain_material.0) {
         let u = &mut mat.uniform;
@@ -547,6 +591,9 @@ fn update_terrain_uniforms(
         u.camera_pos_x = cx;
         u.camera_pos_y = cy;
         u.camera_pos_z = cz;
+        u.render_origin_x = ox;
+        u.render_origin_y = oy;
+        u.render_origin_z = oz;
     }
 
     for (_, mat) in ocean_materials.iter_mut() {
@@ -557,5 +604,8 @@ fn update_terrain_uniforms(
         u.camera_pos_x = cx;
         u.camera_pos_y = cy;
         u.camera_pos_z = cz;
+        u.render_origin_x = ox;
+        u.render_origin_y = oy;
+        u.render_origin_z = oz;
     }
 }

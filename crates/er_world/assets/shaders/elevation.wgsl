@@ -10,8 +10,12 @@ const PRIME_X: i32 = 501125321;
 const PRIME_Y: i32 = 1136930381;
 const PRIME_Z: i32 = 1720413743;
 
-fn fnl_fast_floor(f: f32) -> i32 { return i32(floor(f)); }
-fn fnl_fast_round(f: f32) -> i32 { return i32(round(f)); }
+fn fnl_fast_floor(f: f32) -> i32 {
+    return select(i32(f) - 1, i32(f), f >= 0.0);
+}
+fn fnl_fast_round(f: f32) -> i32 {
+    return select(i32(f - 0.5), i32(f + 0.5), f >= 0.0);
+}
 fn fnl_lerp(a: f32, b: f32, t: f32) -> f32 { return mix(a, b, t); }
 fn fnl_fast_abs(f: f32) -> f32 { return abs(f); }
 fn fnl_interp_hermite(t: f32) -> f32 { return t * t * (3.0 - 2.0 * t); }
@@ -442,6 +446,228 @@ fn compute_elevation_for_normals(dir: vec3<f32>, p: ElevationParams) -> f32 {
          + hills * p.hill_amp;
 }
 
+fn compute_low_freq_elevation(dir: vec3<f32>, p: ElevationParams) -> f32 {
+    let warped: vec3<f32> = fnl_domain_warp_3d(dir, p.seed, p.warp_freq, p.warp_amp);
+    let continental: f32 = fnl_fbm_opensimplex2_3d(p.seed, warped, p.continental_freq, p.continental_octaves, p.lacunarity, p.gain);
+    let mountain_raw: f32 = fnl_ridged_opensimplex2_3d(p.seed, warped, p.mountain_freq, p.mountain_octaves, p.lacunarity, p.gain);
+    let mountains: f32 = mountain_raw * max(0.0, continental);
+    return continental * p.continental_amp + mountains * p.mountain_amp;
+}
+
+// ---- Metric wavelength and amplitude constants (mirror er_world::terrain_space) ----
+
+const CONTINENTAL_WAVELENGTH_M: f32 = 1200000.0;
+const MOUNTAIN_WAVELENGTH_M: f32 = 120000.0;
+const WARP_WAVELENGTH_M: f32 = 700000.0;
+const METRIC_WARP_AMP_M: f32 = 70000.0;
+const TECTONIC_BELT_WAVELENGTH_M: f32 = 2500000.0;
+const DRAINAGE_WAVELENGTH_M: f32 = 50000.0;
+const EROSION_WAVELENGTH_M: f32 = 15000.0;
+const VALLEY_WAVELENGTH_M: f32 = 6000.0;
+const RIDGE_DETAIL_WAVELENGTH_M: f32 = 2500.0;
+const TALUS_WAVELENGTH_M: f32 = 1200.0;
+const FOOTHILL_WAVELENGTH_M: f32 = 8000.0;
+const RIDGE_WAVELENGTH_M: f32 = 900.0;
+const MICRO_DETAIL_WAVELENGTH_M: f32 = 200.0;
+
+const CONTINENTAL_SEED_SALT: i32 = 0x00013579;
+const MOUNTAIN_SEED_SALT: i32 = 0x0002468b;
+const HILL_SEED_SALT: i32 = 0x00035a7d;
+const DETAIL_SEED_SALT: i32 = 0x00047c91;
+const TECTONIC_SEED_SALT: i32 = 0x00058da3;
+const DRAINAGE_SEED_SALT: i32 = 0x00069eb5;
+const RIDGE_DETAIL_SEED_SALT: i32 = 0x0007afc7;
+const VALLEY_SEED_SALT: i32 = 0x0008b0d9;
+const EROSION_SEED_SALT: i32 = 0x0009c1eb;
+const TALUS_SEED_SALT: i32 = 0x000ad2fd;
+
+// Macro amplitudes
+const METRIC_CONTINENTAL_AMP: f32 = 7.0;
+const METRIC_MOUNTAIN_AMP: f32 = 2.5;
+const METRIC_TECTONIC_AMP: f32 = 1.5;
+// Residual amplitudes
+const METRIC_HILL_AMP: f32 = 0.8;
+const METRIC_DETAIL_AMP: f32 = 0.02;
+const METRIC_RIDGE_DETAIL_AMP: f32 = 0.3;
+const METRIC_VALLEY_AMP: f32 = 0.2;
+const METRIC_DRAINAGE_AMP: f32 = 0.2;
+const METRIC_TALUS_AMP: f32 = 0.08;
+
+// ---- Brush landform constants (mirror er_world::brushes) ----
+
+const BRUSH_CAP: u32 = 64u;
+const BRUSH_DOT_THRESHOLD_MIN: f32 = 0.995;
+const BRUSH_DOT_THRESHOLD_MAX: f32 = 0.9995;
+const BRUSH_AMP_MIN: f32 = 0.3;
+const BRUSH_AMP_MAX: f32 = 1.5;
+const BRUSH_TOTAL_CAP: f32 = 3.0;
+const BRUSH_ELONGATION_MIN: f32 = 2.0;
+const BRUSH_ELONGATION_MAX: f32 = 4.0;
+
+// ---- Brush integer hash (identical to Rust brush_hash) ----
+
+fn brush_hash(seed: u32, index: u32) -> u32 {
+    var h: u32 = seed + (index * 0x9E3779B9u);
+    h = h ^ (h >> 16u);
+    h = h * 0x85EBCA6Bu;
+    h = h ^ (h >> 13u);
+    h = h * 0xC2B2AE35u;
+    h = h ^ (h >> 16u);
+    return h;
+}
+
+fn brush_to_unit(h: u32) -> f32 {
+    return f32(h >> 8u) / 16777215.0;
+}
+
+fn brush_profile(kind: u32, t: f32, amp: f32) -> f32 {
+    let falloff: f32 = 1.0 - t * t;
+    switch kind {
+        case 0u: { return amp * falloff; }
+        case 1u: { return amp * min(falloff * 3.0, 1.0); }
+        case 2u: { return amp * (t * t * 3.0 - 1.0) * falloff; }
+        case 3u: { return -amp * falloff * 0.5; }
+        case 4u: { return amp * falloff * falloff; }
+        default: { return 0.0; }
+    }
+}
+
+fn compute_brush_displacement(dir: vec3<f32>, seed: i32) -> f32 {
+    let seed_u: u32 = bitcast<u32>(seed);
+    var sum: f32 = 0.0;
+    for (var i: u32 = 0u; i < BRUSH_CAP; i = i + 1u) {
+        let h0: u32 = brush_hash(seed_u, i * 8u);
+        let h1: u32 = brush_hash(seed_u, i * 8u + 1u);
+        let h2: u32 = brush_hash(seed_u, i * 8u + 2u);
+        let h3: u32 = brush_hash(seed_u, i * 8u + 3u);
+        let h4: u32 = brush_hash(seed_u, i * 8u + 4u);
+        let h5: u32 = brush_hash(seed_u, i * 8u + 5u);
+        let h6: u32 = brush_hash(seed_u, i * 8u + 6u);
+        let h7: u32 = brush_hash(seed_u, i * 8u + 7u);
+
+        let cx: f32 = brush_to_unit(h0) * 2.0 - 1.0;
+        let cy: f32 = brush_to_unit(h1) * 2.0 - 1.0;
+        let cz: f32 = brush_to_unit(h2) * 2.0 - 1.0;
+        let center: vec3<f32> = normalize(vec3<f32>(cx, cy, cz));
+
+        let kind: u32 = h3 % 5u;
+        let dot_threshold: f32 = BRUSH_DOT_THRESHOLD_MIN + brush_to_unit(h3) * (BRUSH_DOT_THRESHOLD_MAX - BRUSH_DOT_THRESHOLD_MIN);
+        let amp: f32 = BRUSH_AMP_MIN + brush_to_unit(h4) * (BRUSH_AMP_MAX - BRUSH_AMP_MIN);
+
+        // Tangent axis: random vector projected onto tangent plane at center.
+        let tx: f32 = brush_to_unit(h5) * 2.0 - 1.0;
+        let ty: f32 = brush_to_unit(h6) * 2.0 - 1.0;
+        let tz: f32 = brush_to_unit(h7) * 2.0 - 1.0;
+        let raw_tangent: vec3<f32> = vec3<f32>(tx, ty, tz);
+        let tangent_projection: vec3<f32> = raw_tangent - center * dot(raw_tangent, center);
+        let fallback_axis: vec3<f32> = select(
+            vec3<f32>(0.0, 1.0, 0.0),
+            vec3<f32>(1.0, 0.0, 0.0),
+            abs(center.x) < 0.9,
+        );
+        let fallback_projection: vec3<f32> = fallback_axis - center * dot(fallback_axis, center);
+        let tangent: vec3<f32> = normalize(select(
+            fallback_projection,
+            tangent_projection,
+            dot(tangent_projection, tangent_projection) > 1e-12,
+        ));
+
+        // Elongation from bottom 8 bits of h7.
+        let elongation: f32 = BRUSH_ELONGATION_MIN + f32(h7 & 0xFFu) / 255.0 * (BRUSH_ELONGATION_MAX - BRUSH_ELONGATION_MIN);
+
+        let d: f32 = dot(dir, center);
+        if (d > dot_threshold) {
+            // Radial kinds (0=Mountain, 1=Plateau, 2=Crater) use linear t.
+            // Elongated kinds (3=Canyon, 4=Ridge) use squared elliptical distance.
+            var t: f32 = (1.0 - d) / (1.0 - dot_threshold);
+            if (kind == 3u || kind == 4u) {
+                let delta: vec3<f32> = dir - center * d;
+                let d_along: f32 = dot(delta, tangent);
+                let bitangent: vec3<f32> = cross(center, tangent);
+                let d_cross: f32 = dot(delta, bitangent);
+                let r_sq: f32 = 1.0 - dot_threshold * dot_threshold;
+                t = (d_along * d_along + d_cross * d_cross * elongation * elongation) / r_sq;
+            }
+            sum = sum + brush_profile(kind, clamp(t, 0.0, 1.0), amp);
+        }
+    }
+    return clamp(sum, -BRUSH_TOTAL_CAP, BRUSH_TOTAL_CAP);
+}
+
+fn compute_low_freq_elevation_metric(dir: vec3<f32>, p: ElevationParams, planet_radius: f32) -> f32 {
+    let metric_pos = normalize(dir) * planet_radius;
+    let warped: vec3<f32> = fnl_domain_warp_3d(metric_pos, p.seed, 1.0 / WARP_WAVELENGTH_M, METRIC_WARP_AMP_M * p.warp_amp);
+    let continental: f32 = fnl_fbm_opensimplex2_3d(p.seed ^ CONTINENTAL_SEED_SALT, warped, 1.0 / CONTINENTAL_WAVELENGTH_M, p.continental_octaves, p.lacunarity, p.gain);
+    let mountain_raw: f32 = fnl_ridged_opensimplex2_3d(p.seed ^ MOUNTAIN_SEED_SALT, warped, 1.0 / MOUNTAIN_WAVELENGTH_M, p.mountain_octaves, p.lacunarity, p.gain);
+    let tectonic_raw: f32 = fnl_fbm_opensimplex2_3d(p.seed ^ TECTONIC_SEED_SALT, warped, 1.0 / TECTONIC_BELT_WAVELENGTH_M, p.continental_octaves, p.lacunarity, p.gain);
+    let belt_sharpness: f32 = 2.0;
+    let tectonic_belt: f32 = clamp(1.0 - abs(tectonic_raw) * belt_sharpness, 0.0, 1.0);
+    let mountain_mask: f32 = min(max(0.0, continental) * tectonic_belt, 1.0);
+    let mountains: f32 = mountain_raw * mountain_mask;
+    let brush_disp: f32 = compute_brush_displacement(normalize(dir), p.seed);
+    return continental * METRIC_CONTINENTAL_AMP + mountains * METRIC_MOUNTAIN_AMP + tectonic_belt * METRIC_TECTONIC_AMP + brush_disp;
+}
+
+// Full metric elevation with all Milestone 2.2 landform layers.
+// Mirrors CPU `metric_landform_sample` in er_world::elevation.
+fn compute_elevation_metric_full(dir: vec3<f32>, p: ElevationParams, planet_radius: f32) -> f32 {
+    let metric_pos = normalize(dir) * planet_radius;
+    let warped: vec3<f32> = fnl_domain_warp_3d(metric_pos, p.seed, 1.0 / WARP_WAVELENGTH_M, METRIC_WARP_AMP_M * p.warp_amp);
+
+    // ---- Macro layers ----
+    let continental: f32 = fnl_fbm_opensimplex2_3d(p.seed ^ CONTINENTAL_SEED_SALT, warped, 1.0 / CONTINENTAL_WAVELENGTH_M, p.continental_octaves, p.lacunarity, p.gain);
+    let mountain_raw: f32 = fnl_ridged_opensimplex2_3d(p.seed ^ MOUNTAIN_SEED_SALT, warped, 1.0 / MOUNTAIN_WAVELENGTH_M, p.mountain_octaves, p.lacunarity, p.gain);
+
+    // Tectonic belt corridor mask [0,1]
+    let tectonic_raw: f32 = fnl_fbm_opensimplex2_3d(p.seed ^ TECTONIC_SEED_SALT, warped, 1.0 / TECTONIC_BELT_WAVELENGTH_M, p.continental_octaves, p.lacunarity, p.gain);
+    let belt_sharpness: f32 = 2.0;
+    let tectonic_belt: f32 = clamp(1.0 - abs(tectonic_raw) * belt_sharpness, 0.0, 1.0);
+    let mountain_mask: f32 = min(max(0.0, continental) * tectonic_belt, 1.0);
+    let mountains: f32 = mountain_raw * mountain_mask;
+
+    let brush_disp: f32 = compute_brush_displacement(normalize(dir), p.seed);
+    let macro_elev: f32 = continental * METRIC_CONTINENTAL_AMP
+        + mountains * METRIC_MOUNTAIN_AMP
+        + tectonic_belt * METRIC_TECTONIC_AMP
+        + brush_disp;
+
+    // ---- Residual layers ----
+    let hills: f32 = fnl_fbm_opensimplex2_3d(p.seed ^ HILL_SEED_SALT, warped, 1.0 / FOOTHILL_WAVELENGTH_M, p.hill_octaves, p.lacunarity, p.gain);
+    let detail: f32 = fnl_fbm_value_3d(p.seed ^ DETAIL_SEED_SALT, warped, 1.0 / MICRO_DETAIL_WAVELENGTH_M, p.detail_octaves, p.lacunarity, p.gain);
+
+    // Erosion mask [0, 1]
+    let erosion_raw: f32 = fnl_fbm_opensimplex2_3d(p.seed ^ EROSION_SEED_SALT, warped, 1.0 / EROSION_WAVELENGTH_M, p.hill_octaves, p.lacunarity, p.gain);
+    let erosion_mask: f32 = clamp(erosion_raw * 0.5 + 0.5, 0.0, 1.0);
+
+    // Ridge uplift: nonnegative [0,1], smoothed by erosion
+    let ridge_raw: f32 = fnl_ridged_opensimplex2_3d(p.seed ^ RIDGE_DETAIL_SEED_SALT, warped, 1.0 / RIDGE_DETAIL_WAVELENGTH_M, p.mountain_octaves, p.lacunarity, p.gain);
+    let ridge_mask: f32 = clamp(ridge_raw * 0.5 + 0.5, 0.0, 1.0) * (1.0 - erosion_mask * 0.5);
+    let ridge: f32 = ridge_mask * METRIC_RIDGE_DETAIL_AMP;
+
+    // Valley / canyon channel: nonnegative [0,1], gated by erosion, subtracted
+    let valley_raw: f32 = fnl_ridged_opensimplex2_3d(p.seed ^ VALLEY_SEED_SALT, warped, 1.0 / VALLEY_WAVELENGTH_M, p.mountain_octaves, p.lacunarity, p.gain);
+    let valley_mask: f32 = clamp(valley_raw * 0.5 + 0.5, 0.0, 1.0) * erosion_mask;
+    let valley: f32 = valley_mask * METRIC_VALLEY_AMP;
+
+    // Drainage catchment: nonnegative [0,1], subtracted
+    let drainage_raw: f32 = fnl_fbm_opensimplex2_3d(p.seed ^ DRAINAGE_SEED_SALT, warped, 1.0 / DRAINAGE_WAVELENGTH_M, p.hill_octaves, p.lacunarity, p.gain);
+    let drainage_mask: f32 = clamp(drainage_raw * 0.5 + 0.5, 0.0, 1.0);
+    let drainage: f32 = drainage_mask * METRIC_DRAINAGE_AMP;
+
+    // Talus: signed, gated by ridge_mask (steep-slope proxy)
+    let talus_raw: f32 = fnl_fbm_value_3d(p.seed ^ TALUS_SEED_SALT, warped, 1.0 / TALUS_WAVELENGTH_M, p.detail_octaves, p.lacunarity, p.gain);
+    let talus: f32 = talus_raw * METRIC_TALUS_AMP * ridge_mask;
+
+    let residual: f32 = hills * METRIC_HILL_AMP
+        + detail * METRIC_DETAIL_AMP
+        + ridge
+        - valley
+        - drainage
+        + talus;
+
+    return macro_elev + residual;
+}
+
 @compute @workgroup_size(64)
 fn elevation_eval(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i: u32 = gid.x;
@@ -450,5 +676,23 @@ fn elevation_eval(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let dir: vec3<f32> = dirs[i];
     elevs[i] = compute_elevation(dir, params);
+}
+
+@compute @workgroup_size(64)
+fn elevation_metric_low_freq_eval(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i: u32 = gid.x;
+    if (i >= arrayLength(&dirs)) {
+        return;
+    }
+    elevs[i] = compute_low_freq_elevation_metric(dirs[i], params, 6371000.0);
+}
+
+@compute @workgroup_size(64)
+fn elevation_metric_full_eval(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i: u32 = gid.x;
+    if (i >= arrayLength(&dirs)) {
+        return;
+    }
+    elevs[i] = compute_elevation_metric_full(dirs[i], params, 6371000.0);
 }
 

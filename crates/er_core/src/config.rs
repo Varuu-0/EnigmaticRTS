@@ -10,6 +10,9 @@ pub const EARTH_MAX_QUADTREE_DEPTH: u8 = 17;
 pub const CHUNK_VERT_RES: u32 = 17;
 pub const CHUNK_QUADS_PER_EDGE: u32 = 16; // CHUNK_VERT_RES - 1
 pub const LOD_SPLIT_BUDGET_PER_FRAME: usize = 48;
+/// Bound CPU-heavy terrain mesh jobs so camera-critical work is not buried
+/// behind thousands of already-submitted breadth-refinement tasks.
+pub const MAX_INFLIGHT_TERRAIN_MESHES: usize = 64;
 // Split once a chunk's projected geometric error exceeds 40 px. This keeps the
 // default orbit dense enough to render a continuous planet disk instead of the
 // sparse cube-face shell produced by coarser LODs.
@@ -73,6 +76,7 @@ pub struct Tunables {
     pub max_render_distance: f64,
     pub active_chunk_cap: usize,
     pub lod_split_budget_per_frame: usize,
+    pub max_inflight_terrain_meshes: usize,
     pub fixed_tps: i32,
     pub default_day_length_sec: f64,
 }
@@ -87,6 +91,7 @@ impl Default for Tunables {
             max_render_distance: MAX_RENDER_DISTANCE,
             active_chunk_cap: ACTIVE_CHUNK_CAP,
             lod_split_budget_per_frame: LOD_SPLIT_BUDGET_PER_FRAME,
+            max_inflight_terrain_meshes: MAX_INFLIGHT_TERRAIN_MESHES,
             fixed_tps: FIXED_TPS,
             default_day_length_sec: DEFAULT_DAY_LENGTH_SEC,
         }
@@ -107,5 +112,33 @@ mod tests {
     fn miniature_preset_preserves_existing_default() {
         assert_eq!(PlanetPreset::default(), PlanetPreset::MiniatureDebug);
         assert_eq!(PlanetPreset::default().radius_m(), PLANET_RADIUS_DEFAULT);
+    }
+
+    #[test]
+    fn preset_render_distance_scales_with_its_radius() {
+        for preset in [PlanetPreset::MiniatureDebug, PlanetPreset::EarthScale] {
+            assert_eq!(preset.max_render_distance_m(), preset.radius_m() * 8.0);
+        }
+    }
+
+    #[test]
+    fn default_tunables_match_the_public_constants() {
+        let tunables = Tunables::default();
+        assert_eq!(tunables.planet_radius, PLANET_RADIUS_DEFAULT);
+        assert_eq!(tunables.max_quadtree_depth, MAX_QUADTREE_DEPTH);
+        assert_eq!(tunables.screen_error_threshold, SCREEN_ERROR_THRESHOLD);
+        assert_eq!(tunables.merge_hysteresis, MERGE_HYSTERESIS);
+        assert_eq!(tunables.max_render_distance, MAX_RENDER_DISTANCE);
+        assert_eq!(tunables.active_chunk_cap, ACTIVE_CHUNK_CAP);
+        assert_eq!(
+            tunables.lod_split_budget_per_frame,
+            LOD_SPLIT_BUDGET_PER_FRAME
+        );
+        assert_eq!(
+            tunables.max_inflight_terrain_meshes,
+            MAX_INFLIGHT_TERRAIN_MESHES
+        );
+        assert_eq!(tunables.fixed_tps, FIXED_TPS);
+        assert_eq!(tunables.default_day_length_sec, DEFAULT_DAY_LENGTH_SEC);
     }
 }

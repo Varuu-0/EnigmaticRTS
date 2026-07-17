@@ -1,8 +1,9 @@
+use crate::brushes::BrushSet;
 use er_core::math::{dir_to_surface, WorldPos};
 use er_core::rng::{rng_child, rng_from_seed, Rng};
 use er_core::seed::PlanetSeed;
 use fastnoise_lite::{DomainWarpType, FastNoiseLite, FractalType, NoiseType};
-use glam::DVec3;
+use glam::{DVec3, Vec3};
 use rand::RngCore;
 
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -70,6 +71,15 @@ pub struct ElevationNoise {
     pub(crate) mountain: FastNoiseLite,
     pub(crate) hill: FastNoiseLite,
     pub(crate) detail: FastNoiseLite,
+    // --- Milestone 2.2 landform layers (metric path only) ---
+    pub(crate) tectonic_belt: FastNoiseLite,
+    pub(crate) drainage: FastNoiseLite,
+    pub(crate) ridge_detail: FastNoiseLite,
+    pub(crate) valley: FastNoiseLite,
+    pub(crate) erosion: FastNoiseLite,
+    pub(crate) talus: FastNoiseLite,
+    // --- Milestone 2.2 brush landforms (metric path only) ---
+    pub(crate) brushes: BrushSet,
 }
 
 impl ElevationNoise {
@@ -82,6 +92,14 @@ impl ElevationNoise {
             params.hill_freq,
             params.detail_freq,
             params.warp_freq,
+            params.warp_amp,
+            params.continental_freq * 0.5,
+            params.hill_freq * 0.5,
+            params.mountain_freq * 0.5,
+            params.mountain_freq * 0.5,
+            params.hill_freq * 0.5,
+            params.detail_freq * 0.5,
+            false,
         )
     }
 
@@ -93,11 +111,20 @@ impl ElevationNoise {
             (1.0 / CONTINENTAL_WAVELENGTH_M) as f32,
             (1.0 / MOUNTAIN_WAVELENGTH_M) as f32,
             (1.0 / FOOTHILL_WAVELENGTH_M) as f32,
-            (1.0 / RIDGE_WAVELENGTH_M) as f32,
+            (1.0 / MICRO_DETAIL_WAVELENGTH_M) as f32,
             (1.0 / WARP_WAVELENGTH_M) as f32,
+            (METRIC_WARP_AMP_M * params.warp_amp as f64) as f32,
+            (1.0 / TECTONIC_BELT_WAVELENGTH_M) as f32,
+            (1.0 / DRAINAGE_WAVELENGTH_M) as f32,
+            (1.0 / RIDGE_DETAIL_WAVELENGTH_M) as f32,
+            (1.0 / VALLEY_WAVELENGTH_M) as f32,
+            (1.0 / EROSION_WAVELENGTH_M) as f32,
+            (1.0 / TALUS_WAVELENGTH_M) as f32,
+            true,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn init_layers(
         seed: i32,
         params: &ElevationParams,
@@ -106,47 +133,100 @@ impl ElevationNoise {
         hill_freq: f32,
         detail_freq: f32,
         warp_freq: f32,
+        warp_amp: f32,
+        tectonic_freq: f32,
+        drainage_freq: f32,
+        ridge_detail_freq: f32,
+        valley_freq: f32,
+        erosion_freq: f32,
+        talus_freq: f32,
+        decorrelate_layers: bool,
     ) -> Self {
+        let layer_seed = |salt: i32| {
+            if decorrelate_layers {
+                seed ^ salt
+            } else {
+                seed
+            }
+        };
+
         let mut warp = FastNoiseLite::with_seed(seed);
         warp.set_domain_warp_type(Some(DomainWarpType::OpenSimplex2));
         warp.set_frequency(Some(warp_freq));
-        warp.set_domain_warp_amp(Some(params.warp_amp));
+        warp.set_domain_warp_amp(Some(warp_amp));
 
-        let mut continental = FastNoiseLite::with_seed(seed);
-        continental.set_noise_type(Some(NoiseType::OpenSimplex2));
-        continental.set_fractal_type(Some(FractalType::FBm));
-        continental.set_fractal_octaves(Some(params.continental_octaves));
-        continental.set_frequency(Some(continental_freq));
-        continental.set_fractal_lacunarity(Some(params.lacunarity));
-        continental.set_fractal_gain(Some(params.gain));
-        continental.set_fractal_weighted_strength(Some(0.0));
+        let continental = Self::make_fbm_opensimplex(
+            layer_seed(0x0001_3579),
+            continental_freq,
+            params.continental_octaves,
+            params.lacunarity,
+            params.gain,
+        );
+        let mountain = Self::make_ridged_opensimplex(
+            layer_seed(0x0002_468b),
+            mountain_freq,
+            params.mountain_octaves,
+            params.lacunarity,
+            params.gain,
+        );
+        let hill = Self::make_fbm_opensimplex(
+            layer_seed(0x0003_5a7d),
+            hill_freq,
+            params.hill_octaves,
+            params.lacunarity,
+            params.gain,
+        );
+        let detail = Self::make_fbm_value(
+            layer_seed(0x0004_7c91),
+            detail_freq,
+            params.detail_octaves,
+            params.lacunarity,
+            params.gain,
+        );
 
-        let mut mountain = FastNoiseLite::with_seed(seed);
-        mountain.set_noise_type(Some(NoiseType::OpenSimplex2));
-        mountain.set_fractal_type(Some(FractalType::Ridged));
-        mountain.set_fractal_octaves(Some(params.mountain_octaves));
-        mountain.set_frequency(Some(mountain_freq));
-        mountain.set_fractal_lacunarity(Some(params.lacunarity));
-        mountain.set_fractal_gain(Some(params.gain));
-        mountain.set_fractal_weighted_strength(Some(0.0));
-
-        let mut hill = FastNoiseLite::with_seed(seed);
-        hill.set_noise_type(Some(NoiseType::OpenSimplex2));
-        hill.set_fractal_type(Some(FractalType::FBm));
-        hill.set_fractal_octaves(Some(params.hill_octaves));
-        hill.set_frequency(Some(hill_freq));
-        hill.set_fractal_lacunarity(Some(params.lacunarity));
-        hill.set_fractal_gain(Some(params.gain));
-        hill.set_fractal_weighted_strength(Some(0.0));
-
-        let mut detail = FastNoiseLite::with_seed(seed);
-        detail.set_noise_type(Some(NoiseType::Value));
-        detail.set_fractal_type(Some(FractalType::FBm));
-        detail.set_fractal_octaves(Some(params.detail_octaves));
-        detail.set_frequency(Some(detail_freq));
-        detail.set_fractal_lacunarity(Some(params.lacunarity));
-        detail.set_fractal_gain(Some(params.gain));
-        detail.set_fractal_weighted_strength(Some(0.0));
+        // New landform layers reuse the same noise primitives.
+        let tectonic_belt = Self::make_fbm_opensimplex(
+            layer_seed(0x0005_8da3),
+            tectonic_freq,
+            params.continental_octaves,
+            params.lacunarity,
+            params.gain,
+        );
+        let drainage = Self::make_fbm_opensimplex(
+            layer_seed(0x0006_9eb5),
+            drainage_freq,
+            params.hill_octaves,
+            params.lacunarity,
+            params.gain,
+        );
+        let ridge_detail = Self::make_ridged_opensimplex(
+            layer_seed(0x0007_afc7),
+            ridge_detail_freq,
+            params.mountain_octaves,
+            params.lacunarity,
+            params.gain,
+        );
+        let valley = Self::make_ridged_opensimplex(
+            layer_seed(0x0008_b0d9),
+            valley_freq,
+            params.mountain_octaves,
+            params.lacunarity,
+            params.gain,
+        );
+        let erosion = Self::make_fbm_opensimplex(
+            layer_seed(0x0009_c1eb),
+            erosion_freq,
+            params.hill_octaves,
+            params.lacunarity,
+            params.gain,
+        );
+        let talus = Self::make_fbm_value(
+            layer_seed(0x000a_d2fd),
+            talus_freq,
+            params.detail_octaves,
+            params.lacunarity,
+            params.gain,
+        );
 
         Self {
             warp,
@@ -154,7 +234,62 @@ impl ElevationNoise {
             mountain,
             hill,
             detail,
+            tectonic_belt,
+            drainage,
+            ridge_detail,
+            valley,
+            erosion,
+            talus,
+            brushes: BrushSet::from_seed(seed as u32),
         }
+    }
+
+    fn make_fbm_opensimplex(
+        seed: i32,
+        freq: f32,
+        octaves: i32,
+        lac: f32,
+        gain: f32,
+    ) -> FastNoiseLite {
+        let mut n = FastNoiseLite::with_seed(seed);
+        n.set_noise_type(Some(NoiseType::OpenSimplex2));
+        n.set_fractal_type(Some(FractalType::FBm));
+        n.set_fractal_octaves(Some(octaves));
+        n.set_frequency(Some(freq));
+        n.set_fractal_lacunarity(Some(lac));
+        n.set_fractal_gain(Some(gain));
+        n.set_fractal_weighted_strength(Some(0.0));
+        n
+    }
+
+    fn make_ridged_opensimplex(
+        seed: i32,
+        freq: f32,
+        octaves: i32,
+        lac: f32,
+        gain: f32,
+    ) -> FastNoiseLite {
+        let mut n = FastNoiseLite::with_seed(seed);
+        n.set_noise_type(Some(NoiseType::OpenSimplex2));
+        n.set_fractal_type(Some(FractalType::Ridged));
+        n.set_fractal_octaves(Some(octaves));
+        n.set_frequency(Some(freq));
+        n.set_fractal_lacunarity(Some(lac));
+        n.set_fractal_gain(Some(gain));
+        n.set_fractal_weighted_strength(Some(0.0));
+        n
+    }
+
+    fn make_fbm_value(seed: i32, freq: f32, octaves: i32, lac: f32, gain: f32) -> FastNoiseLite {
+        let mut n = FastNoiseLite::with_seed(seed);
+        n.set_noise_type(Some(NoiseType::Value));
+        n.set_fractal_type(Some(FractalType::FBm));
+        n.set_fractal_octaves(Some(octaves));
+        n.set_frequency(Some(freq));
+        n.set_fractal_lacunarity(Some(lac));
+        n.set_fractal_gain(Some(gain));
+        n.set_fractal_weighted_strength(Some(0.0));
+        n
     }
 }
 
@@ -181,36 +316,178 @@ pub fn elevation(dir: DVec3, noise: &ElevationNoise, params: &ElevationParams) -
         + detail * params.detail_amp) as f64
 }
 
+/// Deterministic metric landform sample exposing every composed layer so
+/// that macro / residual responsibilities are explicit and cannot drift.
+///
+/// **Macro displacement** (low-frequency): continental + mountain (gated by
+/// tectonic belt) + tectonic belt uplift.  This owns shoreline, broad biome
+/// classification, and stable water classification.
+///
+/// **Residual displacement** (high-frequency): hill + detail + ridge uplift
+/// − valley carving − drainage carving + talus roughness.  Added on top of
+/// the macro to produce the composed terrain elevation.
+#[derive(Clone, Copy, Debug)]
+pub struct MetricLandformSample {
+    /// Low-frequency macro displacement (continental + mountain + tectonic).
+    pub macro_displacement: f64,
+    /// High-frequency residual displacement (hill + detail + ridge − valley
+    /// − drainage + talus).
+    pub residual_displacement: f64,
+    /// Full composed elevation = macro + residual.
+    pub full_elevation: f64,
+    /// Warped metric position (named for legacy compatibility).
+    pub warped_dir: DVec3,
+    /// Mountain influence for rain-shadow climate — reflects the gated belt.
+    pub mountain_influence: f64,
+    // --- Bounded mask values (all in [0, 1]) ---
+    /// Tectonic belt corridor mask [0, 1].
+    pub tectonic_belt: f32,
+    /// Drainage catchment/channel mask [0, 1].
+    pub drainage: f32,
+    /// Erosion intensity mask [0, 1].
+    pub erosion: f32,
+    /// Ridge uplift mask [0, 1].
+    pub ridge_mask: f32,
+    /// Valley/canyon channel mask [0, 1].
+    pub valley_mask: f32,
+    /// Raw signed talus noise before ridge/steepness gating.
+    pub talus_raw: f32,
+    /// Brush landform displacement (Milestone 2.2).  Included in macro.
+    pub brush_displacement: f32,
+}
+
+/// Single shared helper that computes every metric landform layer once.
+/// `elevation_at`, `elevation_low_freq_metric`, and `elevation_split_metric`
+/// all delegate here so their results cannot drift.
+///
+/// # Mask formulas (CPU = WGSL)
+///
+/// **tectonic_belt** [0,1]: sharpened inverse-absolute band of broad FBm.
+/// `belt = clamp(1 - |raw| * sharpness, 0, 1)` where `raw` is OpenSimplex2
+/// FBm at `TECTONIC_BELT_WAVELENGTH_M`.  Corridors form where raw ≈ 0.
+/// The belt gates mountain uplift and contributes a bounded macro uplift.
+///
+/// **erosion** [0,1]: `clamp(raw * 0.5 + 0.5, 0, 1)` from OpenSimplex2 FBm.
+///
+/// **ridge_mask** [0,1]: `clamp(ridged_raw * 0.5 + 0.5, 0, 1)`, then gated
+/// by `(1 - erosion*0.5)`.  Nonnegative uplift.
+///
+/// **valley_mask** [0,1]: `clamp(ridged_raw * 0.5 + 0.5, 0, 1)`, gated by
+/// `erosion`.  Subtracted (carving).
+///
+/// **drainage** [0,1]: `clamp(raw * 0.5 + 0.5, 0, 1)` from OpenSimplex2 FBm.
+/// Subtracted (shallow carving).
+///
+/// **talus**: signed [-1,1] Value FBm, gated by `ridge_mask` (steep proxy).
+pub fn metric_landform_sample(pos: DVec3, noise: &ElevationNoise) -> MetricLandformSample {
+    use crate::terrain_space::*;
+
+    let (wx, wy, wz) = noise.warp.domain_warp_3d(pos.x, pos.y, pos.z);
+    let warped_dir = DVec3::new(wx, wy, wz);
+
+    // ---- Macro layers (low-frequency) ----
+    let continental = noise.continental.get_noise_3d(wx, wy, wz);
+    let mountain_raw = noise.mountain.get_noise_3d(wx, wy, wz);
+
+    // Tectonic belt corridor mask [0, 1]: sharpened inverse-absolute band.
+    // Where the broad noise crosses zero, a corridor forms (belt → 1).
+    let tectonic_raw = noise.tectonic_belt.get_noise_3d(wx, wy, wz);
+    let belt_sharpness = 2.0_f64;
+    let tectonic_belt =
+        ((1.0 - (tectonic_raw as f64).abs() * belt_sharpness).max(0.0)).min(1.0) as f32;
+
+    // Mountain uplift is gated by the tectonic belt corridor (in addition
+    // to the continental land mask).  Mountains concentrate in belt zones.
+    let mountain_mask = (continental.max(0.0) * tectonic_belt).min(1.0) as f32;
+    let mountains = mountain_raw * mountain_mask;
+
+    // ---- Brush landform displacement (Milestone 2.2) ----
+    // Evaluated on the unwarped unit direction (seam-safe spherical), added
+    // to the macro so mesh edges/normals/water use the same composed field.
+    let dir = pos.normalize();
+    let dir_f32 = Vec3::new(dir.x as f32, dir.y as f32, dir.z as f32).normalize();
+    let brush_disp = noise.brushes.displacement_indexed(dir_f32);
+
+    let macro_displacement = continental as f64 * METRIC_CONTINENTAL_AMP
+        + mountains as f64 * METRIC_MOUNTAIN_AMP
+        + tectonic_belt as f64 * METRIC_TECTONIC_AMP
+        + brush_disp as f64;
+    // Mountain influence reflects the gated belt for rain-shadow climate.
+    let mountain_influence = (mountain_raw.max(0.0) as f64 * mountain_mask as f64).min(1.0);
+
+    // ---- Residual layers (high-frequency) ----
+    let hills = noise.hill.get_noise_3d(wx, wy, wz);
+    let detail = noise.detail.get_noise_3d(wx, wy, wz);
+
+    // Erosion mask [0, 1]: controls valley deepening and ridge smoothing.
+    let erosion_raw = noise.erosion.get_noise_3d(wx, wy, wz);
+    let erosion_mask = ((erosion_raw as f64) * 0.5 + 0.5).clamp(0.0, 1.0) as f32;
+
+    // Ridge uplift: nonnegative mask [0,1], smoothed where erosion is high.
+    let ridge_raw = noise.ridge_detail.get_noise_3d(wx, wy, wz);
+    let ridge_mask =
+        ((ridge_raw as f64 * 0.5 + 0.5).clamp(0.0, 1.0) * (1.0 - erosion_mask as f64 * 0.5)) as f32;
+    let ridge = ridge_mask as f64 * METRIC_RIDGE_DETAIL_AMP;
+
+    // Valley / canyon channel: nonnegative mask [0,1], gated by erosion.
+    // Subtracted (carving) — always reduces elevation.
+    let valley_raw = noise.valley.get_noise_3d(wx, wy, wz);
+    let valley_mask =
+        ((valley_raw as f64 * 0.5 + 0.5).clamp(0.0, 1.0) * erosion_mask as f64) as f32;
+    let valley = valley_mask as f64 * METRIC_VALLEY_AMP;
+
+    // Drainage catchment: nonnegative mask [0,1].  Subtracted (shallow
+    // carving) — always reduces elevation.
+    let drainage_raw = noise.drainage.get_noise_3d(wx, wy, wz);
+    let drainage_mask = ((drainage_raw as f64 * 0.5 + 0.5).clamp(0.0, 1.0)) as f32;
+    let drainage = drainage_mask as f64 * METRIC_DRAINAGE_AMP;
+
+    // Talus roughness: signed [-1,1], gated by ridge_mask as a low-cost
+    // steep-slope proxy (ridges = steep terrain).  No nested central
+    // differences inside the elevation sample.
+    let talus_raw = noise.talus.get_noise_3d(wx, wy, wz);
+    let talus = talus_raw as f64 * METRIC_TALUS_AMP * ridge_mask as f64;
+
+    let residual_displacement =
+        hills as f64 * METRIC_HILL_AMP + detail as f64 * METRIC_DETAIL_AMP + ridge
+            - valley
+            - drainage
+            + talus;
+
+    let full_elevation = macro_displacement + residual_displacement;
+
+    MetricLandformSample {
+        macro_displacement,
+        residual_displacement,
+        full_elevation,
+        warped_dir,
+        mountain_influence,
+        tectonic_belt,
+        drainage: drainage_mask,
+        erosion: erosion_mask,
+        ridge_mask,
+        valley_mask,
+        talus_raw,
+        brush_displacement: brush_disp,
+    }
+}
+
 /// Elevation in normalized field units, sampled from a continuous 3D metric
 /// coordinate on the planet sphere surface (in meters).
 ///
 /// This function must be called with noise built via `new_metric()`. The result
 /// is multiplied by 1000 (the `TerrainState` elevation scale) during mesh
-/// generation to obtain meter displacement. Amplitudes are hardcoded so the
+/// generation to obtain meter displacement. Amplitudes are calibrated so the
 /// aggregate range is ~‑11 to +9 field units, approximating a credible 11 km
 /// abyss / 9 km mountain ceiling on Earth-like planets.
 pub fn elevation_at(pos: DVec3, noise: &ElevationNoise) -> f64 {
-    const METRIC_CONTINENTAL_AMP: f64 = 8.0;
-    const METRIC_MOUNTAIN_AMP: f64 = 3.5;
-    const METRIC_HILL_AMP: f64 = 2.0;
-    const METRIC_DETAIL_AMP: f64 = 0.5;
+    metric_landform_sample(pos, noise).full_elevation
+}
 
-    let (wx, wy, wz) = noise.warp.domain_warp_3d(pos.x, pos.y, pos.z);
-
-    let continental = noise.continental.get_noise_3d(wx, wy, wz);
-
-    let mountain_raw = noise.mountain.get_noise_3d(wx, wy, wz);
-    let mountain_mask = continental.max(0.0);
-    let mountains = mountain_raw * mountain_mask;
-
-    let hills = noise.hill.get_noise_3d(wx, wy, wz);
-
-    let detail = noise.detail.get_noise_3d(wx, wy, wz);
-
-    (continental as f64 * METRIC_CONTINENTAL_AMP
-        + mountains as f64 * METRIC_MOUNTAIN_AMP
-        + hills as f64 * METRIC_HILL_AMP
-        + detail as f64 * METRIC_DETAIL_AMP) as f64
+/// Full metric landform sample — the public entry point that exposes every
+/// composed layer for diagnostic, profiling, and future brush-admission use.
+pub fn elevation_metric_full_eval(pos: DVec3, noise: &ElevationNoise) -> MetricLandformSample {
+    metric_landform_sample(pos, noise)
 }
 
 /// Backward-compatible world-space surface position from a unit direction.

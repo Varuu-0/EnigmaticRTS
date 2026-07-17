@@ -40,6 +40,9 @@ struct TerrainMaterialUniform {
     camera_pos_x: f32,
     camera_pos_y: f32,
     camera_pos_z: f32,
+    render_origin_x: f32,
+    render_origin_y: f32,
+    render_origin_z: f32,
     debug_skirt_highlight: f32,
 }
 

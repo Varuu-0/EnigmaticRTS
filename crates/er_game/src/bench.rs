@@ -13,6 +13,7 @@
 use std::path::PathBuf;
 
 use bevy::prelude::*;
+use glam::DVec3;
 
 use er_terrain::{TerrainDebugInfo, TerrainUpdate};
 
@@ -185,27 +186,11 @@ fn run_benchmark(
     // Set camera position at the start of each scenario (frame 0 of warmup).
     if config.frames_in_phase == 0 && config.phase == BenchPhase::Warmup {
         info!("Benchmark scenario: {} (distance={})", scenario_name, dist);
-        if let Ok((mut orbit, mut transform)) = camera_query.single_mut() {
-            orbit.distance = dist;
-            orbit.smoothed_distance = dist;
-            orbit.target = Vec3::ZERO;
-            orbit.smoothed_target = Vec3::ZERO;
-
-            let cp = orbit.pitch.cos();
-            let direction = Vec3::new(
-                cp * orbit.yaw.sin(),
-                orbit.pitch.sin(),
-                cp * orbit.yaw.cos(),
-            )
-            .normalize();
-
-            transform.translation = orbit.target + direction * dist;
-            let up = if direction.abs().dot(Vec3::Y) > 0.999 {
-                Vec3::Z
-            } else {
-                Vec3::Y
-            };
-            transform.look_at(orbit.target, up);
+        if let Ok((mut orbit, _transform)) = camera_query.single_mut() {
+            orbit.distance = dist as f64;
+            orbit.smoothed_distance = dist as f64;
+            orbit.target = DVec3::ZERO;
+            orbit.smoothed_target = DVec3::ZERO;
         }
     }
 

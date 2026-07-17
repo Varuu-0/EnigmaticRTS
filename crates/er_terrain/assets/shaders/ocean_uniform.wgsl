@@ -28,6 +28,9 @@ struct OceanMaterialUniform {
     camera_pos_x: f32,
     camera_pos_y: f32,
     camera_pos_z: f32,
+    render_origin_x: f32,
+    render_origin_y: f32,
+    render_origin_z: f32,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> ocean_material: OceanMaterialUniform;

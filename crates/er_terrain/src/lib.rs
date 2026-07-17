@@ -16,18 +16,18 @@ pub use chunk::{ChunkComponent, HoldForMerge, HoldHidden};
 pub use debug::{TerrainDebugInfo, ESTIMATED_BYTES_PER_CHUNK_MESH};
 pub use material::{TerrainMaterial, TerrainMaterialUniform};
 pub use mesh_gen::{
-    generate_chunk_mesh, ATTRIBUTE_ELEVATION, ATTRIBUTE_GRID, ATTRIBUTE_LOW_FREQ_ELEV,
+    generate_chunk_mesh, generate_chunk_mesh_stitched, StitchNeighbors, ATTRIBUTE_CURVATURE,
+    ATTRIBUTE_DRAINAGE, ATTRIBUTE_ELEVATION, ATTRIBUTE_GRID, ATTRIBUTE_LOW_FREQ_ELEV,
     ATTRIBUTE_MOISTURE_LOW, ATTRIBUTE_MORPH, ATTRIBUTE_NORMAL, ATTRIBUTE_TEMPERATURE,
-    ATTRIBUTE_WARPED_DIR,
 };
 pub use profiler::FrameProfiler;
 pub use quadtree::{
-    children_of, parent_of, root_chunks, ActiveChunks, RetainedMerge, RetainedMerges,
-    RetainedSplit, RetainedSplits,
+    children_of, coarser_neighbor_across_edge, parent_of, root_chunks, ActiveChunks, RetainedMerge,
+    RetainedMerges, RetainedSplit, RetainedSplits,
 };
 pub use systems::{
-    PendingChunkMeshes, SharedTerrainMaterial, SunDirection, TerrainPlugin, TerrainState,
-    TerrainUpdate,
+    CameraWorldPosition, PendingChunkMeshes, QueuedChunkMeshes, RenderOrigin,
+    SharedTerrainMaterial, SunDirection, TerrainPlugin, TerrainState, TerrainUpdate,
 };
 
 pub fn version() -> &'static str {

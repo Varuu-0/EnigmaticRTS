@@ -25,3 +25,48 @@ pub fn rng_child(parent: &mut Rng, mix: u64) -> Rng {
     }
     ChaCha8Rng::from_seed(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(mut rng: Rng) -> [u64; 4] {
+        [
+            rng.next_u64(),
+            rng.next_u64(),
+            rng.next_u64(),
+            rng.next_u64(),
+        ]
+    }
+
+    #[test]
+    fn seed_replays_an_identical_stream() {
+        assert_eq!(
+            sample(rng_from_seed(0xC0FFEE)),
+            sample(rng_from_seed(0xC0FFEE))
+        );
+        assert_ne!(sample(rng_from_seed(1)), sample(rng_from_seed(2)));
+    }
+
+    #[test]
+    fn child_stream_replays_and_consumes_exactly_its_seed_material() {
+        let mut first_parent = rng_from_seed(0xBAD5EED);
+        let mut second_parent = rng_from_seed(0xBAD5EED);
+
+        let first_child = rng_child(&mut first_parent, 17);
+        let second_child = rng_child(&mut second_parent, 17);
+        assert_eq!(sample(first_child), sample(second_child));
+        assert_eq!(sample(first_parent), sample(second_parent));
+    }
+
+    #[test]
+    fn child_mix_selects_an_independent_stream() {
+        let mut first_parent = rng_from_seed(42);
+        let mut second_parent = rng_from_seed(42);
+
+        assert_ne!(
+            sample(rng_child(&mut first_parent, 1)),
+            sample(rng_child(&mut second_parent, 2)),
+        );
+    }
+}

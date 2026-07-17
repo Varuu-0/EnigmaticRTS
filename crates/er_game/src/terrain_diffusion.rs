@@ -143,7 +143,11 @@ pub struct TerrainDiffusionStartup {
 /// Reads `--terrain-diffusion` and optional `--terrain-diffusion-port <port>`.
 /// Model streaming is deliberately disabled under screenshot and benchmark
 /// modes so their output remains deterministic.
-pub fn startup_from_args(disabled: bool, planet_radius_m: f64) -> Option<TerrainDiffusionStartup> {
+pub fn startup_from_args(
+    disabled: bool,
+    planet_radius_m: f64,
+    seed: PlanetSeed,
+) -> Option<TerrainDiffusionStartup> {
     let args: Vec<String> = std::env::args().collect();
     if !args.iter().any(|arg| arg == "--terrain-diffusion") {
         return None;
@@ -158,7 +162,6 @@ pub fn startup_from_args(disabled: bool, planet_radius_m: f64) -> Option<Terrain
         .find(|args| args[0] == "--terrain-diffusion-port")
         .and_then(|args| args[1].parse::<u16>().ok())
         .unwrap_or(8000);
-    let seed = PlanetSeed(0xC0FFEE);
     let api_scale_arg = args
         .windows(2)
         .find(|args| args[0] == "--terrain-diffusion-scale")

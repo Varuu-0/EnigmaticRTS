@@ -256,47 +256,21 @@ pub fn biome_metric(
 }
 
 pub fn elevation_low_freq_metric(pos: DVec3, noise: &ElevationNoise) -> LowFreqElevation {
-    const METRIC_CONTINENTAL_AMP: f64 = 8.0;
-    const METRIC_MOUNTAIN_AMP: f64 = 3.5;
-    let (wx, wy, wz) = noise.warp.domain_warp_3d(pos.x, pos.y, pos.z);
-    let warped_dir = DVec3::new(wx, wy, wz);
-    let continental = noise.continental.get_noise_3d(wx, wy, wz);
-    let mountain_raw = noise.mountain.get_noise_3d(wx, wy, wz);
-    let mountain_mask = continental.max(0.0);
-    let mountains = mountain_raw * mountain_mask;
-    let low_freq_elev = (continental as f64 * METRIC_CONTINENTAL_AMP
-        + mountains as f64 * METRIC_MOUNTAIN_AMP) as f64;
-    let mountain_influence = (mountain_raw.max(0.0) * mountain_mask) as f64;
+    let lf = crate::elevation::metric_landform_sample(pos, noise);
     LowFreqElevation {
-        low_freq_elev,
-        warped_dir,
-        mountain_influence,
+        low_freq_elev: lf.macro_displacement,
+        warped_dir: lf.warped_dir,
+        mountain_influence: lf.mountain_influence,
     }
 }
 
 pub fn elevation_split_metric(pos: DVec3, noise: &ElevationNoise) -> ElevationSplit {
-    const METRIC_CONTINENTAL_AMP: f64 = 8.0;
-    const METRIC_MOUNTAIN_AMP: f64 = 3.5;
-    const METRIC_HILL_AMP: f64 = 2.0;
-    const METRIC_DETAIL_AMP: f64 = 0.5;
-    let (wx, wy, wz) = noise.warp.domain_warp_3d(pos.x, pos.y, pos.z);
-    let warped_dir = DVec3::new(wx, wy, wz);
-    let continental = noise.continental.get_noise_3d(wx, wy, wz);
-    let mountain_raw = noise.mountain.get_noise_3d(wx, wy, wz);
-    let mountain_mask = continental.max(0.0);
-    let mountains = mountain_raw * mountain_mask;
-    let hills = noise.hill.get_noise_3d(wx, wy, wz);
-    let detail = noise.detail.get_noise_3d(wx, wy, wz);
-    let low_freq_elev = (continental as f64 * METRIC_CONTINENTAL_AMP
-        + mountains as f64 * METRIC_MOUNTAIN_AMP) as f64;
-    let high_freq = (hills as f64 * METRIC_HILL_AMP + detail as f64 * METRIC_DETAIL_AMP) as f64;
-    let full_elev = low_freq_elev + high_freq;
-    let mountain_influence = (mountain_raw.max(0.0) * mountain_mask) as f64;
+    let lf = crate::elevation::metric_landform_sample(pos, noise);
     ElevationSplit {
-        low_freq_elev,
-        warped_dir,
-        mountain_influence,
-        full_elev,
+        low_freq_elev: lf.macro_displacement,
+        warped_dir: lf.warped_dir,
+        mountain_influence: lf.mountain_influence,
+        full_elev: lf.full_elevation,
     }
 }
 
