@@ -188,7 +188,7 @@ async fn run_biome_compute(
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
-        let workgroups = ((n as u32 + 63) / 64) as u32;
+        let workgroups = (n as u32).div_ceil(64);
         pass.dispatch_workgroups(workgroups, 1, 1);
     }
     encoder.copy_buffer_to_buffer(&biomes_buffer, 0, &staging, 0, (n * 4) as u64);

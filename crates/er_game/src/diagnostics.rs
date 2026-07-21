@@ -23,6 +23,7 @@ const SYSTEM_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 #[derive(Clone, Debug, Default, Resource)]
 pub struct PerformanceSnapshot {
     pub frame_ms: f32,
+    pub frame_p50_ms: f32,
     pub frame_p95_ms: f32,
     pub frame_p99_ms: f32,
     pub one_percent_low_fps: f32,
@@ -65,10 +66,12 @@ pub struct PerformanceSnapshot {
 #[derive(Resource)]
 struct PerformanceHistory {
     frame_ms: VecDeque<f32>,
+    sorted_frame_ms: Vec<f32>,
     hitch_16ms_count: u64,
     hitch_33ms_count: u64,
     hitch_50ms_count: u64,
     last_gpu_sample: Instant,
+    frames_until_refresh: u8,
 }
 
 #[derive(Default, Resource)]
@@ -80,10 +83,12 @@ impl Default for PerformanceHistory {
     fn default() -> Self {
         Self {
             frame_ms: VecDeque::with_capacity(FRAME_HISTORY_CAPACITY),
+            sorted_frame_ms: Vec::with_capacity(FRAME_HISTORY_CAPACITY),
             hitch_16ms_count: 0,
             hitch_33ms_count: 0,
             hitch_50ms_count: 0,
             last_gpu_sample: Instant::now() - SYSTEM_SAMPLE_INTERVAL,
+            frames_until_refresh: 0,
         }
     }
 }
@@ -109,7 +114,6 @@ fn update_performance_snapshot(
     diagnostics: Res<DiagnosticsStore>,
     time: Res<Time>,
     terrain: Res<TerrainDebugInfo>,
-    visible_meshes: Query<(), (With<Mesh3d>, With<ViewVisibility>)>,
     mut input_probe: ResMut<InputLatencyProbe>,
     mut history: ResMut<PerformanceHistory>,
     mut snapshot: ResMut<PerformanceSnapshot>,
@@ -118,9 +122,6 @@ fn update_performance_snapshot(
     push_frame_sample(&mut history, frame_ms);
 
     snapshot.frame_ms = frame_ms;
-    snapshot.frame_p95_ms = percentile(&history.frame_ms, 95.0);
-    snapshot.frame_p99_ms = percentile(&history.frame_ms, 99.0);
-    snapshot.one_percent_low_fps = one_percent_low_fps(&history.frame_ms);
     snapshot.hitch_16ms_count = history.hitch_16ms_count;
     snapshot.hitch_33ms_count = history.hitch_33ms_count;
     snapshot.hitch_50ms_count = history.hitch_50ms_count;
@@ -128,6 +129,25 @@ fn update_performance_snapshot(
         .observed_at
         .take()
         .map(|observed_at| observed_at.elapsed().as_secs_f32() * 1000.0);
+
+    if history.frames_until_refresh > 0 {
+        history.frames_until_refresh -= 1;
+        return;
+    }
+    history.frames_until_refresh = 7;
+
+    let PerformanceHistory {
+        frame_ms,
+        sorted_frame_ms,
+        ..
+    } = &mut *history;
+    sorted_frame_ms.clear();
+    sorted_frame_ms.extend(frame_ms.iter().copied());
+    sorted_frame_ms.sort_by(|a, b| a.total_cmp(b));
+    snapshot.frame_p50_ms = percentile_sorted(&history.sorted_frame_ms, 50.0);
+    snapshot.frame_p95_ms = percentile_sorted(&history.sorted_frame_ms, 95.0);
+    snapshot.frame_p99_ms = percentile_sorted(&history.sorted_frame_ms, 99.0);
+    snapshot.one_percent_low_fps = one_percent_low_fps_sorted(&history.sorted_frame_ms);
     snapshot.process_cpu_percent = diagnostic_value(
         &diagnostics,
         &SystemInformationDiagnosticsPlugin::PROCESS_CPU_USAGE,
@@ -156,7 +176,7 @@ fn update_performance_snapshot(
         &diagnostics,
         MeshAllocatorDiagnosticPlugin::allocations_diagnostic_path(),
     );
-    snapshot.visible_mesh_draw_estimate = visible_meshes.iter().count();
+    snapshot.visible_mesh_draw_estimate = terrain.visible_chunks;
     snapshot.opaque_render_cpu_ms = render_diagnostic_value(&diagnostics, "elapsed_cpu");
     snapshot.opaque_render_gpu_ms = render_diagnostic_value(&diagnostics, "elapsed_gpu");
     snapshot.render_cpu_spans = render_cpu_spans(&diagnostics);
@@ -234,24 +254,21 @@ fn push_frame_sample(history: &mut PerformanceHistory, frame_ms: f32) {
     }
 }
 
-fn percentile(data: &VecDeque<f32>, percentile: f32) -> f32 {
-    if data.is_empty() {
+fn percentile_sorted(sorted: &[f32], percentile: f32) -> f32 {
+    if sorted.is_empty() {
         return 0.0;
     }
-    let mut sorted: Vec<f32> = data.iter().copied().collect();
-    sorted.sort_by(|a, b| a.total_cmp(b));
     let index = ((percentile / 100.0) * (sorted.len() as f32 - 1.0)).round() as usize;
     sorted[index]
 }
 
-fn one_percent_low_fps(data: &VecDeque<f32>) -> f32 {
-    if data.is_empty() {
+fn one_percent_low_fps_sorted(sorted: &[f32]) -> f32 {
+    if sorted.is_empty() {
         return 0.0;
     }
-    let mut sorted: Vec<f32> = data.iter().copied().collect();
-    sorted.sort_by(|a, b| b.total_cmp(a));
     let sample_count = ((sorted.len() as f32 * 0.01).ceil() as usize).max(1);
-    let average_frame_ms = sorted[..sample_count].iter().sum::<f32>() / sample_count as f32;
+    let average_frame_ms =
+        sorted.iter().rev().take(sample_count).sum::<f32>() / sample_count as f32;
     1000.0 / average_frame_ms.max(0.001)
 }
 
@@ -265,8 +282,12 @@ mod tests {
         for frame_ms in [10.0, 20.0, 30.0, 40.0, 50.0] {
             push_frame_sample(&mut history, frame_ms);
         }
-        assert_eq!(percentile(&history.frame_ms, 50.0), 30.0);
-        assert_eq!(percentile(&history.frame_ms, 95.0), 50.0);
+        history
+            .sorted_frame_ms
+            .extend(history.frame_ms.iter().copied());
+        history.sorted_frame_ms.sort_by(|a, b| a.total_cmp(b));
+        assert_eq!(percentile_sorted(&history.sorted_frame_ms, 50.0), 30.0);
+        assert_eq!(percentile_sorted(&history.sorted_frame_ms, 95.0), 50.0);
     }
 
     #[test]
@@ -275,7 +296,11 @@ mod tests {
         for frame_ms in [10.0, 20.0, 40.0, 100.0] {
             push_frame_sample(&mut history, frame_ms);
         }
-        assert_eq!(one_percent_low_fps(&history.frame_ms), 10.0);
+        history
+            .sorted_frame_ms
+            .extend(history.frame_ms.iter().copied());
+        history.sorted_frame_ms.sort_by(|a, b| a.total_cmp(b));
+        assert_eq!(one_percent_low_fps_sorted(&history.sorted_frame_ms), 10.0);
     }
 
     #[test]

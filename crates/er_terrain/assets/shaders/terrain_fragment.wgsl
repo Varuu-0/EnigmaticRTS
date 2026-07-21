@@ -8,7 +8,6 @@ struct FragmentInput {
     @location(6) morph: f32,
     @location(7) drainage: f32,
     @location(8) curvature: f32,
-    @location(9) direction: vec3<f32>,
 };
 
 // --- Simple value noise for detail/palette variation ---
@@ -198,8 +197,8 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
         return vec4<f32>(1.0, 0.0, 1.0, 1.0);
     }
 
-    let planet_dir = normalize(input.direction);
     let render_origin = vec3<f32>(material.render_origin_x, material.render_origin_y, material.render_origin_z);
+    let planet_dir = normalize(input.world_position + render_origin);
     let detail_period_m = MATERIAL_DETAIL_WAVELENGTH_M * MATERIAL_DETAIL_PERIOD_CELLS;
     let origin_mod = render_origin - floor(render_origin / detail_period_m) * detail_period_m;
     let detail_metric_pos = input.world_position + origin_mod;
@@ -208,21 +207,37 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
     let view_dir = normalize(camera_pos - input.world_position);
 
     let up = planet_dir;
+    // Match the macro-elevation shoreline classification used by the mesh.
+    // Water must not inherit the hidden relief attributes beneath its flat
+    // surface when lighting and terrain material effects are applied.
+    let water_mask = 1.0 - smoothstep(
+        material.sea_level_climate - material.beach_threshold,
+        material.sea_level_climate + material.beach_threshold,
+        input.low_freq_elev,
+    );
     let pixel_footprint_m = max(length(dpdx(input.world_position)), length(dpdy(input.world_position)));
     // Full-resolution field normals and masks alias when sparse vertices
     // undersample their 100 m footprint. Fade them toward the radial normal
     // once that footprint is sub-pixel.
     let terrain_shape_weight = 1.0 - smoothstep(50.0, 150.0, pixel_footprint_m);
     let geometric_normal = normalize(mix(up, normalize(input.normal), terrain_shape_weight));
-    let sampled_detail = triplanar_noise(detail_metric_pos, up);
     let detail_weight = 1.0 - smoothstep(
         0.25,
         1.0,
         pixel_footprint_m,
     );
-    let detail = mix(0.5, sampled_detail, detail_weight);
-    let detailed_normal = detail_normal(detail_metric_pos, geometric_normal, sampled_detail);
-    let normal = normalize(mix(geometric_normal, detailed_normal, detail_weight));
+    var detail = 0.5;
+    var normal = geometric_normal;
+    if (detail_weight > 0.001) {
+        let sampled_detail = triplanar_noise(detail_metric_pos, up);
+        detail = mix(0.5, sampled_detail, detail_weight);
+        let detailed_normal = detail_normal(detail_metric_pos, geometric_normal, sampled_detail);
+        normal = normalize(mix(geometric_normal, detailed_normal, detail_weight));
+    }
+    // Flat water uses only its radial normal. Retain the blend band so beach
+    // shading transitions smoothly to land rather than producing a hard edge.
+    normal = normalize(mix(normal, up, water_mask));
+    detail = mix(detail, 0.5, water_mask);
     let slope = 1.0 - abs(dot(normal, up));
 
     let world_north = vec3<f32>(0.0, 1.0, 0.0);
@@ -262,14 +277,15 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
         smoothstep(rock_lo, rock_hi, slope) * aspect_exposure + convexity * 0.08,
         0.0,
         1.0,
-    );
+    ) * (1.0 - water_mask);
     color = mix(color, rock_col, rock_blend);
 
     let channel_wetness = filtered_drainage
         * (1.0 - smoothstep(0.45, 0.85, slope))
         * smoothstep(material.sea_level_climate, material.sea_level_climate + 4.0, input.low_freq_elev);
     let concavity = smoothstep(0.02, 0.35, filtered_curvature);
-    let sediment = clamp(channel_wetness * 0.25 + concavity * 0.08, 0.0, 1.0);
+    let sediment = clamp(channel_wetness * 0.25 + concavity * 0.08, 0.0, 1.0)
+        * (1.0 - water_mask);
     color = mix(color, color * vec3<f32>(0.62, 0.72, 0.62), sediment);
 
     let snow_lo = select(0.75, 5.5, is_earth);
@@ -278,14 +294,15 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
     let snow_blend = smoothstep(snow_lo, snow_hi, input.elevation)
         * (1.0 - rock_blend)
         * mix(0.75, 1.0, aspect_north)
-        * max(cold_enough, 0.2);
+        * max(cold_enough, 0.2)
+        * (1.0 - water_mask);
     color = mix(color, vec3<f32>(0.92, 0.94, 0.96), snow_blend * 0.8);
 
     let ao_lo = select(-0.5, -8.0, is_earth);
     let ao_hi = select(0.5, 8.0, is_earth);
     let elev_ao = mix(0.55, 1.0, smoothstep(ao_lo, ao_hi, input.low_freq_elev));
     let slope_ao = mix(1.0, 0.75, slope);
-    let ao = elev_ao * slope_ao;
+    let ao = mix(elev_ao * slope_ao, 1.0, water_mask);
 
     let sky_color = vec3<f32>(0.30, 0.38, 0.50);
     let ground_color = vec3<f32>(0.15, 0.12, 0.10);

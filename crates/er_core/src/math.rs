@@ -92,7 +92,7 @@ const FACE_V_AXIS: [usize; 6] = [2, 2, 2, 2, 1, 1];
 /// (axis index, sign) for a face: axis = face/2, +face if even else -face.
 pub fn face_axis_sign(face: u8) -> (usize, f64) {
     let axis = (face / 2) as usize;
-    let sign = if face % 2 == 0 { 1.0 } else { -1.0 };
+    let sign = if face.is_multiple_of(2) { 1.0 } else { -1.0 };
     (axis, sign)
 }
 

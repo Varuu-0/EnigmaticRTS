@@ -15,6 +15,7 @@ pub struct BaselineManifestPlugin {
     output_path: Option<PathBuf>,
     exit_after_write: bool,
     terrain_diffusion: Option<TerrainDiffusionManifest>,
+    hardware_profile: Option<String>,
     seed: u64,
 }
 
@@ -34,12 +35,14 @@ impl BaselineManifestPlugin {
         output_path: Option<PathBuf>,
         exit_after_write: bool,
         terrain_diffusion: Option<TerrainDiffusionManifest>,
+        hardware_profile: Option<String>,
         seed: u64,
     ) -> Self {
         Self {
             output_path,
             exit_after_write,
             terrain_diffusion,
+            hardware_profile,
             seed,
         }
     }
@@ -54,6 +57,7 @@ impl Plugin for BaselineManifestPlugin {
             output_path,
             exit_after_write: self.exit_after_write,
             terrain_diffusion: self.terrain_diffusion.clone(),
+            hardware_profile: self.hardware_profile.clone(),
             seed: self.seed,
         })
         .add_systems(Startup, write_manifest);
@@ -65,6 +69,7 @@ struct BaselineManifestRequest {
     output_path: PathBuf,
     exit_after_write: bool,
     terrain_diffusion: Option<TerrainDiffusionManifest>,
+    hardware_profile: Option<String>,
     seed: u64,
 }
 
@@ -76,6 +81,7 @@ struct BaselineManifest {
     presentation: PresentationManifest,
     gpu: GpuManifest,
     terrain_diffusion: Option<TerrainDiffusionManifest>,
+    hardware_profile: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -97,7 +103,6 @@ struct TerrainManifest {
     max_quadtree_depth: u8,
     screen_error_threshold: f32,
     merge_hysteresis: f32,
-    active_chunk_cap: usize,
     lod_split_budget_per_frame: usize,
     max_render_distance_m: f64,
     seed: u64,
@@ -137,6 +142,7 @@ fn write_manifest(
         &terrain,
         &settings,
         request.terrain_diffusion.clone(),
+        request.hardware_profile.clone(),
         request.seed,
     );
     let Ok(json) = serde_json::to_vec_pretty(&manifest) else {
@@ -163,6 +169,7 @@ fn collect_manifest(
     terrain: &TerrainState,
     settings: &GraphicsSettings,
     terrain_diffusion: Option<TerrainDiffusionManifest>,
+    hardware_profile: Option<String>,
     seed: u64,
 ) -> BaselineManifest {
     let sample = er_game::gpu_telemetry::sample();
@@ -191,7 +198,6 @@ fn collect_manifest(
             max_quadtree_depth: terrain.max_quadtree_depth,
             screen_error_threshold: terrain.screen_error_threshold,
             merge_hysteresis: terrain.merge_hysteresis,
-            active_chunk_cap: terrain.active_chunk_cap,
             lod_split_budget_per_frame: terrain.lod_split_budget_per_frame,
             max_render_distance_m: terrain.max_render_distance,
             seed,
@@ -217,6 +223,7 @@ fn collect_manifest(
             vram_usage_bytes: available.then_some(sample.vram_usage_bytes),
         },
         terrain_diffusion,
+        hardware_profile,
     }
 }
 
@@ -230,6 +237,20 @@ pub fn parse_dump_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use er_core::config::PlanetPreset;
+    use er_terrain::TerrainState;
+
+    fn empty_terrain_state() -> TerrainState {
+        TerrainState::for_preset(
+            PlanetPreset::EarthScale,
+            1000.0,
+            er_core::seed::PlanetSeed(0xC0FFEE),
+        )
+    }
+
+    fn empty_settings() -> GraphicsSettings {
+        GraphicsSettings::default()
+    }
 
     #[test]
     fn terrain_diffusion_manifest_marks_upsampling() {
@@ -245,5 +266,51 @@ mod tests {
         let json = serde_json::to_string(&manifest).unwrap();
         assert!(json.contains("native_pixel_scale_m"));
         assert!(json.contains("false"));
+    }
+
+    #[test]
+    fn manifest_includes_all_milestone_zero_fields() {
+        let terrain = empty_terrain_state();
+        let settings = empty_settings();
+        let diffusion = Some(TerrainDiffusionManifest {
+            endpoint: "127.0.0.1:8000".to_owned(),
+            native_resolution: 512,
+            native_pixel_scale_m: 30,
+            api_scale: 1,
+            halo_samples: 1,
+            tiles_per_face_edge: 652,
+            is_upsampled: true,
+        });
+        let manifest = collect_manifest(
+            &terrain,
+            &settings,
+            diffusion,
+            Some("rtx3060_optimus".to_owned()),
+            0xC0FFEE,
+        );
+        let json = serde_json::to_string(&manifest).unwrap();
+        // Roadmap 0.1.1: rust version, bevy version, GPU adapter, present mode,
+        // terrain preset, LOD config, and Terrain Diffusion metadata.
+        assert!(json.contains("\"rustc_version\""));
+        assert!(json.contains("\"bevy_version\""));
+        assert!(json.contains("\"adapter\""));
+        assert!(json.contains("\"present_mode\""));
+        assert!(json.contains("\"preset\""));
+        assert!(json.contains("\"max_quadtree_depth\""));
+        assert!(json.contains("\"terrain_diffusion\""));
+        assert!(json.contains("\"native_pixel_scale_m\""));
+        // Hardware profile reference (0.1.5).
+        assert!(json.contains("\"hardware_profile\""));
+        assert!(json.contains("rtx3060_optimus"));
+    }
+
+    #[test]
+    fn manifest_without_diffusion_omits_metadata_cleanly() {
+        let terrain = empty_terrain_state();
+        let settings = empty_settings();
+        let manifest = collect_manifest(&terrain, &settings, None, None, 0xC0FFEE);
+        let json = serde_json::to_string(&manifest).unwrap();
+        assert!(json.contains("\"terrain_diffusion\":null"));
+        assert!(json.contains("\"hardware_profile\":null"));
     }
 }

@@ -3,7 +3,7 @@ use bevy::ecs::resource::Resource;
 use er_core::math::{cell_neighbor, CellKey, NeighborSide};
 use std::collections::HashMap;
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct ActiveChunks {
     pub chunks: HashMap<CellKey, Entity>,
     pub pending_splits: Vec<CellKey>,
@@ -38,16 +38,6 @@ impl ActiveChunks {
     pub fn clear_pending(&mut self) {
         self.pending_splits.clear();
         self.pending_merges.clear();
-    }
-}
-
-impl Default for ActiveChunks {
-    fn default() -> Self {
-        Self {
-            chunks: HashMap::new(),
-            pending_splits: Vec::new(),
-            pending_merges: Vec::new(),
-        }
     }
 }
 
@@ -126,9 +116,9 @@ pub fn coarser_neighbor_across_edge(
         // If current is an inner child, the neighbor across this edge is a
         // sibling (same/finer), not a coarser chunk — no stitch needed.
         let on_parent_edge = match side {
-            NeighborSide::NegU => current.i % 2 == 0,
+            NeighborSide::NegU => current.i.is_multiple_of(2),
             NeighborSide::PosU => current.i % 2 == 1,
-            NeighborSide::NegV => current.j % 2 == 0,
+            NeighborSide::NegV => current.j.is_multiple_of(2),
             NeighborSide::PosV => current.j % 2 == 1,
         };
         if !on_parent_edge {

@@ -4,24 +4,22 @@
 /// not a hidden scale factor for the Earth-scale preset.
 pub const MINIATURE_PLANET_RADIUS_M: f64 = 36_000.0;
 pub const EARTH_RADIUS_M: f64 = 6_371_000.0;
-pub const PLANET_RADIUS_DEFAULT: f64 = MINIATURE_PLANET_RADIUS_M;
-pub const MAX_QUADTREE_DEPTH: u8 = 12;
+pub const PLANET_RADIUS_DEFAULT: f64 = EARTH_RADIUS_M;
+pub const MINIATURE_MAX_QUADTREE_DEPTH: u8 = 12;
 pub const EARTH_MAX_QUADTREE_DEPTH: u8 = 17;
+pub const MAX_QUADTREE_DEPTH: u8 = EARTH_MAX_QUADTREE_DEPTH;
 pub const CHUNK_VERT_RES: u32 = 17;
 pub const CHUNK_QUADS_PER_EDGE: u32 = 16; // CHUNK_VERT_RES - 1
-pub const LOD_SPLIT_BUDGET_PER_FRAME: usize = 48;
+pub const LOD_SPLIT_BUDGET_PER_FRAME: usize = 96;
 /// Bound CPU-heavy terrain mesh jobs so camera-critical work is not buried
 /// behind thousands of already-submitted breadth-refinement tasks.
-pub const MAX_INFLIGHT_TERRAIN_MESHES: usize = 64;
+pub const MAX_INFLIGHT_TERRAIN_MESHES: usize = 128;
 // Split once a chunk's projected geometric error exceeds 40 px. This keeps the
 // default orbit dense enough to render a continuous planet disk instead of the
 // sparse cube-face shell produced by coarser LODs.
 pub const SCREEN_ERROR_THRESHOLD: f32 = 40.0;
 pub const MERGE_HYSTERESIS: f32 = 0.6;
 pub const MAX_RENDER_DISTANCE: f64 = PLANET_RADIUS_DEFAULT * 8.0;
-// Never evict live terrain to satisfy this limit. Stop splitting before the
-// cap instead, preserving complete coverage without unbounded close-view cost.
-pub const ACTIVE_CHUNK_CAP: usize = 5000;
 // The six cube-face roots are the persistent coarse coverage floor. They bypass
 // only the distance cull at extreme zoom-out; horizon and frustum culling still
 // prevent rendering the planet's hidden side.
@@ -35,13 +33,12 @@ pub const LOD_PIXEL_SCALE: f32 = 935.0;
 pub const FIXED_TPS: i32 = 30;
 pub const DEFAULT_DAY_LENGTH_SEC: f64 = 180.0;
 
-/// Explicit planet-scale configurations. The miniature planet remains the
-/// default until camera-relative rendering is complete; `EarthScale` is
-/// selected with the game's `--earth-scale` flag.
+/// Explicit planet-scale configurations. Earth scale is the normal-play
+/// default; the miniature planet remains available for fast diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PlanetPreset {
-    #[default]
     MiniatureDebug,
+    #[default]
     EarthScale,
 }
 
@@ -55,7 +52,7 @@ impl PlanetPreset {
 
     pub const fn max_quadtree_depth(self) -> u8 {
         match self {
-            Self::MiniatureDebug => MAX_QUADTREE_DEPTH,
+            Self::MiniatureDebug => MINIATURE_MAX_QUADTREE_DEPTH,
             Self::EarthScale => EARTH_MAX_QUADTREE_DEPTH,
         }
     }
@@ -74,7 +71,6 @@ pub struct Tunables {
     pub screen_error_threshold: f32,
     pub merge_hysteresis: f32,
     pub max_render_distance: f64,
-    pub active_chunk_cap: usize,
     pub lod_split_budget_per_frame: usize,
     pub max_inflight_terrain_meshes: usize,
     pub fixed_tps: i32,
@@ -89,7 +85,6 @@ impl Default for Tunables {
             screen_error_threshold: SCREEN_ERROR_THRESHOLD,
             merge_hysteresis: MERGE_HYSTERESIS,
             max_render_distance: MAX_RENDER_DISTANCE,
-            active_chunk_cap: ACTIVE_CHUNK_CAP,
             lod_split_budget_per_frame: LOD_SPLIT_BUDGET_PER_FRAME,
             max_inflight_terrain_meshes: MAX_INFLIGHT_TERRAIN_MESHES,
             fixed_tps: FIXED_TPS,
@@ -109,9 +104,13 @@ mod tests {
     }
 
     #[test]
-    fn miniature_preset_preserves_existing_default() {
-        assert_eq!(PlanetPreset::default(), PlanetPreset::MiniatureDebug);
+    fn earth_preset_is_the_default() {
+        assert_eq!(PlanetPreset::default(), PlanetPreset::EarthScale);
         assert_eq!(PlanetPreset::default().radius_m(), PLANET_RADIUS_DEFAULT);
+        assert_eq!(
+            PlanetPreset::default().max_quadtree_depth(),
+            MAX_QUADTREE_DEPTH
+        );
     }
 
     #[test]
@@ -129,7 +128,6 @@ mod tests {
         assert_eq!(tunables.screen_error_threshold, SCREEN_ERROR_THRESHOLD);
         assert_eq!(tunables.merge_hysteresis, MERGE_HYSTERESIS);
         assert_eq!(tunables.max_render_distance, MAX_RENDER_DISTANCE);
-        assert_eq!(tunables.active_chunk_cap, ACTIVE_CHUNK_CAP);
         assert_eq!(
             tunables.lod_split_budget_per_frame,
             LOD_SPLIT_BUDGET_PER_FRAME

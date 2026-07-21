@@ -60,6 +60,7 @@ struct CaptureTelemetry {
 #[derive(Serialize)]
 struct PerformanceTelemetry {
     frame_ms: f32,
+    frame_p50_ms: f32,
     frame_p95_ms: f32,
     frame_p99_ms: f32,
     one_percent_low_fps: f32,
@@ -78,7 +79,6 @@ struct TerrainTelemetry {
     active_chunks: usize,
     visible_chunks: usize,
     max_depth: u8,
-    active_chunk_cap: usize,
     pending_splits: usize,
     pending_merges: usize,
     pending_meshes: usize,
@@ -97,6 +97,7 @@ struct TerrainTelemetry {
 }
 
 impl ScenarioTelemetry {
+    #[allow(clippy::too_many_arguments)]
     pub fn capture(
         scenario: &ScreenshotScenario,
         config: &ScreenshotTestConfig,
@@ -142,6 +143,7 @@ impl ScenarioTelemetry {
             },
             performance: PerformanceTelemetry {
                 frame_ms: performance.frame_ms,
+                frame_p50_ms: performance.frame_p50_ms,
                 frame_p95_ms: performance.frame_p95_ms,
                 frame_p99_ms: performance.frame_p99_ms,
                 one_percent_low_fps: performance.one_percent_low_fps,
@@ -158,7 +160,6 @@ impl ScenarioTelemetry {
                 active_chunks: debug.active_chunks,
                 visible_chunks: debug.visible_chunks,
                 max_depth: debug.max_depth,
-                active_chunk_cap: terrain.active_chunk_cap,
                 pending_splits: debug.pending_splits,
                 pending_merges: debug.pending_merges,
                 pending_meshes: debug.pending_meshes,

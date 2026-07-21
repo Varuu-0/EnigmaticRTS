@@ -4,10 +4,10 @@ use er_world::terrain_field::TerrainSourceMode;
 use glam::DVec3;
 
 /// Bytes of vertex attribute data per terrain vertex:
-///   Position(F32x3=12) + Morph(F32=4) + Grid(U32x2=8) + LowFreqElev(F32=4)
-///   + WarpedDir(F32x3=12) + MoistureLow(F32=4) + Elevation(F32=4)
-///   + Normal(F32x3=12) + Temperature(F32=4) = 64
-const BYTES_PER_VERTEX: usize = 64;
+///   Position(F32x3=12) + Morph(F32=4) + LowFreqElev(F32=4)
+///   + MoistureLow(F32=4) + Elevation(F32=4) + Normal(F32x3=12)
+///   + Temperature(F32=4) + Drainage(F32=4) + Curvature(F32=4) = 52
+const BYTES_PER_VERTEX: usize = 52;
 
 const VERTS_PER_CHUNK: usize =
     (CHUNK_VERT_RES as usize) * (CHUNK_VERT_RES as usize) + 4 * (CHUNK_VERT_RES as usize);
@@ -21,7 +21,7 @@ const INDICES_PER_CHUNK: usize =
 /// `CHUNK_QUADS_PER_EDGE`, and the fixed set of vertex attributes inserted by
 /// `generate_chunk_mesh`.
 pub const ESTIMATED_BYTES_PER_CHUNK_MESH: usize =
-    VERTS_PER_CHUNK * BYTES_PER_VERTEX + INDICES_PER_CHUNK * 4;
+    VERTS_PER_CHUNK * BYTES_PER_VERTEX + INDICES_PER_CHUNK * 2;
 
 #[derive(Resource)]
 pub struct TerrainDebugInfo {
@@ -93,13 +93,13 @@ mod tests {
         assert_eq!(INDICES_PER_CHUNK, expected_indices);
         assert_eq!(
             ESTIMATED_BYTES_PER_CHUNK_MESH,
-            expected_verts * BYTES_PER_VERTEX + expected_indices * 4
+            expected_verts * BYTES_PER_VERTEX + expected_indices * 2
         );
     }
 
     #[test]
     fn estimated_bytes_nonzero_and_scales() {
-        assert!(ESTIMATED_BYTES_PER_CHUNK_MESH > 0);
+        const _: () = assert!(ESTIMATED_BYTES_PER_CHUNK_MESH > 0);
         let bytes_for_100 = 100 * ESTIMATED_BYTES_PER_CHUNK_MESH;
         assert_eq!(bytes_for_100 / ESTIMATED_BYTES_PER_CHUNK_MESH, 100);
     }
@@ -159,9 +159,11 @@ mod tests {
 
     #[test]
     fn coverage_pair_sum_is_one_when_nonzero() {
-        let mut info = TerrainDebugInfo::default();
-        info.procedural_source_coverage_percent = 60.0;
-        info.learned_source_coverage_percent = 40.0;
+        let info = TerrainDebugInfo {
+            procedural_source_coverage_percent: 60.0,
+            learned_source_coverage_percent: 40.0,
+            ..TerrainDebugInfo::default()
+        };
         let sum = info.procedural_source_coverage_percent + info.learned_source_coverage_percent;
         assert!((sum - 100.0).abs() < 0.001);
     }

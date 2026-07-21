@@ -3,7 +3,6 @@ use er_core::config::{DEFAULT_DAY_LENGTH_SEC, MAX_QUADTREE_DEPTH};
 use er_core::math::{cells_per_edge, dir_to_surface, uv_to_dir, world_to_render, OriginOffset};
 use er_terrain::{ChunkComponent, FrameProfiler, RenderOrigin, TerrainDebugInfo, TerrainState};
 
-use crate::chunk_cap_controller::DynamicChunkCapController;
 use crate::diagnostics::PerformanceSnapshot;
 use crate::frame_timing::MainWorldFrameTimings;
 use crate::space::{SimTime, TimeScale};
@@ -49,6 +48,7 @@ fn setup_debug_text(mut commands: Commands) {
     ));
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_debug_text(
     debug: Res<TerrainDebugInfo>,
     profiler: Res<FrameProfiler>,
@@ -58,15 +58,21 @@ fn update_debug_text(
     sim_time: Res<SimTime>,
     time_scale: Res<TimeScale>,
     performance: Res<PerformanceSnapshot>,
-    chunk_cap: Res<DynamicChunkCapController>,
     mut query: Query<&mut Text, With<DebugText>>,
+    mut frames_until_refresh: Local<u8>,
 ) {
+    if *frames_until_refresh > 0 {
+        *frames_until_refresh -= 1;
+        return;
+    }
+    *frames_until_refresh = 7;
+
     if let Ok(mut text) = query.single_mut() {
         let fps = 1.0 / time.delta_secs().max(0.0001);
         let frame_ms = time.delta_secs() * 1000.0;
 
         let mut sorted: Vec<(&'static str, std::time::Duration)> = profiler.timings.clone();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|&(_, d)| std::cmp::Reverse(d));
 
         let total_profiled: std::time::Duration = sorted.iter().map(|(_, d)| *d).sum();
         let frame_duration = main_world_timings
@@ -82,10 +88,7 @@ fn update_debug_text(
         // happen outside the main-world schedules. Render CPU spans below
         // overlap the main world, so they are deliberately not subtracted here.
         let render_present_wait = frame_duration.saturating_sub(total_main_world);
-        let render_present_stage = (
-            "render/present/frame pacing".to_owned(),
-            render_present_wait,
-        );
+        let render_present_stage = ("render/present/frame pacing", render_present_wait);
 
         let sun = sun_direction.0;
         let day_length = DEFAULT_DAY_LENGTH_SEC as f32;
@@ -106,11 +109,9 @@ fn update_debug_text(
             performance.one_percent_low_fps,
         ));
         lines.push_str(&format!(
-            "Chunks: {}/{} | LOD: {} | Cap p95: {:.1}ms | S/M: {}/{} | Terrain mesh: {:.1} MiB | Built: {} | Draw work: {}\n",
+            "Chunks: {} | LOD: {} | S/M: {}/{} | Terrain mesh: {:.1} MiB | Built: {} | Draw work: {}\n",
             debug.active_chunks,
-            chunk_cap.current_cap,
             debug.max_depth,
-            chunk_cap.last_p95_ms,
             debug.pending_splits,
             debug.pending_merges,
             debug.estimated_mesh_bytes as f64 / (1024.0 * 1024.0),

@@ -3,7 +3,6 @@
 //! Phase 3: terrain quadtree LOD with GPU-displaced chunks, orbital camera,
 //! and a debug overlay. ESC still opens the settings menu.
 
-use bevy::camera::{PerspectiveProjection, Projection};
 use bevy::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     log::{Level, LogPlugin},
@@ -20,24 +19,25 @@ use std::num::NonZeroU32;
 mod baseline_manifest;
 mod bench;
 mod camera;
-mod chunk_cap_controller;
 mod crash;
 mod debug_overlay;
 mod diagnostics;
 mod frame_timing;
 mod menu;
+mod projection;
 mod screenshot_test;
 mod settings;
 mod space;
 mod telemetry;
 #[cfg(feature = "terrain_diffusion")]
 mod terrain_diffusion;
+#[cfg(feature = "terrain_diffusion")]
+mod terrain_diffusion_stress;
 
 use baseline_manifest::BaselineManifestPlugin;
 #[cfg(feature = "terrain_diffusion")]
 use baseline_manifest::TerrainDiffusionManifest;
 use camera::{CameraPlugin, CameraUpdate, OrbitCamera};
-use chunk_cap_controller::DynamicChunkCapControllerPlugin;
 use debug_overlay::DebugOverlayPlugin;
 use diagnostics::PerformanceDiagnosticsPlugin;
 use er_terrain::TerrainPlugin;
@@ -57,10 +57,16 @@ fn main() {
     let bench_config = bench::parse_bench_args();
     let is_test_mode = test_config.is_some();
     let is_bench_mode = bench_config.is_some();
+    #[cfg(feature = "terrain_diffusion")]
+    let stress_config = terrain_diffusion_stress::StressConfig::parse_args();
+    #[cfg(feature = "terrain_diffusion")]
+    let is_stress_mode = stress_config.is_some();
+    #[cfg(not(feature = "terrain_diffusion"))]
+    let is_stress_mode = false;
     let gpu_diagnostics = has_gpu_diagnostics_flag();
     let dump_manifest_path = baseline_manifest::parse_dump_path();
     let exit_after_manifest_dump = dump_manifest_path.is_some();
-    let headless = is_bench_mode;
+    let headless = is_bench_mode || is_stress_mode;
 
     let settings = settings::load_settings();
     let present_mode = settings.present_mode();
@@ -173,16 +179,19 @@ fn main() {
     }
 
     app.add_plugins(FrameTimeDiagnosticsPlugin::default())
-        .add_plugins(LogDiagnosticsPlugin::default())
         .add_plugins(RenderDiagnosticsPlugin)
         .add_plugins(PerformanceDiagnosticsPlugin)
         .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
         .insert_resource(settings)
-        .add_plugins(CameraPlugin::default())
+        .add_plugins(CameraPlugin)
         .add_plugins(terrain_plugin)
         .add_plugins(SpacePlugin)
         .configure_sets(Update, SpaceUpdate.after(CameraUpdate))
         .configure_sets(Update, er_terrain::TerrainUpdate.after(CameraUpdate));
+
+    if !is_bench_mode {
+        app.add_plugins(LogDiagnosticsPlugin::default());
+    }
 
     let manifest_path = dump_manifest_path.or_else(|| {
         test_config
@@ -193,6 +202,7 @@ fn main() {
         manifest_path,
         exit_after_manifest_dump,
         terrain_diffusion_manifest,
+        detect_hardware_profile(),
         planet_seed.0,
     ));
 
@@ -214,9 +224,15 @@ fn main() {
         app.add_plugins(ScreenshotTestPlugin);
     } else {
         app.add_plugins(SettingsMenuPlugin)
-            .add_plugins(DynamicChunkCapControllerPlugin)
             .add_plugins(FrameTimingPlugin)
             .add_plugins(DebugOverlayPlugin);
+    }
+
+    #[cfg(feature = "terrain_diffusion")]
+    if is_stress_mode {
+        let config = stress_config.unwrap();
+        app.insert_resource(config);
+        app.add_plugins(terrain_diffusion_stress::TerrainDiffusionStressPlugin);
     }
 
     app.add_systems(Startup, (setup, apply_startup_window_mode));
@@ -228,11 +244,28 @@ fn has_gpu_diagnostics_flag() -> bool {
     std::env::args().any(|arg| arg == "--gpu-diagnostics")
 }
 
-fn detect_planet_preset() -> PlanetPreset {
-    if std::env::args().any(|arg| arg == "--earth-scale") {
-        PlanetPreset::EarthScale
+/// Detect the active hardware profile name from `--hardware-profile <name>` or
+/// by matching the primary Optimus laptop profile when the adapter is NVIDIA on
+/// a hybrid system. Returns `None` when no profile can be inferred so the
+/// manifest records `null` rather than a fabricated name.
+fn detect_hardware_profile() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(index) = args.iter().position(|arg| arg == "--hardware-profile") {
+        return args.get(index + 1).cloned();
+    }
+    let gpu = er_game::gpu_telemetry::sample();
+    if gpu.description.to_lowercase().contains("nvidia") {
+        Some("rtx3060_optimus".to_owned())
     } else {
+        None
+    }
+}
+
+fn detect_planet_preset() -> PlanetPreset {
+    if std::env::args().any(|arg| arg == "--miniature") {
         PlanetPreset::MiniatureDebug
+    } else {
+        PlanetPreset::default()
     }
 }
 
@@ -279,12 +312,7 @@ fn setup(
     let radius = terrain_state.planet_radius;
     commands.spawn((
         Camera3d::default(),
-        Projection::Perspective(PerspectiveProjection {
-            near: 1.0,
-            far: (radius as f32 * 50.0).max(500000.0),
-            fov: 60.0_f32.to_radians(),
-            ..default()
-        }),
+        projection::ProjectionPolicy::for_placement(radius, None).to_projection(),
         OrbitCamera::for_planet(radius, terrain_state.elevation_scale),
         Transform::default(),
         settings.msaa(),

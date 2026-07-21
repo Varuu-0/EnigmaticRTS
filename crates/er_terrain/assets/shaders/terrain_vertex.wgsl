@@ -4,15 +4,13 @@ struct Vertex {
     @builtin(instance_index) instance_index: u32,
     @location(0) position: vec3<f32>,
     @location(1) morph: f32,
-    @location(2) grid: vec2<u32>,
-    @location(3) low_freq_elev: f32,
-    @location(4) moisture_low: f32,
-    @location(5) elevation: f32,
-    @location(6) normal: vec3<f32>,
-    @location(7) temperature: f32,
-    @location(8) drainage: f32,
-    @location(9) curvature: f32,
-    @location(10) direction: vec3<f32>,
+    @location(2) low_freq_elev: f32,
+    @location(3) moisture_low: f32,
+    @location(4) elevation: f32,
+    @location(5) normal: vec3<f32>,
+    @location(6) temperature: f32,
+    @location(7) drainage: f32,
+    @location(8) curvature: f32,
 };
 
 struct VertexOutput {
@@ -26,7 +24,6 @@ struct VertexOutput {
     @location(6) morph: f32,
     @location(7) drainage: f32,
     @location(8) curvature: f32,
-    @location(9) direction: vec3<f32>,
 };
 
 @vertex
@@ -47,6 +44,5 @@ fn vertex(in: Vertex) -> VertexOutput {
     out.morph = in.morph;
     out.drainage = in.drainage;
     out.curvature = in.curvature;
-    out.direction = in.direction;
     return out;
 }

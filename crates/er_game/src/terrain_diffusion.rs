@@ -25,7 +25,12 @@ use std::collections::{HashSet, VecDeque};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// Maximum number of per-frame provider-timing samples retained in the ring
+/// buffer. At 144 fps this covers ~7 minutes; enough for a 30-minute stress
+/// run to hold a representative tail without unbounded growth.
+const PROVIDER_TIMING_HISTORY_CAP: usize = 60_000;
 
 pub const NATIVE_MODEL_RESOLUTION: u16 = 512;
 pub const NATIVE_PIXEL_SCALE_M: u16 = 30;
@@ -132,6 +137,86 @@ impl Default for TerrainDiffusionDiagnostic {
             invalid_tiles_discarded: 0,
             in_flight: false,
         }
+    }
+}
+
+/// Bounded ring buffer of per-frame main-thread provider work (microseconds).
+///
+/// Only the Bevy `Update` systems owned by the Terrain Diffusion plugin are
+/// timed: `queue_camera_tiles`, `poll_tile_request`, `start_tile_request`, and
+/// `publish_diagnostic`. The HTTP/TCP request and model inference execute on
+/// the async compute thread pool and are explicitly **not** counted — they are
+/// sidecar/network/model work, not main-thread work.
+///
+/// This is the source of truth for the Milestone 3 "provider-attributable
+/// main-thread hitch" gate. The stress runner reads `percentile_ms(95)` and
+/// requires it to be <= 1 ms.
+#[derive(Resource, Clone, Debug)]
+pub struct ProviderTimingHistory {
+    samples_us: VecDeque<u64>,
+    current_frame_us: u64,
+}
+
+impl Default for ProviderTimingHistory {
+    fn default() -> Self {
+        Self {
+            samples_us: VecDeque::with_capacity(4096),
+            current_frame_us: 0,
+        }
+    }
+}
+
+impl ProviderTimingHistory {
+    /// Add microseconds of main-thread work to the current frame's accumulator.
+    #[inline]
+    pub fn add_us(&mut self, us: u64) {
+        self.current_frame_us = self.current_frame_us.saturating_add(us);
+    }
+
+    /// Finalize the current frame and push it into the ring buffer.
+    pub fn finalize_frame(&mut self) {
+        if self.samples_us.len() >= PROVIDER_TIMING_HISTORY_CAP {
+            self.samples_us.pop_front();
+        }
+        self.samples_us.push_back(self.current_frame_us);
+        self.current_frame_us = 0;
+    }
+
+    /// Number of recorded frames.
+    pub fn len(&self) -> usize {
+        self.samples_us.len()
+    }
+
+    /// True when no frames have been recorded.
+    pub fn is_empty(&self) -> bool {
+        self.samples_us.is_empty()
+    }
+
+    /// Compute a percentile in milliseconds from the recorded frame samples.
+    /// Returns `None` when no samples exist.
+    pub fn percentile_ms(&self, pct: f64) -> Option<f64> {
+        if self.samples_us.is_empty() {
+            return None;
+        }
+        let mut sorted: Vec<u64> = self.samples_us.iter().copied().collect();
+        sorted.sort_unstable();
+        let idx = ((pct / 100.0) * (sorted.len() as f64 - 1.0)).round() as usize;
+        let val = sorted[idx.min(sorted.len() - 1)];
+        Some(val as f64 / 1000.0)
+    }
+
+    /// Maximum main-thread provider work observed, in milliseconds.
+    pub fn max_ms(&self) -> Option<f64> {
+        self.samples_us.iter().max().map(|v| *v as f64 / 1000.0)
+    }
+
+    /// Mean main-thread provider work in milliseconds.
+    pub fn mean_ms(&self) -> Option<f64> {
+        if self.samples_us.is_empty() {
+            return None;
+        }
+        let sum: u128 = self.samples_us.iter().map(|&v| v as u128).sum();
+        Some(sum as f64 / self.samples_us.len() as f64 / 1000.0)
     }
 }
 
@@ -248,7 +333,9 @@ impl Plugin for TerrainDiffusionPlugin {
         };
         info!(
             native_resolution = diagnostic.metadata.native_resolution,
+            stored_resolution = diagnostic.metadata.stored_resolution(),
             native_pixel_scale_m = diagnostic.metadata.native_pixel_scale_m,
+            effective_pixel_scale_m = diagnostic.metadata.effective_pixel_scale_m(),
             api_scale = diagnostic.metadata.api_scale,
             halo_samples = diagnostic.metadata.halo_samples,
             tiles_per_face_edge = diagnostic.metadata.tiles_per_face_edge,
@@ -265,6 +352,7 @@ impl Plugin for TerrainDiffusionPlugin {
                 invalid_tiles: 0,
                 last_latency: None,
             })
+            .insert_resource(ProviderTimingHistory::default())
             .add_systems(
                 Update,
                 (
@@ -304,12 +392,16 @@ struct TileRequestFailure {
 fn queue_camera_tiles(
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
     mut runtime: ResMut<TerrainDiffusionRuntime>,
+    mut timing: ResMut<ProviderTimingHistory>,
 ) {
+    let start = Instant::now();
     let Ok(camera_transform) = camera_query.single() else {
+        timing.add_us(start.elapsed().as_micros() as u64);
         return;
     };
     let camera_position = camera_transform.translation().as_dvec3();
     if camera_position.length_squared() <= f64::EPSILON {
+        timing.add_us(start.elapsed().as_micros() as u64);
         return;
     }
     let (face, u, v) = dir_to_uv(camera_position.normalize());
@@ -335,18 +427,23 @@ fn queue_camera_tiles(
             }
         }
     }
+    timing.add_us(start.elapsed().as_micros() as u64);
 }
 
 fn poll_tile_request(
     mut runtime: ResMut<TerrainDiffusionRuntime>,
     mut diag: ResMut<TerrainDiffusionDiagnostic>,
+    mut timing: ResMut<ProviderTimingHistory>,
 ) {
+    let start = Instant::now();
     let Some(task) = runtime.in_flight.as_mut() else {
         diag.in_flight = false;
+        timing.add_us(start.elapsed().as_micros() as u64);
         return;
     };
     let Some(response) = check_ready(task) else {
         diag.in_flight = true;
+        timing.add_us(start.elapsed().as_micros() as u64);
         return;
     };
     runtime.in_flight = None;
@@ -379,13 +476,20 @@ fn poll_tile_request(
             );
         }
     }
+    timing.add_us(start.elapsed().as_micros() as u64);
 }
 
-fn start_tile_request(mut runtime: ResMut<TerrainDiffusionRuntime>) {
+fn start_tile_request(
+    mut runtime: ResMut<TerrainDiffusionRuntime>,
+    mut timing: ResMut<ProviderTimingHistory>,
+) {
+    let start = Instant::now();
     if runtime.in_flight.is_some() {
+        timing.add_us(start.elapsed().as_micros() as u64);
         return;
     }
     let Some(coordinate) = runtime.queued.pop_front() else {
+        timing.add_us(start.elapsed().as_micros() as u64);
         return;
     };
     let config = runtime.config.clone();
@@ -399,6 +503,7 @@ fn start_tile_request(mut runtime: ResMut<TerrainDiffusionRuntime>) {
             latency_ms,
         }
     }));
+    timing.add_us(start.elapsed().as_micros() as u64);
 }
 
 fn request_tile(
@@ -514,7 +619,9 @@ fn parse_terrain_response(response: &[u8]) -> Result<(u16, u16, Vec<i16>), Strin
 fn publish_diagnostic(
     runtime: Res<TerrainDiffusionRuntime>,
     mut diag: ResMut<TerrainDiffusionDiagnostic>,
+    mut timing: ResMut<ProviderTimingHistory>,
 ) {
+    let start = Instant::now();
     diag.tile_count = runtime.cache.len();
     diag.queue_depth = runtime.queued.len();
     diag.request_failures = runtime.failures as u32;
@@ -522,6 +629,8 @@ fn publish_diagnostic(
     diag.last_latency_ms = runtime.last_latency;
     diag.fallback_active = diag.tile_count == 0;
     diag.in_flight = runtime.in_flight.is_some();
+    timing.add_us(start.elapsed().as_micros() as u64);
+    timing.finalize_frame();
 }
 
 #[cfg(test)]
@@ -635,7 +744,8 @@ mod tests {
         for climate in [1.0_f32; 16] {
             body.extend_from_slice(&climate.to_le_bytes());
         }
-        let response = format!("HTTP/1.1 200 OK\r\nX-Height: 2\r\nX-Width: 2\r\n\r\n")
+        let response = "HTTP/1.1 200 OK\r\nX-Height: 2\r\nX-Width: 2\r\n\r\n"
+            .to_string()
             .into_bytes()
             .into_iter()
             .chain(body)
@@ -650,5 +760,68 @@ mod tests {
     fn rejects_payload_without_all_climate_channels() {
         let response = b"HTTP/1.1 200 OK\r\nX-Height: 1\r\nX-Width: 1\r\n\r\n\x00\x00";
         assert!(parse_terrain_response(response).is_err());
+    }
+
+    #[test]
+    fn provider_timing_empty_returns_none() {
+        let timing = ProviderTimingHistory::default();
+        assert!(timing.is_empty());
+        assert_eq!(timing.len(), 0);
+        assert_eq!(timing.percentile_ms(50.0), None);
+        assert_eq!(timing.percentile_ms(95.0), None);
+        assert_eq!(timing.max_ms(), None);
+        assert_eq!(timing.mean_ms(), None);
+    }
+
+    #[test]
+    fn provider_timing_accumulates_within_frame() {
+        let mut timing = ProviderTimingHistory::default();
+        timing.add_us(100);
+        timing.add_us(200);
+        // Not finalized yet — no samples recorded.
+        assert!(timing.is_empty());
+        timing.finalize_frame();
+        assert_eq!(timing.len(), 1);
+        assert_eq!(timing.percentile_ms(50.0), Some(0.3));
+        assert_eq!(timing.max_ms(), Some(0.3));
+    }
+
+    #[test]
+    fn provider_timing_percentiles_correct() {
+        let mut timing = ProviderTimingHistory::default();
+        // 10 frames: 0.1ms through 1.0ms
+        for i in 1..=10 {
+            timing.add_us(i * 100);
+            timing.finalize_frame();
+        }
+        assert_eq!(timing.len(), 10);
+        let p50 = timing.percentile_ms(50.0).unwrap();
+        let p95 = timing.percentile_ms(95.0).unwrap();
+        let max = timing.max_ms().unwrap();
+        // Values are 0.1..1.0ms. P50 index = round(0.5*9)=5 → 0.6ms (round half away from zero).
+        assert!((p50 - 0.6).abs() < 0.01, "p50 was {p50}");
+        // P95: index = round(0.95*9) = round(8.55) = 9 → 1.0ms
+        assert!((p95 - 1.0).abs() < 0.01, "p95 was {p95}");
+        assert!((max - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn provider_timing_ring_buffer_evicts_oldest() {
+        let mut timing = ProviderTimingHistory::default();
+        // Fill beyond capacity to verify eviction.
+        for i in 0..(PROVIDER_TIMING_HISTORY_CAP + 10) {
+            timing.add_us((i % 1000) as u64 + 1);
+            timing.finalize_frame();
+        }
+        assert_eq!(timing.len(), PROVIDER_TIMING_HISTORY_CAP);
+    }
+
+    #[test]
+    fn provider_timing_saturating_add() {
+        let mut timing = ProviderTimingHistory::default();
+        timing.add_us(u64::MAX);
+        timing.add_us(1);
+        timing.finalize_frame();
+        assert_eq!(timing.percentile_ms(50.0), Some(u64::MAX as f64 / 1000.0));
     }
 }

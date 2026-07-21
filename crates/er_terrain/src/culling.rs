@@ -2,15 +2,63 @@ use er_core::config::MINIMUM_TERRAIN_COVERAGE_LOD;
 use er_core::math::{cell_size, cell_to_dir, CellKey};
 use glam::{DVec3, Vec3};
 
-const FRUSTUM_MARGIN: f32 = 0.175; // ~10° — keep chunks visible beyond screen edges
-const HORIZON_MARGIN: f64 = 0.262; // ~15° — keep chunks visible below horizon (covers cracks at terminator)
+const FRUSTUM_MARGIN: f32 = 0.035; // ~2° guard band beyond screen edges
+const HORIZON_MARGIN: f64 = 0.052; // ~3° guard band below the geometric horizon
 const DISTANCE_MARGIN: f64 = 1.15; // 15% beyond max render distance
+
+pub struct HorizonCuller {
+    camera_dir: DVec3,
+    lod_cos_thresholds: [f64; 256],
+    enabled: bool,
+}
+
+impl HorizonCuller {
+    pub fn new(camera_pos: DVec3, planet_radius: f64, max_lod: u8) -> Self {
+        let distance = camera_pos.length();
+        let enabled = distance >= 1.0;
+        let camera_dir = if enabled {
+            camera_pos / distance
+        } else {
+            DVec3::Y
+        };
+        let horizon_angle = if enabled {
+            (planet_radius / distance).clamp(0.0, 1.0).acos()
+        } else {
+            0.0
+        };
+        let mut lod_cos_thresholds = [0.0; 256];
+        if enabled {
+            for lod in 0..=max_lod {
+                let key = CellKey {
+                    face: 0,
+                    i: 0,
+                    j: 0,
+                    lod,
+                };
+                lod_cos_thresholds[usize::from(lod)] =
+                    (horizon_angle + chunk_half_angle(key, planet_radius) + HORIZON_MARGIN)
+                        .min(std::f64::consts::PI)
+                        .cos();
+            }
+        }
+        Self {
+            camera_dir,
+            lod_cos_thresholds,
+            enabled,
+        }
+    }
+
+    #[inline]
+    pub fn is_below(&self, lod: u8, chunk_dir: DVec3) -> bool {
+        self.enabled && chunk_dir.dot(self.camera_dir) < self.lod_cos_thresholds[usize::from(lod)]
+    }
+}
 
 /// Root cube faces are the coarse terrain-coverage floor at extreme camera
 /// distances. They bypass only distance culling; regular horizon and frustum
 /// culling still decide whether they are drawn.
 pub fn is_minimum_coverage_chunk(key: CellKey) -> bool {
-    key.lod <= MINIMUM_TERRAIN_COVERAGE_LOD
+    key.lod == MINIMUM_TERRAIN_COVERAGE_LOD
 }
 
 /// Returns whether a chunk should be hidden by the distance cull. Root faces
@@ -30,21 +78,8 @@ pub fn chunk_half_angle(key: CellKey, planet_radius: f64) -> f64 {
 }
 
 pub fn is_below_horizon(key: CellKey, camera_pos: DVec3, planet_radius: f64) -> bool {
-    let d = camera_pos.length();
-    if d < 1.0 {
-        return false;
-    }
-    let cam_dir = camera_pos / d;
     let chunk_dir = cell_to_dir(key);
-    let dot = chunk_dir.dot(cam_dir);
-    let half_angle = chunk_half_angle(key, planet_radius);
-
-    let horizon_angle = (planet_radius / d).clamp(0.0, 1.0).acos();
-    let horizon_cos = (horizon_angle + half_angle + HORIZON_MARGIN)
-        .min(std::f64::consts::PI)
-        .cos();
-
-    dot < horizon_cos
+    HorizonCuller::new(camera_pos, planet_radius, key.lod).is_below(key.lod, chunk_dir)
 }
 
 pub fn is_outside_render_distance(
@@ -57,6 +92,7 @@ pub fn is_outside_render_distance(
     (chunk_center - camera_pos).length() > max_distance * DISTANCE_MARGIN
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn frustum_cull_sphere(
     sphere_center: Vec3,
     sphere_radius: f32,

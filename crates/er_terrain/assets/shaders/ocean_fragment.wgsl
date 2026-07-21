@@ -2,31 +2,6 @@ struct FragmentInput {
     @location(0) world_position: vec3<f32>,
 };
 
-fn make_elev_params(m: OceanMaterialUniform) -> ElevationParams {
-    var p: ElevationParams;
-    p.seed = m.seed;
-    p.sea_level = m.sea_level;
-    p.continental_freq = m.continental_freq;
-    p.continental_amp = m.continental_amp;
-    p.continental_octaves = m.continental_octaves;
-    p.mountain_freq = m.mountain_freq;
-    p.mountain_amp = m.mountain_amp;
-    p.mountain_octaves = m.mountain_octaves;
-    p.hill_freq = m.hill_freq;
-    p.hill_amp = m.hill_amp;
-    p.hill_octaves = m.hill_octaves;
-    p.detail_freq = m.detail_freq;
-    p.detail_amp = m.detail_amp;
-    p.detail_octaves = m.detail_octaves;
-    p.warp_freq = m.warp_freq;
-    p.warp_amp = m.warp_amp;
-    p.lacunarity = m.lacunarity;
-    p.gain = m.gain;
-    p._pad0 = 0.0;
-    p._pad1 = 0.0;
-    return p;
-}
-
 fn ocean_depth_color(depth: f32) -> vec3<f32> {
     let shallow = vec3<f32>(0.15, 0.5, 0.65);
     let mid = vec3<f32>(0.08, 0.3, 0.5);
@@ -42,21 +17,9 @@ fn ocean_depth_color(depth: f32) -> vec3<f32> {
 fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
     let render_origin = vec3<f32>(ocean_material.render_origin_x, ocean_material.render_origin_y, ocean_material.render_origin_z);
     let planet_dir = normalize(input.world_position + render_origin);
-    let ep = make_elev_params(ocean_material);
-    let elev = select(
-        compute_low_freq_elevation(planet_dir, ep),
-        compute_low_freq_elevation_metric(planet_dir, ep, ocean_material.planet_radius),
-        ocean_material.planet_radius >= 1000000.0,
-    );
-
-    // Don't discard over land - return transparent but still write depth
-    // This ensures the ocean sphere occludes far-side terrain
-    if (elev >= ocean_material.sea_level) {
-        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
-    }
-
-    let depth = ocean_material.sea_level - elev;
-    var color = ocean_depth_color(depth);
+    // The sea is one geometric datum. The terrain depth buffer hides this
+    // surface over land and reveals it where the terrain lies below sea level.
+    var color = ocean_depth_color(0.65);
 
     let sun_dir = normalize(vec3<f32>(
         ocean_material.sun_dir_x,
@@ -75,10 +38,6 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
     let fresnel = pow(1.0 - max(dot(view_dir, planet_dir), 0.0), 3.0);
     let sky_color = vec3<f32>(0.4, 0.6, 0.9);
     color = mix(color, sky_color, fresnel * 0.5);
-
-    // Subsurface scattering near shore
-    let shallow_glow = (1.0 - smoothstep(0.0, 0.3, depth)) * 0.3;
-    color = color + vec3<f32>(0.1, 0.2, 0.15) * shallow_glow;
 
     // Multi-frequency ripples
     let ripple1 = sin(ocean_material.time * 1.5 + planet_dir.x * 20.0 + planet_dir.z * 15.0) * 0.015;

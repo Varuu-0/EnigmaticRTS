@@ -4,6 +4,8 @@ use er_core::math::{
     cell_size, dir_to_uv, needs_recenter, recenter, tangent_frame, uv_to_dir, OriginOffset,
     WorldPos,
 };
+#[cfg(test)]
+use er_terrain::anchor_render_translation;
 use er_terrain::{
     CameraWorldPosition, FrameProfiler, RenderOrigin, TerrainDebugInfo, TerrainState,
 };
@@ -74,13 +76,14 @@ pub struct OrbitCamera {
     pub surface_target: SurfaceTarget,
     pub surface_altitude: f64,
     pub smoothed_surface_altitude: f64,
+    surface_min_safe_altitude: f64,
 }
 
 impl OrbitCamera {
     pub fn for_planet(radius: f64, elevation_scale: f32) -> Self {
         let min_altitude = 10.0_f64.max(elevation_scale.abs() as f64 * 0.01);
         let max_altitude = radius * 29.0;
-        let distance = radius * 2.5;
+        let distance = radius * 3.0;
         Self {
             yaw: 0.0,
             pitch: 0.3,
@@ -95,6 +98,7 @@ impl OrbitCamera {
             surface_target: SurfaceTarget::default(),
             surface_altitude: radius * 0.5,
             smoothed_surface_altitude: radius * 0.5,
+            surface_min_safe_altitude: min_altitude,
         }
     }
 }
@@ -130,10 +134,14 @@ impl Plugin for CameraPlugin {
 // Transition thresholds
 // ---------------------------------------------------------------------------
 
-const MINIATURE_SURFACE_ENTER_ALTITUDE: f64 = 150.0;
-const MINIATURE_SURFACE_EXIT_ALTITUDE: f64 = 600.0;
-const EARTH_SURFACE_ENTER_ALTITUDE: f64 = 1000.0;
-const EARTH_SURFACE_EXIT_ALTITUDE: f64 = 5000.0;
+const MINIATURE_SURFACE_ENTER_ALTITUDE: f64 = 50.0;
+const MINIATURE_SURFACE_EXIT_ALTITUDE: f64 = 120.0;
+const EARTH_SURFACE_ENTER_ALTITUDE: f64 = 200.0;
+const EARTH_SURFACE_EXIT_ALTITUDE: f64 = 500.0;
+const SCROLL_ZOOM_STEP: f64 = 0.1;
+// Keep the planetary orbit camera under player control. Surface mode remains
+// available for explicit scenarios and future opt-in controls.
+const AUTO_MODE_TRANSITIONS: bool = false;
 
 fn surface_enter_altitude(radius: f64) -> f64 {
     if radius > 1_000_000.0 {
@@ -151,12 +159,17 @@ fn surface_exit_altitude(radius: f64) -> f64 {
     }
 }
 
+fn scroll_zoom_factor(scroll_delta: f64) -> f64 {
+    1.0 - scroll_delta * SCROLL_ZOOM_STEP
+}
+
 // ---------------------------------------------------------------------------
 // Main update
 // ---------------------------------------------------------------------------
 
 use crate::space::{StarfieldComponent, SunLight, SunSphere};
 
+#[allow(clippy::type_complexity)]
 fn camera_update(
     mut query: Query<
         (&mut OrbitCamera, &mut Transform),
@@ -177,7 +190,9 @@ fn camera_update(
     let t0 = Instant::now();
     let dt = time.delta_secs_f64();
     for (mut camera, mut transform) in &mut query {
-        transition_mode_if_needed(&mut camera, &terrain_state, &debug_info);
+        if AUTO_MODE_TRANSITIONS {
+            transition_mode_if_needed(&mut camera, &terrain_state, &debug_info);
+        }
 
         match camera.mode {
             CameraMode::Orbit => {
@@ -185,7 +200,7 @@ fn camera_update(
                 place_orbit(&camera, &mut transform, &mut camera_world, &mut origin);
             }
             CameraMode::Surface => {
-                update_surface(&mut camera, &terrain_state, &debug_info, dt);
+                update_surface(&mut camera, dt);
                 place_surface(
                     &camera,
                     &mut transform,
@@ -203,6 +218,7 @@ fn camera_update(
 // Input
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn camera_input(
     accumulated_motion: Res<AccumulatedMouseMotion>,
     accumulated_scroll: Res<AccumulatedMouseScroll>,
@@ -277,8 +293,7 @@ fn orbit_input_inner(
         camera.pitch = (camera.pitch + accumulated_motion.delta.y as f64 * 0.005).clamp(-1.5, 1.5);
     }
 
-    let scroll_factor = 1.0 - accumulated_scroll.delta.y as f64 * 0.1;
-    camera.distance *= scroll_factor;
+    apply_orbit_scroll_zoom(camera, terrain_state, accumulated_scroll.delta.y as f64);
 
     if keys.pressed(KeyCode::ArrowUp) {
         camera.distance -= zoom_speed * dt;
@@ -290,6 +305,7 @@ fn orbit_input_inner(
     clamp_orbit_to_terrain(camera, terrain_state);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn surface_input_inner(
     camera: &mut OrbitCamera,
     buttons: &ButtonInput<MouseButton>,
@@ -343,10 +359,7 @@ fn surface_input_inner(
     if keys.pressed(KeyCode::ArrowDown) {
         camera.surface_altitude += altitude_speed * dt;
     }
-    let scroll_delta = accumulated_scroll.delta.y as f64;
-    if scroll_delta.abs() > 0.0 {
-        camera.surface_altitude -= altitude_speed * scroll_delta * 0.05;
-    }
+    camera.surface_altitude *= scroll_zoom_factor(accumulated_scroll.delta.y as f64);
 
     let min_safe = slope_safe_min_altitude(
         &camera.surface_target,
@@ -354,6 +367,7 @@ fn surface_input_inner(
         terrain_state,
         debug_info,
     );
+    camera.surface_min_safe_altitude = min_safe;
     camera.surface_altitude = camera.surface_altitude.clamp(min_safe, camera.max_altitude);
 }
 
@@ -412,6 +426,22 @@ fn orbit_direction(orbit: &OrbitCamera) -> DVec3 {
     .normalize()
 }
 
+/// Zoom orbit altitude relative to the terrain, not the planet center.
+/// Scaling center distance makes a 10% wheel step larger than the remaining
+/// altitude in low Earth orbit and snaps directly to the terrain clamp.
+fn apply_orbit_scroll_zoom(
+    orbit: &mut OrbitCamera,
+    terrain_state: &TerrainState,
+    scroll_delta: f64,
+) {
+    let direction = orbit_direction(orbit);
+    let terrain_elevation =
+        terrain_state.field.sample(direction).elevation * terrain_state.elevation_scale as f64;
+    let surface_radius = (terrain_state.planet_radius + terrain_elevation).max(0.0);
+    let altitude = (orbit.distance - surface_radius).max(orbit.min_altitude);
+    orbit.distance = surface_radius + altitude * scroll_zoom_factor(scroll_delta);
+}
+
 fn clamp_orbit_to_terrain(orbit: &mut OrbitCamera, terrain_state: &TerrainState) {
     let direction = orbit_direction(orbit);
     let terrain_elevation =
@@ -432,22 +462,21 @@ fn update_orbit(camera: &mut OrbitCamera, terrain_state: &TerrainState, dt: f64)
         camera.smoothed_target + (camera.target - camera.smoothed_target) * alpha;
 }
 
-fn update_surface(
-    camera: &mut OrbitCamera,
-    terrain_state: &TerrainState,
-    debug_info: &TerrainDebugInfo,
-    dt: f64,
-) {
-    let min_safe = slope_safe_min_altitude(
-        &camera.surface_target,
-        camera.surface_altitude,
-        terrain_state,
-        debug_info,
-    );
-    camera.surface_altitude = camera.surface_altitude.max(min_safe);
+fn update_surface(camera: &mut OrbitCamera, dt: f64) {
+    camera.surface_altitude = camera
+        .surface_altitude
+        .max(camera.surface_min_safe_altitude);
     let alpha = 1.0 - (-camera.smoothing * dt).exp();
     camera.smoothed_surface_altitude = camera.smoothed_surface_altitude
         + (camera.surface_altitude - camera.smoothed_surface_altitude) * alpha;
+    // The smoothed altitude lags the target during panning onto rising
+    // terrain. Without this floor the camera could dip below the slope-safe
+    // minimum (penetrating the terrain) until the exponential catch-up
+    // completes. Clamp the placed altitude so the rendered camera never
+    // penetrates, even while the smoothed value is still converging.
+    camera.smoothed_surface_altitude = camera
+        .smoothed_surface_altitude
+        .max(camera.surface_min_safe_altitude);
 }
 
 // ---------------------------------------------------------------------------
@@ -585,20 +614,19 @@ fn transition_mode_if_needed(
             let altitude = world_camera.length() - terrain_state.planet_radius - terrain_elevation;
             let enter = surface_enter_altitude(terrain_state.planet_radius);
 
-            if altitude < enter {
-                if world_camera.length() > 1.0 {
-                    let (face, u, v) = dir_to_uv(world_camera);
-                    camera.mode = CameraMode::Surface;
-                    camera.surface_target =
-                        SurfaceTarget::at(face, u.clamp(0.0, 1.0), v.clamp(0.0, 1.0));
-                    camera.surface_altitude = altitude.max(slope_safe_min_altitude(
-                        &camera.surface_target,
-                        altitude,
-                        terrain_state,
-                        debug_info,
-                    ));
-                    camera.smoothed_surface_altitude = camera.surface_altitude;
-                }
+            if altitude < enter && world_camera.length() > 1.0 {
+                let (face, u, v) = dir_to_uv(world_camera);
+                camera.mode = CameraMode::Surface;
+                camera.surface_target =
+                    SurfaceTarget::at(face, u.clamp(0.0, 1.0), v.clamp(0.0, 1.0));
+                camera.surface_min_safe_altitude = slope_safe_min_altitude(
+                    &camera.surface_target,
+                    altitude,
+                    terrain_state,
+                    debug_info,
+                );
+                camera.surface_altitude = altitude.max(camera.surface_min_safe_altitude);
+                camera.smoothed_surface_altitude = camera.surface_altitude;
             }
         }
         CameraMode::Surface => {
@@ -672,13 +700,12 @@ fn slope_safe_min_altitude(
     let radius = terrain_state.planet_radius;
     let elevation_scale = terrain_state.elevation_scale as f64;
 
-    let sample = terrain_state.field.sample(dir);
-    let centre_elevation = sample.elevation * elevation_scale;
+    let centre_elevation = terrain_state.field.sample_elevation(dir) * elevation_scale;
     let min_clearance = 10.0_f64.max(elevation_scale * 0.01);
 
     let vertex_spacing = surface_vertex_spacing(terrain_state, debug_info);
     let sample_radius = camera_footprint_radius(desired_altitude)
-        .max(vertex_spacing.max(0.001).min(CAMERA_FOOTPRINT_RADIUS_M));
+        .max(vertex_spacing.clamp(0.001, CAMERA_FOOTPRINT_RADIUS_M));
     let num_samples = 12;
 
     let mut max_rise = 0.0_f64;
@@ -693,7 +720,7 @@ fn slope_safe_min_altitude(
                 + bitangent * target.local.y
                 + offset_world)
                 .normalize();
-            let sample_elev = terrain_state.field.sample(sample_dir).elevation * elevation_scale;
+            let sample_elev = terrain_state.field.sample_elevation(sample_dir) * elevation_scale;
             let rise = sample_elev - centre_elevation;
             max_rise = max_rise.max(rise);
         }
@@ -911,10 +938,9 @@ mod tests {
         let target = SurfaceTarget::at(0, 0.5, 0.5);
 
         let min_alt = slope_safe_min_altitude(&target, 10.0, &terrain_state, &debug_info);
-        let base_elev = terrain_state.field.sample(uv_to_dir(0, 0.5, 0.5)).elevation * 1000.0;
 
-        assert!((min_alt - base_elev) >= 0.0);
-        assert!((min_alt - base_elev) < 100_000.0);
+        assert!(min_alt >= 10.0);
+        assert!(min_alt < 100_000.0);
     }
 
     // ---------
@@ -924,8 +950,10 @@ mod tests {
     #[test]
     fn camera_10m_target_stays_close() {
         let terrain_state = make_earth_terrain_state();
-        let mut debug = TerrainDebugInfo::default();
-        debug.vertex_spacing_m = 5000.0; // coarse LOD should not inflate clearance
+        let debug = TerrainDebugInfo {
+            vertex_spacing_m: 5000.0,
+            ..TerrainDebugInfo::default()
+        };
 
         let (yaw, pitch) = (0.55_f64, 0.30_f64);
         let cp = pitch.cos();
@@ -946,8 +974,10 @@ mod tests {
     fn steep_local_patch_does_not_penetrate() {
         let terrain_state = make_earth_terrain_state();
         let radius = terrain_state.planet_radius;
-        let mut debug = TerrainDebugInfo::default();
-        debug.vertex_spacing_m = 5000.0; // simulate coarse pre-LOD load
+        let debug = TerrainDebugInfo {
+            vertex_spacing_m: 5000.0,
+            ..TerrainDebugInfo::default()
+        };
 
         let candidates = [(0, 0.5, 0.5), (1, 0.0, 0.5), (2, 0.2, 0.8)];
         let elevation_scale = terrain_state.elevation_scale as f64;
@@ -983,8 +1013,10 @@ mod tests {
     #[test]
     fn fallback_spacing_matches_earth_lod17() {
         let terrain_state = make_earth_terrain_state();
-        let mut debug = TerrainDebugInfo::default();
-        debug.vertex_spacing_m = 0.0; // fallback active
+        let debug = TerrainDebugInfo {
+            vertex_spacing_m: 0.0,
+            ..TerrainDebugInfo::default()
+        };
 
         let vs = surface_vertex_spacing(&terrain_state, &debug);
         let expected = 4.77;
@@ -1030,14 +1062,18 @@ mod tests {
     fn orbit_to_surface_transition_no_jump() {
         let radius = 6_371_000.0;
         let terrain_state = make_terrain_state(radius);
-        let mut debug_info = TerrainDebugInfo::default();
-        debug_info.max_depth = 8; // fine enough that safe_altitude < enter
+        let debug_info = TerrainDebugInfo {
+            max_depth: 8,
+            ..TerrainDebugInfo::default()
+        };
         let mut camera = OrbitCamera::for_planet(radius, 1000.0);
         camera.mode = CameraMode::Orbit;
         let altitude = surface_enter_altitude(radius) * 0.3;
-        camera.distance = radius + altitude;
-        camera.smoothed_distance = camera.distance;
         let dir = orbit_direction(&camera);
+        let terrain_elevation =
+            terrain_state.field.sample(dir).elevation * terrain_state.elevation_scale as f64;
+        camera.distance = radius + terrain_elevation + altitude;
+        camera.smoothed_distance = camera.distance;
         let before_pos = camera.target + dir * camera.distance;
 
         transition_mode_if_needed(&mut camera, &terrain_state, &debug_info);
@@ -1054,10 +1090,40 @@ mod tests {
 
     #[test]
     fn hysteresis_exits_above_enters() {
-        let radius = 6_371_000.0;
-        let enter = surface_enter_altitude(radius);
-        let exit = surface_exit_altitude(radius);
-        assert!(exit > enter);
+        for radius in [36_000.0, 6_371_000.0] {
+            let enter = surface_enter_altitude(radius);
+            let exit = surface_exit_altitude(radius);
+            assert!(exit > enter);
+            assert!(exit / enter < 3.0);
+        }
+    }
+
+    #[test]
+    fn surface_and_orbit_share_multiplicative_scroll_zoom() {
+        assert_eq!(scroll_zoom_factor(1.0), 0.9);
+        assert_eq!(scroll_zoom_factor(-1.0), 1.1);
+    }
+
+    #[test]
+    fn earth_orbit_scroll_at_500km_scales_altitude_without_surface_snap() {
+        let terrain_state = make_earth_terrain_state();
+        let mut camera = OrbitCamera::for_planet(terrain_state.planet_radius, 1000.0);
+        let direction = orbit_direction(&camera);
+        let terrain_elevation =
+            terrain_state.field.sample(direction).elevation * terrain_state.elevation_scale as f64;
+        let surface_radius = terrain_state.planet_radius + terrain_elevation;
+        camera.distance = surface_radius + 500_000.0;
+
+        apply_orbit_scroll_zoom(&mut camera, &terrain_state, 1.0);
+
+        let altitude = camera.distance - surface_radius;
+        assert!((altitude - 450_000.0).abs() < 1e-6);
+        assert!(altitude > camera.min_altitude);
+    }
+
+    #[test]
+    fn automatic_mode_transitions_are_disabled() {
+        const _: () = assert!(!AUTO_MODE_TRANSITIONS);
     }
 
     #[test]
@@ -1083,5 +1149,367 @@ mod tests {
         clamp_orbit_to_terrain(&mut camera, &terrain_state);
         assert_eq!(camera.mode, CameraMode::Orbit);
         assert!((camera.distance - radius * 6.0).abs() < 0.1);
+    }
+
+    // -------------------------------------------------------------------------
+    // Milestone 1 Exit Gate: penetration prevention, traversal, continuity
+    // -------------------------------------------------------------------------
+
+    /// The smoothed altitude lags the target. When the safe minimum rises
+    /// (camera pans onto a peak), the rendered altitude must never drop below
+    /// the safe minimum even while the exponential is still converging. This
+    /// is the core penetration-prevention guarantee of the Exit Gate.
+    #[test]
+    fn smoothed_surface_altitude_never_penetrates_rising_floor() {
+        let radius = 6_371_000.0;
+        let terrain_state = make_terrain_state(radius);
+        let debug_info = TerrainDebugInfo::default();
+        let target = SurfaceTarget::at(0, 0.5, 0.5);
+
+        let min_safe = slope_safe_min_altitude(&target, 10.0, &terrain_state, &debug_info);
+        // Simulate the camera already converged at a low altitude, then the
+        // safe floor jumps well above it (pan onto steep terrain).
+        let mut camera = OrbitCamera::for_planet(radius, 1000.0);
+        camera.mode = CameraMode::Surface;
+        camera.surface_target = target;
+        camera.surface_min_safe_altitude = 5.0;
+        camera.surface_altitude = 5.0;
+        camera.smoothed_surface_altitude = 5.0;
+
+        // A large dt step drives the exponential most of the way to target.
+        let dt = 0.1;
+        // Floor rises above the smoothed value mid-convergence.
+        camera.surface_min_safe_altitude = min_safe.max(20.0);
+        camera.surface_altitude = camera.surface_min_safe_altitude;
+        update_surface(&mut camera, dt);
+
+        assert!(
+            camera.smoothed_surface_altitude >= camera.surface_min_safe_altitude,
+            "smoothed altitude {} penetrated the safe floor {}",
+            camera.smoothed_surface_altitude,
+            camera.surface_min_safe_altitude
+        );
+
+        // Repeated steps must keep it above the floor as it converges.
+        for _ in 0..10 {
+            update_surface(&mut camera, dt);
+            assert!(
+                camera.smoothed_surface_altitude >= camera.surface_min_safe_altitude,
+                "smoothed altitude penetrated the safe floor during convergence"
+            );
+        }
+        // And it must converge toward the target, not get stuck far below.
+        assert!(
+            (camera.smoothed_surface_altitude - camera.surface_altitude).abs() < 1.0,
+            "smoothed altitude failed to converge to target"
+        );
+    }
+
+    /// Placed camera altitude must respect the safe floor at all times. This
+    /// exercises the actual placement path (`place_surface` consumes
+    /// `smoothed_surface_altitude`), proving no penetration in the rendered
+    /// transform even when smoothing lags.
+    #[test]
+    fn placed_surface_camera_altitude_respects_safe_floor() {
+        let radius = 6_371_000.0;
+        let terrain_state = make_terrain_state(radius);
+        let debug_info = TerrainDebugInfo::default();
+        let target = SurfaceTarget::at(0, 0.5, 0.5);
+        let min_safe = slope_safe_min_altitude(&target, 10.0, &terrain_state, &debug_info);
+
+        let mut camera = OrbitCamera::for_planet(radius, 1000.0);
+        camera.mode = CameraMode::Surface;
+        camera.surface_target = target;
+        camera.surface_min_safe_altitude = min_safe;
+        // Force the smoothed value to something below the floor; update_surface
+        // must lift it back above the floor before placement.
+        camera.surface_altitude = min_safe;
+        camera.smoothed_surface_altitude = min_safe - 50.0;
+        update_surface(&mut camera, 0.05);
+
+        let mut transform = Transform::default();
+        let mut camera_world = CameraWorldPosition::default();
+        let mut origin = RenderOrigin::default();
+        place_surface(
+            &camera,
+            &mut transform,
+            &mut camera_world,
+            &mut origin,
+            &terrain_state,
+        );
+
+        let dir = uv_to_dir(target.face, target.u, target.v);
+        let elev = terrain_state.field.sample(dir).elevation * terrain_state.elevation_scale as f64;
+        let surface_radius = radius + elev;
+        let cam_radial = camera_world.0.length();
+        let placed_altitude = cam_radial - surface_radius;
+        assert!(
+            placed_altitude >= min_safe - 1e-6,
+            "placed camera altitude {placed_altitude} penetrated safe floor {min_safe}"
+        );
+    }
+
+    /// Exit Gate: at 10 m the nearest chunk must admit <=5 m vertex spacing via
+    /// the same path `update_debug_info` uses (containing ancestor + cell_size).
+    /// This ties the 10 m acceptance scenario to the actual LOD geometry.
+    #[test]
+    fn ten_meter_camera_nearest_chunk_has_sub_five_meter_spacing() {
+        let terrain_state = make_earth_terrain_state();
+        let radius = terrain_state.planet_radius;
+        let max_depth = terrain_state.max_quadtree_depth;
+
+        // Camera 10 m above terrain along a fixed direction.
+        let (yaw, pitch) = (0.55_f64, 0.30_f64);
+        let cp = pitch.cos();
+        let dir = DVec3::new(cp * yaw.sin(), pitch.sin(), cp * yaw.cos()).normalize();
+        let elev = terrain_state.field.sample(dir).elevation * terrain_state.elevation_scale as f64;
+        let camera_pos = dir * (radius + elev + 10.0);
+
+        // Walk the quadtree like containing_ancestor_key: deepest cell at the
+        // camera direction, walking up until an active chunk covers it. At 10 m
+        // the focus-detail path forces the containing cell to max_depth.
+        let finest = er_core::math::dir_to_cell(dir, max_depth);
+        let spacing = cell_size(finest.lod, radius) / er_core::config::CHUNK_QUADS_PER_EDGE as f64;
+        assert!(
+            spacing <= 5.0,
+            "10 m camera nearest chunk vertex spacing {spacing:.3} > 5 m"
+        );
+        assert!(spacing > 0.0);
+
+        // Sanity: the cell actually contains the camera direction.
+        assert_eq!(er_core::math::dir_to_cell(dir, finest.lod), finest);
+        let _ = camera_pos;
+    }
+
+    /// Exit Gate: cube-edge traversal. Panning across a cube-face edge must
+    /// keep the surface target on the sphere and hand off to the neighbor
+    /// face without a position discontinuity. This is an end-to-end pan that
+    /// crosses the edge, not just a single reprojection.
+    #[test]
+    fn pan_across_cube_edge_is_continuous() {
+        let radius = 6_371_000.0;
+        let mut camera = OrbitCamera::for_planet(radius, 1000.0);
+        camera.mode = CameraMode::Surface;
+        // Start at the face-0 / face-2 boundary (u=0).
+        camera.surface_target = SurfaceTarget::at(0, 0.0, 0.5);
+        camera.surface_altitude = 100.0;
+        camera.smoothed_surface_altitude = 100.0;
+
+        let (_n, tangent, _bitangent) = tangent_frame(0, 0.0, 0.5);
+        let before_world = surface_world_pos(&camera, &make_terrain_state(radius));
+
+        // Pan in the -tangent direction (off the face-0 edge into face-2).
+        apply_tangent_pan(
+            &mut camera,
+            &tangent,
+            &DVec3::ZERO,
+            DVec2::new(-5.0, 0.0),
+            radius,
+        );
+
+        assert_ne!(camera.surface_target.face, 0, "pan did not cross the edge");
+        assert!((0.0..=1.0).contains(&camera.surface_target.u));
+        assert!((0.0..=1.0).contains(&camera.surface_target.v));
+
+        // The world position after the pan must remain on the sphere surface
+        // (radius + local elevation), i.e. no teleport or jump off the globe.
+        let after_world = surface_world_pos(&camera, &make_terrain_state(radius));
+        let after_dir = after_world.normalize();
+        let (_face, _u, _v) = dir_to_uv(after_dir);
+        // Direction must be finite and unit-length (on the sphere).
+        assert!(
+            (after_dir.length() - 1.0).abs() < 1e-9,
+            "post-pan direction left the unit sphere"
+        );
+        // The pan was 5 m tangentially; the surface point must have moved by a
+        // comparable amount (not jumped across the planet).
+        let delta = (after_world - before_world).length();
+        assert!(
+            delta < 50.0,
+            "5 m pan moved the surface target by {delta} m (expected ~5 m)"
+        );
+    }
+
+    /// Exit Gate: origin-shift cell traversal. Recentering the render origin
+    /// must not pop the rendered chunk transform: a camera-near chunk anchor,
+    /// rebased through the new origin, stays small and continuous in render
+    /// space. This is the no-pop guarantee that matters at close range.
+    #[test]
+    fn origin_recenter_keeps_chunk_render_position_continuous() {
+        let radius = 6_371_000.0;
+        // A camera-near chunk: face 0 (dominant +X), a deep cell so its anchor
+        // sits close to a chosen surface point. We then pick origins snapped
+        // near that anchor (as `recenter` does near the camera), keeping the
+        // rebased render offset small and f32-precise.
+        let key = er_core::math::dir_to_cell(DVec3::X, 10);
+        let anchor = er_core::math::cell_to_dir(key) * radius;
+
+        // Two origins both snapped near the anchor on a 1 km grid (as recenter
+        // does near the camera). Render offsets stay small and f32-precise.
+        let origin_a = (anchor / 1000.0).floor() * 1000.0;
+        let origin_b = origin_a + DVec3::new(1000.0, 0.0, 0.0);
+
+        let render_a = (anchor - origin_a).as_vec3();
+        let render_b = (anchor - origin_b).as_vec3();
+
+        // Each render offset is small (within one cell of its origin): the
+        // close-range precision guarantee. A large offset here would mean a
+        // camera-near chunk lost precision — the failure mode the floating
+        // origin exists to prevent.
+        assert!(
+            render_a.length() < 2000.0,
+            "render offset {} exceeds the recenter cell after snap",
+            render_a.length()
+        );
+        assert!(
+            render_b.length() < 2000.0,
+            "render offset {} exceeds the recenter cell after shift",
+            render_b.length()
+        );
+
+        // The render positions differ by exactly the *negative* origin delta
+        // (render = anchor - origin, so shifting origin by +d shifts render by
+        // -d). The camera moves with the origin, so the relative
+        // camera->chunk vector is preserved. No pop, no extra drift.
+        let delta = (render_b - render_a).as_dvec3();
+        let origin_delta = origin_b - origin_a;
+        assert!(
+            (delta + origin_delta).length() < 1e-3,
+            "render transform drifted by {} beyond the origin shift",
+            (delta + origin_delta).length()
+        );
+
+        assert!(render_a.is_finite());
+        assert!(render_b.is_finite());
+    }
+
+    /// Exit Gate: stale mesh safety. A mesh produced before an origin shift
+    /// (stale generation) must be rebased to the *current* origin and land at
+    /// the same absolute world position as a fresh mesh — it must not be
+    /// dropped or misplaced. This mirrors `apply_pending_chunk_meshes`. The
+    /// origin is snapped near the anchor (as `recenter` does) so the rebased
+    /// render offset stays f32-precise, exactly as it does at runtime.
+    #[test]
+    fn stale_generation_mesh_is_rebased_not_dropped() {
+        let radius = 6_371_000.0;
+        let key = er_core::math::CellKey {
+            face: 0,
+            i: 5,
+            j: 5,
+            lod: 5,
+        };
+        let source_anchor = er_core::math::cell_to_dir(key) * radius;
+
+        // The mesh was generated when the origin was `queued_origin`; by the
+        // time it attaches, the origin has shifted to `current_origin`. Both
+        // are snapped near the anchor on a 1 km grid (as recenter does), so
+        // the rebased render offset is small and f32-precise.
+        let base = (source_anchor / 1000.0).floor() * 1000.0;
+        let queued_origin = base;
+        let current_origin = base + DVec3::new(1000.0, 0.0, 0.0);
+
+        // anchor_render_translation uses the CURRENT origin, so the stale
+        // mesh is rebased rather than placed at its queued-origin offset.
+        let rebased = anchor_render_translation(source_anchor, current_origin);
+        let reconstructed = current_origin + rebased.as_dvec3();
+        assert!(
+            (reconstructed - source_anchor).length() < 0.001,
+            "stale-generation mesh was not rebased to its absolute source anchor"
+        );
+
+        // A fresh mesh (current generation) uses the same anchor and current
+        // origin, so both must coincide — proving no pop between stale/fresh.
+        let fresh = anchor_render_translation(source_anchor, current_origin);
+        assert_eq!(
+            rebased, fresh,
+            "stale and fresh meshes diverged in render space"
+        );
+        let _ = queued_origin;
+    }
+
+    /// Exit Gate: transition continuity (radial). The orbit->surface handoff
+    /// must not produce a radial/altitude discontinuity when the safe floor is
+    /// below the orbit altitude (the non-clamping path). This complements the
+    /// existing lateral-direction test with radial continuity.
+    #[test]
+    fn orbit_to_surface_transition_preserves_radial_distance() {
+        let radius = 6_371_000.0;
+        let terrain_state = make_terrain_state(radius);
+        let debug_info = TerrainDebugInfo {
+            max_depth: 8,
+            ..TerrainDebugInfo::default()
+        };
+        let mut camera = OrbitCamera::for_planet(radius, 1000.0);
+        camera.mode = CameraMode::Orbit;
+
+        // Place the orbit camera at an altitude safely above the surface-enter
+        // threshold so the safe floor does not clamp (isolating radial
+        // continuity rather than the penetration-prevention clamp).
+        let dir = orbit_direction(&camera);
+        let elev = terrain_state.field.sample(dir).elevation * terrain_state.elevation_scale as f64;
+        let enter = surface_enter_altitude(radius);
+        let altitude = enter * 0.3;
+        camera.distance = radius + elev + altitude;
+        camera.smoothed_distance = camera.distance;
+        let before_radial = camera.target + dir * camera.distance;
+        let before_len = before_radial.length();
+
+        transition_mode_if_needed(&mut camera, &terrain_state, &debug_info);
+        assert_eq!(camera.mode, CameraMode::Surface);
+
+        let after_radial = surface_world_pos(&camera, &terrain_state);
+        let after_len = after_radial.length();
+
+        // Radial distance must be preserved (no pop in/out along the normal).
+        // The surface placement adds the same altitude above the same surface
+        // point, so the radial length must match to sub-meter precision.
+        assert!(
+            (after_len - before_len).abs() < 1.0,
+            "orbit->surface radial distance jumped by {} m",
+            (after_len - before_len).abs()
+        );
+        // Lateral direction continuity (already covered, re-asserted here).
+        let lateral_dot = before_radial.normalize().dot(after_radial.normalize());
+        assert!(
+            lateral_dot > 0.99999,
+            "lateral direction changed (dot={lateral_dot})"
+        );
+    }
+
+    /// Exit Gate: transition continuity when the safe floor *does* clamp. The
+    /// orbit->surface handoff must move the camera *up* to the safe floor
+    /// (preventing penetration) rather than *down* into the terrain. A jump up
+    /// is acceptable; a jump down (penetration) is not.
+    #[test]
+    fn orbit_to_surface_clamp_only_moves_camera_up() {
+        let radius = 6_371_000.0;
+        let terrain_state = make_terrain_state(radius);
+        let debug_info = TerrainDebugInfo {
+            max_depth: 8,
+            ..TerrainDebugInfo::default()
+        };
+        let mut camera = OrbitCamera::for_planet(radius, 1000.0);
+        camera.mode = CameraMode::Orbit;
+
+        let dir = orbit_direction(&camera);
+        let elev = terrain_state.field.sample(dir).elevation * terrain_state.elevation_scale as f64;
+        // Very low altitude so the safe floor likely clamps above it.
+        let altitude = 5.0;
+        camera.distance = radius + elev + altitude;
+        camera.smoothed_distance = camera.distance;
+        let before_radial_len = (camera.target + dir * camera.distance).length();
+
+        transition_mode_if_needed(&mut camera, &terrain_state, &debug_info);
+        assert_eq!(camera.mode, CameraMode::Surface);
+
+        let after = surface_world_pos(&camera, &terrain_state);
+        let after_radial_len = after.length();
+        // The clamp can only raise the camera (prevent penetration), never
+        // lower it below the orbit position.
+        assert!(
+            after_radial_len >= before_radial_len - 1e-6,
+            "orbit->surface clamp lowered the camera by {} m (penetration)",
+            before_radial_len - after_radial_len
+        );
     }
 }

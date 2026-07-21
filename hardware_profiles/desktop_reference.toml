@@ -17,4 +17,3 @@ disable_immediate = true
 planet_preset = "EarthScale"
 seed = "0xC0FFEE"
 fixed_sim_time_seconds = 0.0
-dynamic_chunk_cap = false

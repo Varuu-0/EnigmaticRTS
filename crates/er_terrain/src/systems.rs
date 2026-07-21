@@ -1,15 +1,17 @@
-use bevy::camera::visibility::NoFrustumCulling;
+use bevy::camera::visibility::NoCpuCulling;
 use bevy::ecs::schedule::ApplyDeferred;
 use bevy::ecs::schedule::SystemSet;
 use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
 use bevy::shader::Shader;
-use bevy::tasks::{futures::check_ready, AsyncComputeTaskPool, Task};
-use er_core::config::{
-    PlanetPreset, ACTIVE_CHUNK_CAP, CHUNK_QUADS_PER_EDGE, LOD_SPLIT_BUDGET_PER_FRAME,
-    MAX_INFLIGHT_TERRAIN_MESHES, MERGE_HYSTERESIS, PLANET_RADIUS_DEFAULT, SCREEN_ERROR_THRESHOLD,
+use bevy::tasks::{
+    futures::check_ready, AsyncComputeTaskPool, ComputeTaskPool, ParallelSlice, Task,
 };
-use er_core::math::{cell_size, cell_to_dir, CellKey, NeighborSide};
+use er_core::config::{
+    PlanetPreset, CHUNK_QUADS_PER_EDGE, LOD_SPLIT_BUDGET_PER_FRAME, MAX_INFLIGHT_TERRAIN_MESHES,
+    MERGE_HYSTERESIS, PLANET_RADIUS_DEFAULT, SCREEN_ERROR_THRESHOLD,
+};
+use er_core::math::{cell_neighbor, cell_size, cell_to_dir, CellKey, NeighborSide};
 use er_core::seed::PlanetSeed;
 use er_world::cache::WorldCache;
 use er_world::elevation::{elevation_params, ElevationParams};
@@ -19,19 +21,21 @@ use er_world::terrain_field::{
     TerrainSampleSource, TerrainSourceMode,
 };
 use glam::DVec3;
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::chunk::{ChunkComponent, HoldForMerge, HoldHidden};
 use crate::culling::{
-    frustum_cull_sphere, is_below_horizon, is_beyond_render_distance, is_minimum_coverage_chunk,
+    frustum_cull_sphere, is_beyond_render_distance, is_minimum_coverage_chunk, HorizonCuller,
 };
 use crate::debug::TerrainDebugInfo;
-use crate::lod::{chunk_camera_distance, screen_error, should_merge_parent, should_split};
+use crate::lod::{screen_error, should_merge_parent, should_split};
 use crate::material::{TerrainMaterial, TerrainMaterialUniform, FRAGMENT_SHADER, VERTEX_SHADER};
 use crate::mesh_gen::{generate_chunk_mesh_stitched, normal_sample_spacing_m, StitchNeighbors};
-use crate::ocean::{setup_ocean, update_ocean_time, OceanMaterial};
+use crate::ocean::{update_ocean_time, OceanMaterial};
 use crate::quadtree::{
     children_of, coarser_neighbor_across_edge, parent_of, root_chunks, ActiveChunks, RetainedMerge,
     RetainedMerges, RetainedSplit, RetainedSplits,
@@ -114,10 +118,12 @@ pub struct TerrainState {
     pub screen_error_threshold: f32,
     pub merge_hysteresis: f32,
     pub max_render_distance: f64,
-    pub active_chunk_cap: usize,
     pub lod_split_budget_per_frame: usize,
     pub max_inflight_terrain_meshes: usize,
 }
+
+#[derive(Resource, Default)]
+struct DirtyStitchChunks(HashSet<CellKey>);
 
 impl TerrainState {
     pub fn new(planet_radius: f64, elevation_scale: f32, seed: PlanetSeed) -> Self {
@@ -185,7 +191,6 @@ impl TerrainState {
             screen_error_threshold: SCREEN_ERROR_THRESHOLD,
             merge_hysteresis: MERGE_HYSTERESIS,
             max_render_distance: preset.max_render_distance_m(),
-            active_chunk_cap: ACTIVE_CHUNK_CAP,
             lod_split_budget_per_frame: LOD_SPLIT_BUDGET_PER_FRAME,
             max_inflight_terrain_meshes: MAX_INFLIGHT_TERRAIN_MESHES,
         }
@@ -207,6 +212,7 @@ struct ChunkMeshRequest {
     key: CellKey,
     radius: f64,
     elevation_scale: f32,
+    sea_level: f64,
     field: Arc<dyn TerrainField>,
     origin_generation: u64,
     source_anchor: DVec3,
@@ -319,13 +325,14 @@ impl Plugin for TerrainPlugin {
         .insert_resource(PendingChunkMeshes::default())
         .insert_resource(QueuedChunkMeshes::default())
         .insert_resource(TerrainFieldRefresh::default())
+        .insert_resource(DirtyStitchChunks::default())
         .insert_resource(crate::profiler::FrameProfiler::default())
         .insert_resource(SunDirection::default())
         .insert_resource(CameraWorldPosition::default())
         .insert_resource(RenderOrigin::with_cell_size(self.render_origin_cell_size_m))
         .add_plugins(MaterialPlugin::<TerrainMaterial>::default())
         .add_plugins(MaterialPlugin::<OceanMaterial>::default())
-        .add_systems(Startup, (setup_terrain, setup_ocean))
+        .add_systems(Startup, setup_terrain)
         .add_systems(PreUpdate, profiler_clear)
         .add_systems(
             Update,
@@ -398,6 +405,7 @@ fn setup_terrain(
             key,
             terrain_state.planet_radius,
             terrain_state.elevation_scale,
+            terrain_state.planet_params.sea_level,
             Arc::clone(&terrain_state.field),
             &origin,
             [None; 4],
@@ -425,7 +433,7 @@ fn apply_render_origin_to_chunks(
     }
 }
 
-fn chunk_render_translation(key: CellKey, radius: f64, origin: DVec3) -> Vec3 {
+pub fn chunk_render_translation(key: CellKey, radius: f64, origin: DVec3) -> Vec3 {
     (cell_to_dir(key) * radius - origin).as_vec3()
 }
 
@@ -472,6 +480,7 @@ fn queue_resident_field_refreshes(
             key,
             terrain_state.planet_radius,
             terrain_state.elevation_scale,
+            terrain_state.planet_params.sea_level,
             Arc::clone(&terrain_state.field),
             origin.generation,
             stitch_neighbors(key, &active_chunks),
@@ -479,10 +488,12 @@ fn queue_resident_field_refreshes(
     }
 }
 
-fn breadth_chunk_cap(active_chunk_cap: usize, max_depth: u8) -> usize {
-    active_chunk_cap.saturating_sub(usize::from(max_depth) * 3)
-}
+// At walking height, the camera may be far from a chunk center even when it is
+// directly above that chunk. Keep that one refinement path at maximum detail;
+// normal per-quad screen error controls every other altitude and direction.
+const FOCUS_DETAIL_ALTITUDE_M: f64 = 25.0;
 
+#[allow(clippy::too_many_arguments)]
 fn update_lod(
     camera_query: Query<(&GlobalTransform, &Projection), With<Camera3d>>,
     camera_world: Res<CameraWorldPosition>,
@@ -495,15 +506,14 @@ fn update_lod(
 ) {
     let t0 = Instant::now();
     let camera_pos = camera_world.0;
+    let horizon = HorizonCuller::new(
+        camera_pos,
+        terrain_state.planet_radius,
+        terrain_state.max_quadtree_depth,
+    );
 
     let keys: Vec<CellKey> = active_chunks.chunks.keys().copied().collect();
     active_chunks.clear_pending();
-    let camera_dir = camera_pos.normalize_or(DVec3::Y);
-    let breadth_cap = breadth_chunk_cap(
-        terrain_state.active_chunk_cap,
-        terrain_state.max_quadtree_depth,
-    );
-    let split_capacity_blocked = active_chunks.len() + 3 > breadth_cap;
     let split_frustum = camera_query
         .single()
         .ok()
@@ -521,55 +531,80 @@ fn update_lod(
             ))
         });
 
-    for &key in &keys {
-        if is_below_horizon(key, camera_pos, terrain_state.planet_radius) {
-            continue;
-        }
-        if let Some((cam_pos, forward, right, up, fov_cos, aspect)) = split_frustum {
-            let chunk_center = cell_to_dir(key) * terrain_state.planet_radius;
-            let sphere_center = (chunk_center - origin.world).as_vec3();
-            let sphere_radius = cell_size(key.lod, terrain_state.planet_radius) as f32
-                + terrain_state.elevation_scale * 3.0;
-            if frustum_cull_sphere(
-                sphere_center,
-                sphere_radius,
-                cam_pos,
-                forward,
-                right,
-                up,
-                fov_cos,
-                aspect,
-            ) {
+    let planet_radius = terrain_state.planet_radius;
+    let elevation_scale = terrain_state.elevation_scale;
+    let max_depth = terrain_state.max_quadtree_depth;
+    let screen_error_threshold = terrain_state.screen_error_threshold;
+    let origin_world = origin.world;
+    let camera_dir = camera_pos.normalize_or(DVec3::Y);
+    let camera_terrain_elevation =
+        terrain_state.field.sample_elevation(camera_dir) * elevation_scale as f64;
+    let force_focus_detail =
+        camera_pos.length() - planet_radius - camera_terrain_elevation <= FOCUS_DETAIL_ALTITUDE_M;
+    let evaluate_splits = |_: usize, batch: &[CellKey]| {
+        let mut candidates = Vec::new();
+        for &key in batch {
+            let chunk_dir = cell_to_dir(key);
+            if horizon.is_below(key.lod, chunk_dir) {
                 continue;
             }
-        }
+            if let Some((cam_pos, forward, right, up, fov_cos, aspect)) = split_frustum {
+                let chunk_center = chunk_dir * planet_radius;
+                let sphere_center = (chunk_center - origin_world).as_vec3();
+                let sphere_radius =
+                    cell_size(key.lod, planet_radius) as f32 + elevation_scale * 3.0;
+                if frustum_cull_sphere(
+                    sphere_center,
+                    sphere_radius,
+                    cam_pos,
+                    forward,
+                    right,
+                    up,
+                    fov_cos,
+                    aspect,
+                ) {
+                    continue;
+                }
+            }
 
-        // If this chunk is waiting for its parent mesh to finish during a
-        // retained merge, don't re-evaluate its LOD — the merge decision is
-        // already in flight.
-        if let Some(parent) = parent_of(key) {
-            if retained_merges.map.contains_key(&parent) {
+            // A retained merge already owns this chunk's next LOD decision.
+            if parent_of(key).is_some_and(|parent| retained_merges.map.contains_key(&parent)) {
                 continue;
             }
-        }
 
-        if should_split(
-            key,
-            camera_pos,
-            terrain_state.planet_radius,
-            terrain_state.max_quadtree_depth,
-            terrain_state.screen_error_threshold,
-        ) {
-            // Once the cap is full, breadth splits cannot be admitted. Keep
-            // evaluating only the camera-containing path so reclaimed capacity
-            // is spent on close detail instead of sorting thousands of blocked
-            // candidates every frame.
-            if !split_capacity_blocked || cell_contains_direction(key, camera_dir) {
-                active_chunks.pending_splits.push(key);
+            let requires_focus_detail = force_focus_detail
+                && key.lod < max_depth
+                && cell_contains_direction(key, camera_dir);
+            if requires_focus_detail
+                || should_split(
+                    key,
+                    camera_pos,
+                    planet_radius,
+                    max_depth,
+                    screen_error_threshold,
+                )
+            {
+                candidates.push(key);
             }
         }
-    }
+        candidates
+    };
+    // Below this point task scheduling costs more than the scalar scan; the
+    // large uncapped Earth views are where parallel evaluation pays off.
+    let split_batches = if keys.len() >= 12_000 {
+        keys.par_splat_map(ComputeTaskPool::get(), None, evaluate_splits)
+    } else {
+        vec![evaluate_splits(0, &keys)]
+    };
+    active_chunks
+        .pending_splits
+        .extend(split_batches.into_iter().flatten());
 
+    // Splits and merges must both be admitted while the camera moves. Deferring
+    // every merge behind outstanding splits leaves a permanently fine trail in
+    // the camera's wake, multiplying low-altitude entity and extraction cost.
+    // Hysteresis plus retained handoffs keep concurrent coarsening stable and
+    // hole-free; process_lod_queue still bounds the actual merge work.
     let mut parents_to_check: HashSet<CellKey> = HashSet::new();
     for &key in &keys {
         if let Some(parent) = parent_of(key) {
@@ -592,16 +627,16 @@ fn update_lod(
         }
 
         let children = children_of(parent_key);
-        if children.iter().all(|c| active_chunks.contains(c)) {
-            if should_merge_parent(
+        if children.iter().all(|c| active_chunks.contains(c))
+            && should_merge_parent(
                 parent_key,
                 camera_pos,
                 terrain_state.planet_radius,
                 terrain_state.screen_error_threshold,
                 terrain_state.merge_hysteresis,
-            ) {
-                active_chunks.pending_merges.push(parent_key);
-            }
+            )
+        {
+            active_chunks.pending_merges.push(parent_key);
         }
     }
 
@@ -628,16 +663,13 @@ fn process_lod_queue(
     mut debug: ResMut<TerrainDebugInfo>,
     mut queued_meshes: ResMut<QueuedChunkMeshes>,
     pending_meshes: Res<PendingChunkMeshes>,
+    mut dirty_stitches: ResMut<DirtyStitchChunks>,
     mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
     let t0 = Instant::now();
     let camera_pos = camera_world.0;
     let budget = terrain_state.lod_split_budget_per_frame;
     let camera_dir = camera_pos.normalize_or(DVec3::Y);
-    let breadth_cap = breadth_chunk_cap(
-        terrain_state.active_chunk_cap,
-        terrain_state.max_quadtree_depth,
-    );
 
     let mut splits_done = 0usize;
     let pending_splits: Vec<CellKey> = std::mem::take(&mut active_chunks.pending_splits);
@@ -654,18 +686,6 @@ fn process_lod_queue(
             outstanding_meshes,
             terrain_state.max_inflight_terrain_meshes,
         ) {
-            continue;
-        }
-        // Keep one complete camera-containing refinement path inside the hard
-        // cap. A balancing dependency of that path uses the same reservation;
-        // otherwise a deep focused leaf could border a much coarser spherical
-        // chord and produce a visible terrain curtain.
-        let split_cap = if required_for_focus {
-            terrain_state.active_chunk_cap
-        } else {
-            breadth_cap
-        };
-        if active_chunks.len() + 3 > split_cap {
             continue;
         }
         if !active_chunks.contains(&key) {
@@ -713,6 +733,7 @@ fn process_lod_queue(
                 child,
                 terrain_state.planet_radius,
                 terrain_state.elevation_scale,
+                terrain_state.planet_params.sea_level,
                 Arc::clone(&terrain_state.field),
                 &origin,
                 child_stitch_neighbors,
@@ -731,28 +752,15 @@ fn process_lod_queue(
                 children: child_entities,
             },
         );
+        mark_stitch_neighborhood(key, &active_chunks, &mut dirty_stitches.0);
         splits_done += 1;
     }
     debug.pending_splits = splits_done;
 
-    let over_cap = active_chunks
-        .len()
-        .saturating_sub(terrain_state.active_chunk_cap);
-    let merge_budget = if over_cap > 0 {
-        (budget * 4).max(over_cap * 4)
-    } else {
-        budget
-    };
+    let merge_budget = budget;
     let mut merges_done = 0usize;
     let mut merged_keys = HashSet::new();
-    let mut pending_merges: Vec<CellKey> = std::mem::take(&mut active_chunks.pending_merges);
-    if over_cap > 0 {
-        pending_merges.sort_by(|a, b| {
-            let da = chunk_camera_distance(*a, camera_pos, terrain_state.planet_radius);
-            let db = chunk_camera_distance(*b, camera_pos, terrain_state.planet_radius);
-            db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
-        });
-    }
+    let pending_merges: Vec<CellKey> = std::mem::take(&mut active_chunks.pending_merges);
     for parent_key in pending_merges {
         if merges_done >= merge_budget {
             break;
@@ -782,6 +790,7 @@ fn process_lod_queue(
                 }
             }
             active_chunks.insert(parent_key, entry.parent_entity);
+            mark_stitch_neighborhood(parent_key, &active_chunks, &mut dirty_stitches.0);
             merged_keys.insert(parent_key);
             merges_done += 1;
             continue;
@@ -813,6 +822,7 @@ fn process_lod_queue(
             parent_key,
             terrain_state.planet_radius,
             terrain_state.elevation_scale,
+            terrain_state.planet_params.sea_level,
             Arc::clone(&terrain_state.field),
             &origin,
             stitch_neighbors(parent_key, &active_chunks),
@@ -828,6 +838,7 @@ fn process_lod_queue(
             },
         );
         active_chunks.insert(parent_key, parent_entity);
+        mark_stitch_neighborhood(parent_key, &active_chunks, &mut dirty_stitches.0);
         merged_keys.insert(parent_key);
         merges_done += 1;
     }
@@ -836,6 +847,7 @@ fn process_lod_queue(
     profiler.record("process_lod_queue", t0.elapsed());
 }
 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn cull_chunks(
     mut camera_query: Query<(&GlobalTransform, &mut Projection), With<Camera3d>>,
     mut chunk_query: Query<
@@ -845,6 +857,7 @@ fn cull_chunks(
     terrain_state: Res<TerrainState>,
     camera_world: Res<CameraWorldPosition>,
     origin: Res<RenderOrigin>,
+    mut debug: ResMut<TerrainDebugInfo>,
     mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
     let t0 = Instant::now();
@@ -853,13 +866,22 @@ fn cull_chunks(
         return;
     };
     let camera_pos = camera_world.0;
+    let horizon = HorizonCuller::new(
+        camera_pos,
+        terrain_state.planet_radius,
+        terrain_state.max_quadtree_depth,
+    );
 
     let planet_radius = terrain_state.planet_radius as f32;
     let cam_dist = camera_pos.length() as f32;
     let (near, far) = camera_clip_planes(planet_radius, cam_dist);
     if let Projection::Perspective(p) = &mut *projection {
-        p.near = near;
-        p.far = far;
+        if p.near != near {
+            p.near = near;
+        }
+        if p.far != far {
+            p.far = far;
+        }
     }
 
     let frustum = match &*projection {
@@ -878,57 +900,65 @@ fn cull_chunks(
         _ => None,
     };
 
-    let max_render_dist_sq = (terrain_state.max_render_distance * 1.15).powi(2);
+    let planet_radius_f64 = terrain_state.planet_radius;
+    let elevation_scale = terrain_state.elevation_scale;
+    let max_render_distance = terrain_state.max_render_distance;
+    let max_render_dist_sq = (max_render_distance * 1.15).powi(2);
+    let origin_world = origin.world;
+    let visible_chunks = AtomicUsize::new(0);
+    chunk_query
+        .par_iter_mut()
+        .for_each(|(chunk, mut visibility, far_coverage_root)| {
+            let key = chunk.key;
 
-    for (chunk, mut visibility, far_coverage_root) in &mut chunk_query {
-        let key = chunk.key;
-
-        // Retained roots prevent the planet from becoming transparent while the
-        // detailed LOD tree asynchronously merges back after a large zoom-out.
-        if far_coverage_root.is_some()
-            && hide_far_coverage_root(cam_dist, terrain_state.max_render_distance as f32)
-        {
-            visibility.set_if_neq(Visibility::Hidden);
-            continue;
-        }
-        let chunk_dir = cell_to_dir(key);
-        let chunk_center = chunk_dir * terrain_state.planet_radius;
-
-        let dist_sq = (chunk_center - camera_pos).length_squared();
-        // At maximum zoom-out, retain the six root faces as a coarse coverage
-        // floor. Finer chunks still obey the normal distance limit, and roots
-        // continue through horizon/frustum culling below.
-        if is_beyond_render_distance(key, dist_sq, max_render_dist_sq) {
-            visibility.set_if_neq(Visibility::Hidden);
-            continue;
-        }
-
-        if is_below_horizon(key, camera_pos, terrain_state.planet_radius) {
-            visibility.set_if_neq(Visibility::Hidden);
-            continue;
-        }
-
-        if let Some((cam_pos, forward, right, up, fov_cos, aspect)) = frustum {
-            let sphere_center = (chunk_center - origin.world).as_vec3();
-            let sphere_radius = cell_size(key.lod, terrain_state.planet_radius) as f32
-                + terrain_state.elevation_scale * 3.0;
-            if frustum_cull_sphere(
-                sphere_center,
-                sphere_radius,
-                cam_pos,
-                forward,
-                right,
-                up,
-                fov_cos,
-                aspect,
-            ) {
+            // Retained roots prevent the planet from becoming transparent while the
+            // detailed LOD tree asynchronously merges back after a large zoom-out.
+            if far_coverage_root.is_some()
+                && hide_far_coverage_root(cam_dist, max_render_distance as f32)
+            {
                 visibility.set_if_neq(Visibility::Hidden);
-                continue;
+                return;
             }
-        }
+            let chunk_dir = cell_to_dir(key);
+            let chunk_center = chunk_dir * planet_radius_f64;
 
-        visibility.set_if_neq(Visibility::Visible);
-    }
+            let dist_sq = (chunk_center - camera_pos).length_squared();
+            // At maximum zoom-out, retain the six root faces as a coarse coverage
+            // floor. Finer chunks still obey the normal distance limit, and roots
+            // continue through horizon/frustum culling below.
+            if is_beyond_render_distance(key, dist_sq, max_render_dist_sq) {
+                visibility.set_if_neq(Visibility::Hidden);
+                return;
+            }
+
+            if horizon.is_below(key.lod, chunk_dir) {
+                visibility.set_if_neq(Visibility::Hidden);
+                return;
+            }
+
+            if let Some((cam_pos, forward, right, up, fov_cos, aspect)) = frustum {
+                let sphere_center = (chunk_center - origin_world).as_vec3();
+                let sphere_radius =
+                    cell_size(key.lod, planet_radius_f64) as f32 + elevation_scale * 3.0;
+                if frustum_cull_sphere(
+                    sphere_center,
+                    sphere_radius,
+                    cam_pos,
+                    forward,
+                    right,
+                    up,
+                    fov_cos,
+                    aspect,
+                ) {
+                    visibility.set_if_neq(Visibility::Hidden);
+                    return;
+                }
+            }
+
+            visibility.set_if_neq(Visibility::Visible);
+            visible_chunks.fetch_add(1, AtomicOrdering::Relaxed);
+        });
+    debug.visible_chunks = visible_chunks.load(AtomicOrdering::Relaxed);
     profiler.record("cull_chunks", t0.elapsed());
 }
 
@@ -953,18 +983,19 @@ fn hide_far_coverage_root(camera_distance: f32, max_render_distance: f32) -> boo
     camera_distance <= max_render_distance
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_debug_info(
     active_chunks: Res<ActiveChunks>,
     retained_splits: Res<RetainedSplits>,
     pending: Res<PendingChunkMeshes>,
     queued_meshes: Res<QueuedChunkMeshes>,
-    chunk_query: Query<&Visibility, With<ChunkComponent>>,
     mesh_query: Query<(), (With<ChunkComponent>, With<Mesh3d>)>,
     camera_world: Res<CameraWorldPosition>,
     terrain_state: Res<TerrainState>,
     origin: Res<RenderOrigin>,
     mut debug: ResMut<TerrainDebugInfo>,
     profiler: Res<crate::profiler::FrameProfiler>,
+    mut expensive_refresh: Local<u8>,
 ) {
     debug.active_chunks = active_chunks.len();
     debug.max_depth = active_chunks
@@ -974,12 +1005,6 @@ fn update_debug_info(
         .max()
         .unwrap_or(0);
     debug.pending_meshes = pending.0.len() + queued_meshes.len();
-    debug.visible_chunks = chunk_query
-        .iter()
-        .filter(|visibility| matches!(visibility, Visibility::Visible))
-        .count();
-    debug.estimated_mesh_bytes =
-        mesh_query.iter().count() * crate::debug::ESTIMATED_BYTES_PER_CHUNK_MESH;
     debug.frame_time_ms = profiler.total().as_secs_f32() * 1000.0;
 
     let cam_pos = camera_world.0;
@@ -991,8 +1016,8 @@ fn update_debug_info(
     } else {
         DVec3::Y
     };
-    let sample = terrain_state.field.sample(cam_dir);
-    let terrain_elev = sample.elevation * terrain_state.elevation_scale as f64;
+    let terrain_elev =
+        terrain_state.field.sample_elevation(cam_dir) * terrain_state.elevation_scale as f64;
     debug.camera_altitude_m = cam_len - radius - terrain_elev;
 
     debug.render_origin_world = origin.world;
@@ -1015,19 +1040,28 @@ fn update_debug_info(
     debug.normal_difference_span_m = 2.0 * normal_spacing;
     debug.normal_diff_epsilon_radians = (normal_spacing / radius).clamp(1e-8, 0.25);
 
-    let coverage_angle = (vs * 4.0 / radius).clamp(1e-8, 0.25);
-    let (proc, learned) = estimate_source_coverage(&*terrain_state.field, cam_dir, coverage_angle);
-    let total = proc + learned;
-    debug.procedural_source_coverage_percent = if total > 0 {
-        proc as f32 / total as f32 * 100.0
-    } else {
-        0.0
-    };
-    debug.learned_source_coverage_percent = if total > 0 {
-        learned as f32 / total as f32 * 100.0
-    } else {
-        0.0
-    };
+    *expensive_refresh = expensive_refresh.wrapping_add(1);
+    if *expensive_refresh == 1 {
+        debug.estimated_mesh_bytes =
+            mesh_query.iter().count() * crate::debug::ESTIMATED_BYTES_PER_CHUNK_MESH;
+        let coverage_angle = (vs * 4.0 / radius).clamp(1e-8, 0.25);
+        let (proc, learned) =
+            estimate_source_coverage(&*terrain_state.field, cam_dir, coverage_angle);
+        let total = proc + learned;
+        debug.procedural_source_coverage_percent = if total > 0 {
+            proc as f32 / total as f32 * 100.0
+        } else {
+            0.0
+        };
+        debug.learned_source_coverage_percent = if total > 0 {
+            learned as f32 / total as f32 * 100.0
+        } else {
+            0.0
+        };
+    }
+    if *expensive_refresh >= 8 {
+        *expensive_refresh = 0;
+    }
 }
 
 fn estimate_source_coverage(
@@ -1070,6 +1104,7 @@ fn spawn_chunk_entity(
     key: CellKey,
     radius: f64,
     elevation_scale: f32,
+    sea_level: f64,
     field: Arc<dyn TerrainField>,
     origin: &RenderOrigin,
     stitch_neighbors: StitchNeighbors,
@@ -1082,9 +1117,10 @@ fn spawn_chunk_entity(
             MeshMaterial3d(material.clone()),
             Transform::from_translation(chunk_render_translation(key, radius, origin.world)),
             Visibility::Hidden,
-            // The custom culler includes horizon, distance, and frustum tests.
-            // Avoid repeating Bevy's AABB frustum walk for every terrain chunk.
-            NoFrustumCulling,
+            // The custom culler owns terrain horizon, distance, and frustum
+            // tests. Skip Bevy's per-view CPU visibility walks for every
+            // chunk; changed Visibility values still reach the render world.
+            NoCpuCulling,
         ))
         .id();
 
@@ -1094,6 +1130,7 @@ fn spawn_chunk_entity(
         key,
         radius,
         elevation_scale,
+        sea_level,
         field,
         origin.generation,
         stitch_neighbors,
@@ -1102,12 +1139,14 @@ fn spawn_chunk_entity(
     entity
 }
 
+#[allow(clippy::too_many_arguments)]
 fn queue_chunk_mesh(
     queued_meshes: &mut QueuedChunkMeshes,
     entity: Entity,
     key: CellKey,
     radius: f64,
     elevation_scale: f32,
+    sea_level: f64,
     field: Arc<dyn TerrainField>,
     origin_generation: u64,
     stitch_neighbors: StitchNeighbors,
@@ -1120,6 +1159,7 @@ fn queue_chunk_mesh(
             key,
             radius,
             elevation_scale,
+            sea_level,
             field,
             origin_generation,
             source_anchor,
@@ -1165,6 +1205,7 @@ fn dispatch_chunk_meshes(
             key,
             radius,
             elevation_scale,
+            sea_level,
             field,
             origin_generation,
             source_anchor,
@@ -1176,6 +1217,7 @@ fn dispatch_chunk_meshes(
                     key,
                     radius,
                     elevation_scale,
+                    sea_level,
                     field.as_ref(),
                     stitch_neighbors,
                 ),
@@ -1210,20 +1252,19 @@ fn sort_chunk_mesh_requests(
     planet_radius: f64,
 ) {
     let camera_dir = camera_pos.normalize_or(DVec3::Y);
-    requests.sort_by(|a, b| {
-        let critical_a = cell_contains_direction(a.key, camera_dir)
-            || parent_of(a.key).is_some_and(|parent| cell_contains_direction(parent, camera_dir));
-        let critical_b = cell_contains_direction(b.key, camera_dir)
-            || parent_of(b.key).is_some_and(|parent| cell_contains_direction(parent, camera_dir));
-        let err_a = screen_error(a.key, camera_pos, planet_radius);
-        let err_b = screen_error(b.key, camera_pos, planet_radius);
-        critical_b
-            .cmp(&critical_a)
-            .then_with(|| err_b.total_cmp(&err_a))
-            .then_with(|| a.key.face.cmp(&b.key.face))
-            .then_with(|| a.key.lod.cmp(&b.key.lod))
-            .then_with(|| a.key.i.cmp(&b.key.i))
-            .then_with(|| a.key.j.cmp(&b.key.j))
+    requests.sort_by_cached_key(|request| {
+        let critical = cell_contains_direction(request.key, camera_dir)
+            || parent_of(request.key)
+                .is_some_and(|parent| cell_contains_direction(parent, camera_dir));
+        let error = screen_error(request.key, camera_pos, planet_radius);
+        (
+            !critical,
+            Reverse(error.to_bits()),
+            request.key.face,
+            request.key.lod,
+            request.key.i,
+            request.key.j,
+        )
     });
 }
 
@@ -1236,7 +1277,7 @@ fn stitch_neighbors(key: CellKey, active_chunks: &ActiveChunks) -> StitchNeighbo
 
 /// Return the coarsest adjacent leaf that must split before `key` can split.
 /// This preserves the 2:1 leaf-depth invariant incrementally, including across
-/// cube-face edges, without increasing the active chunk cap.
+/// cube-face edges while refinement continues.
 fn balancing_split_for(key: CellKey, active_chunks: &ActiveChunks) -> Option<CellKey> {
     NEIGHBOR_SIDES
         .into_iter()
@@ -1256,9 +1297,15 @@ fn queue_stitch_rebuilds(
     origin: Res<RenderOrigin>,
     mut queued_meshes: ResMut<QueuedChunkMeshes>,
     pending: Res<PendingChunkMeshes>,
+    mut dirty: ResMut<DirtyStitchChunks>,
 ) {
-    for (&key, &entity) in &active_chunks.chunks {
+    let dirty_keys = std::mem::take(&mut dirty.0);
+    for key in dirty_keys {
+        let Some(&entity) = active_chunks.chunks.get(&key) else {
+            continue;
+        };
         if pending.0.contains_key(&entity) || queued_meshes.contains(entity) {
+            dirty.0.insert(key);
             continue;
         }
         let Ok((mut chunk, mesh)) = chunks.get_mut(entity) else {
@@ -1281,11 +1328,40 @@ fn queue_stitch_rebuilds(
             key,
             terrain_state.planet_radius,
             terrain_state.elevation_scale,
+            terrain_state.planet_params.sea_level,
             Arc::clone(&terrain_state.field),
             origin.generation,
             neighbors,
         );
     }
+}
+
+fn mark_stitch_neighborhood(
+    key: CellKey,
+    active_chunks: &ActiveChunks,
+    dirty: &mut HashSet<CellKey>,
+) {
+    dirty.insert(key);
+    if key.lod < u8::MAX {
+        dirty.extend(children_of(key));
+    }
+    for side in NEIGHBOR_SIDES {
+        let neighbor = cell_neighbor(key, side);
+        dirty.insert(neighbor);
+        if let Some(parent) = parent_of(neighbor) {
+            dirty.insert(parent);
+        }
+        if neighbor.lod < u8::MAX {
+            dirty.extend(children_of(neighbor));
+        }
+    }
+
+    // Siblings can change their stitch relationship when one side of a
+    // retained handoff completes at a different time.
+    if let Some(parent) = parent_of(key) {
+        dirty.extend(children_of(parent));
+    }
+    dirty.retain(|candidate| active_chunks.contains(candidate));
 }
 
 fn despawn_chunk(commands: &mut Commands, entity: Entity) {
@@ -1353,7 +1429,7 @@ fn pending_mesh_matches_chunk(entity_key: CellKey, payload_key: CellKey) -> bool
     entity_key == payload_key
 }
 
-fn anchor_render_translation(source_anchor: DVec3, render_origin: DVec3) -> Vec3 {
+pub fn anchor_render_translation(source_anchor: DVec3, render_origin: DVec3) -> Vec3 {
     (source_anchor - render_origin).as_vec3()
 }
 
@@ -1420,6 +1496,7 @@ fn finalize_retained_merges(
     mesh_query: Query<(), With<Mesh3d>>,
     chunk_query: Query<&ChunkComponent>,
     mut active_chunks: ResMut<ActiveChunks>,
+    mut dirty_stitches: ResMut<DirtyStitchChunks>,
     mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
     let t0 = Instant::now();
@@ -1450,6 +1527,7 @@ fn finalize_retained_merges(
             }
             if !active_chunks.contains(&key) {
                 active_chunks.insert(key, entry.parent_entity);
+                mark_stitch_neighborhood(key, &active_chunks, &mut dirty_stitches.0);
             }
         }
         // Despawn the fallback children.
@@ -1500,23 +1578,22 @@ fn has_conflicting_merge(key: CellKey, merged_keys: &HashSet<CellKey>) -> bool {
 /// `(face, lod, i, j)` tie-breaks so the highest-visual-benefit splits are
 /// processed first within each frame's budget, independent of hash-map order.
 fn sort_pending_splits_by_screen_error(
-    pending: &mut Vec<CellKey>,
+    pending: &mut [CellKey],
     camera_pos: DVec3,
     planet_radius: f64,
 ) {
     let camera_dir = camera_pos.normalize_or(DVec3::Y);
-    pending.sort_by(|a, b| {
-        let focus_a = cell_contains_direction(*a, camera_dir);
-        let focus_b = cell_contains_direction(*b, camera_dir);
-        let err_a = screen_error(*a, camera_pos, planet_radius);
-        let err_b = screen_error(*b, camera_pos, planet_radius);
-        focus_b
-            .cmp(&focus_a)
-            .then_with(|| err_b.total_cmp(&err_a))
-            .then_with(|| a.face.cmp(&b.face))
-            .then_with(|| a.lod.cmp(&b.lod))
-            .then_with(|| a.i.cmp(&b.i))
-            .then_with(|| a.j.cmp(&b.j))
+    pending.sort_by_cached_key(|key| {
+        let focus = cell_contains_direction(*key, camera_dir);
+        let error = screen_error(*key, camera_pos, planet_radius);
+        (
+            !focus,
+            Reverse(error.to_bits()),
+            key.face,
+            key.lod,
+            key.i,
+            key.j,
+        )
     });
 }
 
@@ -1552,13 +1629,12 @@ fn containing_ancestor_key(
 #[cfg(test)]
 mod tests {
     use super::{
-        anchor_render_translation, balancing_split_for, breadth_chunk_cap, camera_clip_planes,
-        can_admit_split_meshes, chunk_render_translation, containing_ancestor_key,
-        has_conflicting_merge, has_merged_ancestor, hide_far_coverage_root,
-        is_child_of_retained_split, mesh_dispatch_slots, pending_mesh_matches_chunk,
-        queue_chunk_mesh, sort_chunk_mesh_requests, sort_pending_splits_by_screen_error,
-        stitch_neighbors, ChunkMeshRequest, QueuedChunkMeshes, RenderOrigin, TerrainPlugin,
-        TerrainState,
+        anchor_render_translation, balancing_split_for, camera_clip_planes, can_admit_split_meshes,
+        chunk_render_translation, containing_ancestor_key, has_conflicting_merge,
+        has_merged_ancestor, hide_far_coverage_root, is_child_of_retained_split,
+        mesh_dispatch_slots, pending_mesh_matches_chunk, queue_chunk_mesh,
+        sort_chunk_mesh_requests, sort_pending_splits_by_screen_error, stitch_neighbors,
+        ChunkMeshRequest, QueuedChunkMeshes, RenderOrigin, TerrainPlugin, TerrainState,
     };
     use crate::culling::frustum_cull_sphere;
     use crate::lod::screen_error;
@@ -1579,6 +1655,7 @@ mod tests {
             key,
             radius: state.planet_radius,
             elevation_scale: state.elevation_scale,
+            sea_level: state.planet_params.sea_level,
             field: state.field.clone(),
             origin_generation: 0,
             source_anchor: cell_to_dir(key) * state.planet_radius,
@@ -1588,17 +1665,17 @@ mod tests {
 
     #[test]
     fn mesh_dispatch_slots_enforce_the_inflight_cap() {
-        assert_eq!(mesh_dispatch_slots(MAX_INFLIGHT_TERRAIN_MESHES, 0), 64);
-        assert_eq!(mesh_dispatch_slots(MAX_INFLIGHT_TERRAIN_MESHES, 63), 1);
-        assert_eq!(mesh_dispatch_slots(MAX_INFLIGHT_TERRAIN_MESHES, 64), 0);
-        assert_eq!(mesh_dispatch_slots(MAX_INFLIGHT_TERRAIN_MESHES, 80), 0);
+        assert_eq!(mesh_dispatch_slots(MAX_INFLIGHT_TERRAIN_MESHES, 0), 128);
+        assert_eq!(mesh_dispatch_slots(MAX_INFLIGHT_TERRAIN_MESHES, 127), 1);
+        assert_eq!(mesh_dispatch_slots(MAX_INFLIGHT_TERRAIN_MESHES, 128), 0);
+        assert_eq!(mesh_dispatch_slots(MAX_INFLIGHT_TERRAIN_MESHES, 160), 0);
     }
 
     #[test]
     fn breadth_mesh_admission_applies_backpressure_but_never_blocks_focus() {
-        assert!(can_admit_split_meshes(false, 124, 64));
-        assert!(!can_admit_split_meshes(false, 125, 64));
-        assert!(can_admit_split_meshes(true, usize::MAX, 64));
+        assert!(can_admit_split_meshes(false, 252, 128));
+        assert!(!can_admit_split_meshes(false, 253, 128));
+        assert!(can_admit_split_meshes(true, usize::MAX, 128));
     }
 
     #[test]
@@ -1625,6 +1702,7 @@ mod tests {
             first,
             state.planet_radius,
             state.elevation_scale,
+            state.planet_params.sea_level,
             state.field.clone(),
             1,
             [None; 4],
@@ -1635,6 +1713,7 @@ mod tests {
             second,
             state.planet_radius,
             state.elevation_scale,
+            state.planet_params.sea_level,
             state.field.clone(),
             2,
             [None; 4],
@@ -1969,21 +2048,6 @@ mod tests {
         let mut pending = vec![breadth, focused];
         sort_pending_splits_by_screen_error(&mut pending, camera_pos, EARTH_RADIUS_M);
         assert_eq!(pending[0], focused);
-    }
-
-    #[test]
-    fn breadth_admission_reserves_a_complete_camera_refinement_path() {
-        let hard_cap = 5000;
-        let max_depth = 17;
-        let breadth_cap = breadth_chunk_cap(hard_cap, max_depth);
-
-        assert_eq!(breadth_cap, 4949);
-        assert_eq!(breadth_cap + usize::from(max_depth) * 3, hard_cap);
-    }
-
-    #[test]
-    fn breadth_admission_saturates_for_tiny_caps() {
-        assert_eq!(breadth_chunk_cap(32, 17), 0);
     }
 
     #[test]

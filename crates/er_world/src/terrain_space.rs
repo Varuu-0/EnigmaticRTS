@@ -118,18 +118,20 @@ mod tests {
 
     #[test]
     fn named_wavelengths_are_ordered_and_positive() {
-        assert!(TECTONIC_BELT_WAVELENGTH_M > CONTINENTAL_WAVELENGTH_M);
-        assert!(CONTINENTAL_WAVELENGTH_M > WARP_WAVELENGTH_M);
-        assert!(WARP_WAVELENGTH_M > MOUNTAIN_WAVELENGTH_M);
-        assert!(MOUNTAIN_WAVELENGTH_M > DRAINAGE_WAVELENGTH_M);
-        assert!(DRAINAGE_WAVELENGTH_M > EROSION_WAVELENGTH_M);
-        assert!(EROSION_WAVELENGTH_M > FOOTHILL_WAVELENGTH_M);
-        assert!(FOOTHILL_WAVELENGTH_M > VALLEY_WAVELENGTH_M);
-        assert!(VALLEY_WAVELENGTH_M > RIDGE_DETAIL_WAVELENGTH_M);
-        assert!(RIDGE_DETAIL_WAVELENGTH_M > TALUS_WAVELENGTH_M);
-        assert!(TALUS_WAVELENGTH_M > RIDGE_WAVELENGTH_M);
-        assert!(RIDGE_WAVELENGTH_M > MICRO_DETAIL_WAVELENGTH_M);
-        assert!(MICRO_DETAIL_WAVELENGTH_M > 0.0);
+        const _: () = {
+            assert!(TECTONIC_BELT_WAVELENGTH_M > CONTINENTAL_WAVELENGTH_M);
+            assert!(CONTINENTAL_WAVELENGTH_M > WARP_WAVELENGTH_M);
+            assert!(WARP_WAVELENGTH_M > MOUNTAIN_WAVELENGTH_M);
+            assert!(MOUNTAIN_WAVELENGTH_M > DRAINAGE_WAVELENGTH_M);
+            assert!(DRAINAGE_WAVELENGTH_M > EROSION_WAVELENGTH_M);
+            assert!(EROSION_WAVELENGTH_M > FOOTHILL_WAVELENGTH_M);
+            assert!(FOOTHILL_WAVELENGTH_M > VALLEY_WAVELENGTH_M);
+            assert!(VALLEY_WAVELENGTH_M > RIDGE_DETAIL_WAVELENGTH_M);
+            assert!(RIDGE_DETAIL_WAVELENGTH_M > TALUS_WAVELENGTH_M);
+            assert!(TALUS_WAVELENGTH_M > RIDGE_WAVELENGTH_M);
+            assert!(RIDGE_WAVELENGTH_M > MICRO_DETAIL_WAVELENGTH_M);
+            assert!(MICRO_DETAIL_WAVELENGTH_M > 0.0);
+        };
     }
 
     #[test]
@@ -166,7 +168,9 @@ mod tests {
 
     #[test]
     fn micro_detail_is_smaller_than_ridge() {
-        assert!(MICRO_DETAIL_WAVELENGTH_M < RIDGE_WAVELENGTH_M);
-        assert!(MICRO_DETAIL_WAVELENGTH_M > 0.0);
+        const _: () = {
+            assert!(MICRO_DETAIL_WAVELENGTH_M < RIDGE_WAVELENGTH_M);
+            assert!(MICRO_DETAIL_WAVELENGTH_M > 0.0);
+        };
     }
 }

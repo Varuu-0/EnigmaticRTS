@@ -394,11 +394,11 @@ pub fn metric_landform_sample(pos: DVec3, noise: &ElevationNoise) -> MetricLandf
     let tectonic_raw = noise.tectonic_belt.get_noise_3d(wx, wy, wz);
     let belt_sharpness = 2.0_f64;
     let tectonic_belt =
-        ((1.0 - (tectonic_raw as f64).abs() * belt_sharpness).max(0.0)).min(1.0) as f32;
+        ((1.0 - (tectonic_raw as f64).abs() * belt_sharpness).clamp(0.0, 1.0)) as f32;
 
     // Mountain uplift is gated by the tectonic belt corridor (in addition
     // to the continental land mask).  Mountains concentrate in belt zones.
-    let mountain_mask = (continental.max(0.0) * tectonic_belt).min(1.0) as f32;
+    let mountain_mask = (continental.max(0.0) * tectonic_belt).min(1.0);
     let mountains = mountain_raw * mountain_mask;
 
     // ---- Brush landform displacement (Milestone 2.2) ----
@@ -568,7 +568,7 @@ mod tests {
         for d in &dirs {
             let e = elevation(*d, &noise, &params);
             assert!(
-                e >= -3.5 && e <= 3.5,
+                (-3.5..=3.5).contains(&e),
                 "elevation {e} out of [-3.5, 3.5] (amp_sum={amp_sum})"
             );
         }

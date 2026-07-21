@@ -23,3 +23,7 @@ criterion = "0.5"
 [[bench]]
 name = "chunk_gen_bench"
 harness = false
+
+[[bench]]
+name = "mesh_pipeline_bench"
+harness = false

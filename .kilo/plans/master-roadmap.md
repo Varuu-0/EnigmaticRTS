@@ -36,7 +36,7 @@ Not complete:
 3. Terrain mesh workers may read immutable snapshots only. They never execute HTTP, Python, disk I/O, blocking locks, or model inference.
 4. Terrain Diffusion `scale=1` is native 30 m. Any API upsampling is diagnostic only and must remain labeled non-native.
 5. Sea datum, water visibility, normals, material masks, and collision must derive from a single composed field revision. Do not reintroduce separate ocean classification.
-6. Do not raise chunk caps to conceal LOD/coverage faults. Keep dynamic admission disabled under VSync, benchmark, and screenshot-test modes.
+6. Terrain refinement has no active-chunk ceiling. Pace work with per-frame split budgets and bounded mesh-job backpressure without evicting coverage.
 7. Do not use Vulkan `Immediate` present mode on this Optimus system. Keep `AutoNoVsync`/Mailbox and startup-only window-mode changes.
 8. Do not make learned runtime output gameplay-authoritative until it has a persisted canonical cache/bake policy.
 9. Do not begin T5+ space/4X content until the T1-T4 launch MVP is accepted.
@@ -47,7 +47,7 @@ Not complete:
 
 1. Add a machine-readable baseline manifest: Rust version, Bevy version, GPU adapter, present mode, terrain preset, LOD config, and Terrain Diffusion model/runtime metadata.
 2. Add fixed-seed screenshot scenarios for globe, orbit, surface, coastline, mountain, cube edge, and cube corner.
-3. Record CPU frame P50/P95/P99, GPU frame time, active/visible/pending chunks, split-cap pressure, memory, and tile telemetry for each scenario.
+3. Record CPU frame P50/P95/P99, GPU frame time, active/visible/pending chunks, mesh backlog, memory, and tile telemetry for each scenario.
 4. Store only selected golden screenshots; keep ad-hoc `screenshots/` ignored.
 5. Define explicit target hardware profiles: this RTX 3060 Optimus laptop first, then a desktop reference profile later.
 
@@ -56,13 +56,15 @@ Not complete:
 1. Make screenshot mode report whether a capture settled or timed out; a timeout must fail an acceptance screenshot job unless explicitly marked exploratory.
 2. Add structural tests for projection near/far calculation at miniature, Earth orbit, and Earth close altitude.
 3. Add tests for hybrid shoreline classification: learned local relief must not change the procedural global land/ocean mask.
-4. Add stress tests for LOD split/merge, root coverage, fast pan, teleport, VSync mode, and cap-controller disablement.
+4. Add stress tests for LOD split/merge, root coverage, fast pan, teleport, VSync mode, and bounded mesh backpressure.
 
 ### Exit Gate
 
 - `cargo test --workspace` passes.
 - Fixed-seed screenshots are reproducible enough for review.
 - No terrain hole, shader error, or projection clipping in globe/orbit/surface scenarios.
+
+**Status: Complete (2026-07-20).** `screenshots/milestone0-1-final/` contains the 14-view Earth-scale acceptance matrix, per-scenario telemetry, and baseline manifest for the RTX 3060 Optimus profile. Every scenario settled without timeout or pending mesh work. Telemetry records CPU P50/P95/P99, GPU timing, chunk/mesh state, memory, origin, and source coverage. Projection, shoreline, LOD, root-coverage, screenshot failure, and manifest tests pass in the 261-test workspace suite.
 
 ## Milestone 1: Earth-Scale Precision And Surface Camera
 
@@ -94,6 +96,8 @@ Not complete:
 - No camera penetration, jitter, terrain disappearance, or origin-shift pop.
 - Far roots continuously cover the globe.
 
+**Status: Complete (2026-07-20).** The floating origin uses f64 absolute coordinates, generation-tagged async mesh anchors, and chunk-local f32 render transforms. Surface panning, slope-safe clearance, origin/cube-edge traversal, transition continuity, and stale-mesh rebasing have focused regressions. In `screenshots/milestone0-1-final/`, the 10 m scenario settled at LOD 17 with `4.77197 m` vertex spacing and no camera penetration; the origin-boundary pair advanced generation 14 to 15 with zero pending or cross-generation mesh attachments.
+
 ## Milestone 2: Natural Procedural Fallback
 
 ### 2.1 Formalize meter-space field layers
@@ -124,7 +128,7 @@ Not complete:
 - Fixed-seed height profiles and slope histograms stay within approved bounds.
 - CPU/WGSL parity and LOD seam tests remain green.
 
-**Status: Complete (2026-07-16).** `screenshots/milestone2-final-v16/` contains the reviewed 14-view fixed-seed acceptance matrix. All scenarios settled with zero pending terrain work, zero cross-generation mesh attachments, and 100% procedural source coverage. `cargo test --workspace` passes all 227 tests, including fixed-seed profiles, CPU/WGSL parity, and LOD seam coverage. Close-view debug performance at 10 m remains a later optimization target (`57 ms` p95) rather than a Milestone 2 gate blocker.
+**Status: Complete (2026-07-16; revalidated 2026-07-20).** `screenshots/milestone2-final-v16/` contains the reviewed 14-view fixed-seed acceptance matrix. All scenarios settled with zero pending terrain work, zero cross-generation mesh attachments, and 100% procedural source coverage. `cargo test --workspace` passes all 261 tests, including fixed-seed profiles, CPU/WGSL brush parity, and LOD/water seam coverage. Close-view debug performance remains a later optimization target rather than a Milestone 2 gate blocker.
 
 ## Milestone 3: Terrain Diffusion Reproducibility And Performance Gate
 
@@ -147,6 +151,8 @@ Not complete:
 - Repeated locked requests produce matching checksums.
 - At least 1 GiB Vulkan VRAM headroom remains.
 - No DeviceLost and no provider-attributable main-thread hitch above 1 ms P95.
+
+**Status: Complete (2026-07-20).** Project-owned tooling under `tools/terrain_diffusion/` locks and validates upstream commit `82a0431281f21a6ec3d691a12ee61525de5b0790`, model revision `9ef8030cb805b433b98ec25c5dddefbac07a9e26`, Python/PyTorch/CUDA/runtime settings, protocol fixtures, native 128/256/512 benchmarks, dtype comparison, and fail-closed coexistence gates. The final 30-minute RTX 3060 run completed 1,512/1,512 native-scale requests with one stable checksum, `2.33 GiB` minimum VRAM headroom, clean game exit, no `DeviceLost`, and game-measured provider main-thread P95 of `0.013 ms` (`60,000` retained frame samples). Generated reports remain ignored; reproduction commands and measured summaries are in `tools/terrain_diffusion/README_MILESTONE3.md`.
 
 ## Milestone 4: Sphere-Native Learned Charts And Cache Format
 

@@ -99,19 +99,19 @@ fn elevation_profile_within_approved_bounds() {
     assert!(min >= -12_000.0, "min {min:.0}m below -12000m");
     assert!(max <= 12_000.0, "max {max:.0}m above 12000m");
     assert!(
-        p1 >= -10_000.0 && p1 <= -1_000.0,
+        (-10_000.0..=-1_000.0).contains(&p1),
         "p1 {p1:.0}m outside [-10000, -1000]"
     );
     assert!(
-        p50 >= -1_500.0 && p50 <= 1_500.0,
+        (-1_500.0..=1_500.0).contains(&p50),
         "p50 {p50:.0}m outside [-1500, 1500]"
     );
     assert!(
-        p99 >= 3_000.0 && p99 <= 10_000.0,
+        (3_000.0..=10_000.0).contains(&p99),
         "p99 {p99:.0}m outside [3000, 10000]"
     );
     assert!(
-        ocean_fraction >= 0.30 && ocean_fraction <= 0.70,
+        (0.30..=0.70).contains(&ocean_fraction),
         "ocean_fraction {ocean_fraction:.3} outside [0.30, 0.70]"
     );
     assert!(max > p99, "max must exceed p99");
@@ -243,9 +243,9 @@ fn masks_finite_bounded_nonconstant_deterministic() {
             // but it's stored as the raw noise value in [-1,1] — check that
             // separately).
             if name == "talus_raw" {
-                assert!(v >= -1.0 && v <= 1.0, "{name}: {v} outside [-1,1]");
+                assert!((-1.0..=1.0).contains(&v), "{name}: {v} outside [-1,1]");
             } else {
-                assert!(v >= 0.0 && v <= 1.0, "{name}: {v} outside [0,1]");
+                assert!((0.0..=1.0).contains(&v), "{name}: {v} outside [0,1]");
             }
 
             assert_eq!(
@@ -592,7 +592,7 @@ fn brush_displacement_bounded() {
         let disp = set.displacement_indexed(dir_to_f32(*d));
         assert!(disp.is_finite());
         assert!(
-            disp >= -BRUSH_TOTAL_CAP && disp <= BRUSH_TOTAL_CAP,
+            (-BRUSH_TOTAL_CAP..=BRUSH_TOTAL_CAP).contains(&disp),
             "displacement {disp} outside bounds"
         );
     }

@@ -92,21 +92,6 @@ pub fn load_settings() -> GraphicsSettings {
     s
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn invalid_msaa_uses_safe_default() {
-        let settings = GraphicsSettings {
-            msaa: 0,
-            ..default()
-        };
-
-        assert_eq!(settings.msaa(), Msaa::Off);
-    }
-}
-
 pub fn save_settings(s: &GraphicsSettings) {
     let text = format!(
         "vsync={}\nmsaa={}\nfullscreen={}\n",
@@ -130,5 +115,20 @@ pub fn apply_graphics_settings(
             info!("Applying MSAA: {:?}", want_msaa);
             *cam_msaa = want_msaa;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_msaa_uses_safe_default() {
+        let settings = GraphicsSettings {
+            msaa: 0,
+            ..default()
+        };
+
+        assert_eq!(settings.msaa(), Msaa::Off);
     }
 }

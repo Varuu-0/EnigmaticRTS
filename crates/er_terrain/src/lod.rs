@@ -5,8 +5,8 @@ use glam::DVec3;
 /// Approximate screen-space error in **pixels** for a chunk at `key`, given the
 /// camera position. Computed as `(chunk_size / distance) * pixel_scale` where
 /// `pixel_scale = viewport_height / (2 * tan(fov/2))` (see `LOD_PIXEL_SCALE`).
-/// A threshold of ~20px means "split when a chunk's geometric error exceeds 20
-/// pixels on screen."
+/// The chunk width remains the LOD geometric-error proxy: per-vertex spacing
+/// under-refines the full visible terrain surface at normal viewing altitudes.
 pub fn screen_error(key: CellKey, camera_pos: DVec3, planet_radius: f64) -> f32 {
     let chunk_center = cell_to_dir(key) * planet_radius;
     let distance = (chunk_center - camera_pos).length().max(1.0);
@@ -67,7 +67,7 @@ mod tests {
         let camera = DVec3::new(radius * 4.0, 0.0, 0.0);
         let error = screen_error(key(2), camera, radius);
         assert!(!should_split(key(2), camera, radius, 2, 0.0));
-        assert_eq!(should_split(key(2), camera, radius, 10, error), false);
+        assert!(!should_split(key(2), camera, radius, 10, error));
         assert!(!should_merge_parent(key(2), camera, radius, error, 0.6));
     }
 }
@@ -131,5 +131,18 @@ mod deterministic_tests {
         assert!(distance.is_finite() && distance > 0.0);
         let expected = (er_core::math::cell_size(1, RADIUS) / distance) as f32 * LOD_PIXEL_SCALE;
         assert_eq!(screen_error(key(1), camera, RADIUS), expected);
+    }
+
+    #[test]
+    fn close_earth_error_uses_chunk_width_geometric_proxy() {
+        let radius = 6_371_000.0;
+        let camera = DVec3::X * (radius + 200.0);
+        let lod16 = er_core::math::dir_to_cell(DVec3::X, 16);
+        let distance = chunk_camera_distance(lod16, camera, radius);
+        let whole_chunk = cell_size(lod16.lod, radius);
+        assert_eq!(
+            screen_error(lod16, camera, radius),
+            (whole_chunk / distance) as f32 * LOD_PIXEL_SCALE
+        );
     }
 }

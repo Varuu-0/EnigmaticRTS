@@ -190,6 +190,10 @@ impl LearnedTileCache {
         self.tiles.read().map(|tiles| tiles.len()).unwrap_or(0)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn tile_key_for_direction(&self, dir: DVec3) -> LearnedTileKey {
         let (face, u, v) = dir_to_uv(dir);
         LearnedTileKey {

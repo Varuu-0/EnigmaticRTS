@@ -281,6 +281,7 @@ fn update_fullscreen_label(
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn update_button_colors(
     open: Res<MenuOpen>,
     settings: Res<GraphicsSettings>,

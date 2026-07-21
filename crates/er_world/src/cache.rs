@@ -4,6 +4,8 @@ use glam::DVec3;
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+const CACHE_SHARDS: usize = 32;
+
 /// Default cache LOD — ~0.86 m cells on the 36 km miniature planet. Used when
 /// no preset supplies an explicit LOD.
 pub const DEFAULT_CACHE_LOD: u8 = 16;
@@ -21,24 +23,33 @@ pub struct CachedWorldData {
 }
 
 pub struct WorldCache {
-    entries: RwLock<HashMap<CellKey, CachedWorldData>>,
-    capacity: usize,
+    shards: [CacheShard; CACHE_SHARDS],
+    shard_count: usize,
+    capacity_per_shard: usize,
     cache_lod: u8,
+}
+
+#[derive(Default)]
+struct CacheShard {
+    entries: RwLock<HashMap<CellKey, CachedWorldData>>,
+    elevations: RwLock<HashMap<[u64; 3], f64>>,
 }
 
 impl WorldCache {
     pub fn new(capacity: usize) -> Self {
-        Self {
-            entries: RwLock::new(HashMap::with_capacity(capacity)),
-            capacity,
-            cache_lod: DEFAULT_CACHE_LOD,
-        }
+        Self::with_lod(capacity, DEFAULT_CACHE_LOD)
     }
 
     pub fn with_lod(capacity: usize, cache_lod: u8) -> Self {
+        let shard_count = capacity.clamp(1, CACHE_SHARDS);
+        let capacity_per_shard = capacity.div_ceil(shard_count).max(1);
         Self {
-            entries: RwLock::new(HashMap::with_capacity(capacity)),
-            capacity,
+            shards: std::array::from_fn(|_| CacheShard {
+                entries: RwLock::new(HashMap::with_capacity(capacity_per_shard)),
+                elevations: RwLock::new(HashMap::with_capacity(capacity_per_shard)),
+            }),
+            shard_count,
+            capacity_per_shard,
             cache_lod,
         }
     }
@@ -49,24 +60,23 @@ impl WorldCache {
         compute: impl FnOnce() -> CachedWorldData,
     ) -> CachedWorldData {
         let key = dir_to_cell(dir, self.cache_lod);
+        let shard = &self.shards[cell_shard(key, self.shard_count)];
 
-        if let Ok(entries) = self.entries.read() {
+        if let Ok(entries) = shard.entries.read() {
             if let Some(data) = entries.get(&key) {
                 return *data;
             }
         }
 
         let data = compute();
-        if let Ok(mut entries) = self.entries.write() {
+        if let Ok(mut entries) = shard.entries.write() {
             if let Some(existing) = entries.get(&key) {
                 return *existing;
             }
 
-            if entries.len() >= self.capacity {
-                let to_remove = entries.len() - self.capacity + self.capacity / 10;
-                let keys: Vec<CellKey> = entries.keys().take(to_remove).copied().collect();
-                for k in keys {
-                    entries.remove(&k);
+            if entries.len() >= self.capacity_per_shard {
+                if let Some(key) = entries.keys().next().copied() {
+                    entries.remove(&key);
                 }
             }
 
@@ -75,16 +85,45 @@ impl WorldCache {
         data
     }
 
+    pub fn get_or_insert_elevation(&self, dir: DVec3, compute: impl FnOnce() -> f64) -> f64 {
+        let key = [dir.x.to_bits(), dir.y.to_bits(), dir.z.to_bits()];
+        let shard = &self.shards[elevation_shard(key, self.shard_count)];
+
+        if let Ok(elevations) = shard.elevations.read() {
+            if let Some(elevation) = elevations.get(&key) {
+                return *elevation;
+            }
+        }
+
+        let elevation = compute();
+        if let Ok(mut elevations) = shard.elevations.write() {
+            if let Some(existing) = elevations.get(&key) {
+                return *existing;
+            }
+            if elevations.len() >= self.capacity_per_shard {
+                if let Some(key) = elevations.keys().next().copied() {
+                    elevations.remove(&key);
+                }
+            }
+            elevations.insert(key, elevation);
+        }
+        elevation
+    }
+
     pub fn contains(&self, dir: DVec3) -> bool {
         let key = dir_to_cell(dir, self.cache_lod);
-        self.entries
+        self.shards[cell_shard(key, self.shard_count)]
+            .entries
             .read()
             .map(|e| e.contains_key(&key))
             .unwrap_or(false)
     }
 
     pub fn len(&self) -> usize {
-        self.entries.read().map(|e| e.len()).unwrap_or(0)
+        self.shards
+            .iter()
+            .map(|shard| shard.entries.read().map(|e| e.len()).unwrap_or(0))
+            .sum()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -92,10 +131,30 @@ impl WorldCache {
     }
 
     pub fn clear(&self) {
-        if let Ok(mut entries) = self.entries.write() {
-            entries.clear();
+        for shard in &self.shards {
+            if let Ok(mut entries) = shard.entries.write() {
+                entries.clear();
+            }
+            if let Ok(mut elevations) = shard.elevations.write() {
+                elevations.clear();
+            }
         }
     }
+}
+
+fn cell_shard(key: CellKey, shard_count: usize) -> usize {
+    let mixed = u64::from(key.i).wrapping_mul(0x9E37_79B1)
+        ^ u64::from(key.j).wrapping_mul(0x85EB_CA77)
+        ^ (u64::from(key.face) << 8)
+        ^ u64::from(key.lod);
+    mixed as usize % shard_count
+}
+
+fn elevation_shard(key: [u64; 3], shard_count: usize) -> usize {
+    let mixed = key[0].wrapping_mul(0x9E37_79B1_85EB_CA87)
+        ^ key[1].rotate_left(21)
+        ^ key[2].rotate_left(42);
+    mixed as usize % shard_count
 }
 
 #[cfg(test)]
@@ -145,5 +204,15 @@ mod tests {
             });
         }
         assert!(cache.len() <= 12);
+    }
+
+    #[test]
+    fn exact_elevation_cache_distinguishes_nearby_directions() {
+        let cache = WorldCache::new(100);
+        let a = DVec3::new(1.0, 0.0, 0.0);
+        let b = DVec3::new(1.0, f64::EPSILON, 0.0).normalize();
+        assert_eq!(cache.get_or_insert_elevation(a, || 1.0), 1.0);
+        assert_eq!(cache.get_or_insert_elevation(b, || 2.0), 2.0);
+        assert_eq!(cache.get_or_insert_elevation(a, || panic!("cached")), 1.0);
     }
 }

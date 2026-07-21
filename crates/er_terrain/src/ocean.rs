@@ -6,13 +6,12 @@ use bevy::prelude::*;
 use bevy::reflect::TypePath;
 use bevy::render::mesh::{Indices, Mesh, MeshVertexBufferLayoutRef};
 use bevy::render::render_resource::{
-    AsBindGroup, BlendState, ColorWrites, Face, PrimitiveTopology, RenderPipelineDescriptor,
+    AsBindGroup, ColorWrites, Face, PrimitiveTopology, RenderPipelineDescriptor,
     SpecializedMeshPipelineError,
 };
 use bevy::shader::{Shader, ShaderRef};
 use er_world::elevation::ElevationParams;
 use er_world::params::PlanetParams;
-use er_world::terrain_field::TerrainSourceMode;
 use std::sync::OnceLock;
 
 pub static OCEAN_VERTEX_SHADER: OnceLock<Handle<Shader>> = OnceLock::new();
@@ -45,10 +44,8 @@ impl Material for OcclusionMaterial {
         descriptor.primitive.cull_mode = None;
         // Don't write color, only depth
         if let Some(fragment) = &mut descriptor.fragment {
-            for target in &mut fragment.targets {
-                if let Some(color_target) = target {
-                    color_target.write_mask = ColorWrites::empty();
-                }
+            for color_target in fragment.targets.iter_mut().flatten() {
+                color_target.write_mask = ColorWrites::empty();
             }
         }
         Ok(())
@@ -171,12 +168,13 @@ impl Material for OceanMaterial {
             .get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         descriptor.primitive.cull_mode = Some(Face::Back);
-        // Enable alpha blending so transparent pixels (over land) don't write color
-        // but still write depth to occlude far-side terrain
+        // The sphere is opaque at the global sea level. Depth testing lets land
+        // above that level remain visible and hides terrain below it, including
+        // hybrid learned relief that the ocean shader cannot evaluate.
         descriptor.fragment.as_mut().unwrap().targets[0]
             .as_mut()
             .unwrap()
-            .blend = Some(BlendState::ALPHA_BLENDING);
+            .blend = None;
         Ok(())
     }
 }
@@ -196,8 +194,9 @@ fn ocean_surface_radius(planet_radius: f32, elevation_scale: f32, sea_level: f64
 }
 
 pub fn generate_ocean_sphere(radius: f32, segments: usize, rings: usize) -> Mesh {
+    assert!((rings + 1) * (segments + 1) <= usize::from(u16::MAX));
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity((rings + 1) * (segments + 1));
-    let mut indices: Vec<u32> = Vec::with_capacity(rings * segments * 6);
+    let mut indices: Vec<u16> = Vec::with_capacity(rings * segments * 6);
 
     for i in 0..=rings {
         let theta = (i as f32 / rings as f32) * std::f32::consts::PI;
@@ -214,19 +213,21 @@ pub fn generate_ocean_sphere(radius: f32, segments: usize, rings: usize) -> Mesh
 
     for i in 0..rings {
         for j in 0..segments {
-            let a = (i * (segments + 1) + j) as u32;
-            let b = a + (segments + 1) as u32;
-            indices.extend_from_slice(&[a, b, a + 1]);
-            indices.extend_from_slice(&[a + 1, b, b + 1]);
+            let a = (i * (segments + 1) + j) as u16;
+            let b = a + (segments + 1) as u16;
+            // Rings advance toward the south pole, so this order keeps front
+            // faces outward for the external planet camera.
+            indices.extend_from_slice(&[a, a + 1, b]);
+            indices.extend_from_slice(&[a + 1, b + 1, b]);
         }
     }
 
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
+        RenderAssetUsages::RENDER_WORLD,
     );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_indices(Indices::U32(indices));
+    mesh.insert_indices(Indices::U16(indices));
     mesh
 }
 
@@ -238,16 +239,6 @@ pub fn setup_ocean(
     terrain_state: Res<crate::systems::TerrainState>,
     render_origin: Res<crate::RenderOrigin>,
 ) {
-    // Learned macro elevations are resident only on the CPU terrain field. The
-    // ocean shader can evaluate procedural elevations, but cannot classify the
-    // hybrid surface without disagreeing with the mesh and painting water over
-    // learned land. The terrain material already colors its baked hybrid water
-    // samples, so omit this procedural-only water surface in hybrid mode.
-    if terrain_state.source_mode != TerrainSourceMode::Procedural {
-        info!("Hybrid terrain active; terrain mesh owns water classification");
-        return;
-    }
-
     let vertex_source = format!(
         "{}\n{}",
         include_str!("../assets/shaders/ocean_uniform.wgsl"),
@@ -257,17 +248,16 @@ pub fn setup_ocean(
     let _ = OCEAN_VERTEX_SHADER.set(vertex_handle);
 
     let fragment_source = format!(
-        "{}\n{}\n{}",
-        include_str!("../../er_world/assets/shaders/elevation.wgsl"),
+        "{}\n{}",
         include_str!("../assets/shaders/ocean_uniform.wgsl"),
         include_str!("../assets/shaders/ocean_fragment.wgsl"),
     );
     let fragment_handle = shaders.add(Shader::from_wgsl(fragment_source, "ocean_fragment"));
     let _ = OCEAN_FRAGMENT_SHADER.set(fragment_handle);
 
-    // The ocean writes depth even where its fragment shader is transparent over
-    // land. It must therefore sit at the procedural sea level, not above the
-    // highest terrain point, or it occludes the entire planet at long range.
+    // A single sea-level sphere works for both procedural and learned terrain:
+    // high terrain is closer to the camera and wins depth testing, while terrain
+    // below sea level is hidden behind this flat water surface.
     let ocean_radius = ocean_surface_radius(
         terrain_state.planet_radius as f32,
         terrain_state.elevation_scale,
@@ -311,11 +301,35 @@ pub fn update_ocean_time(
 
 #[cfg(test)]
 mod tests {
-    use super::ocean_surface_radius;
+    use super::{generate_ocean_sphere, ocean_surface_radius};
+    use bevy::render::mesh::{Indices, Mesh, VertexAttributeValues};
+    use glam::Vec3;
 
     #[test]
     fn ocean_sits_at_sea_level_not_above_all_terrain() {
         assert_eq!(ocean_surface_radius(36_000.0, 1_000.0, -0.1), 35_901.0);
         assert_eq!(ocean_surface_radius(36_000.0, 1_000.0, 0.1), 36_101.0);
+    }
+
+    #[test]
+    fn ocean_sphere_triangles_face_outward() {
+        let mesh = generate_ocean_sphere(1.0, 4, 4);
+        let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+            Some(VertexAttributeValues::Float32x3(positions)) => positions,
+            _ => panic!("ocean mesh must contain Float32x3 positions"),
+        };
+        let indices = match mesh.indices() {
+            Some(Indices::U16(indices)) => indices,
+            _ => panic!("ocean mesh must contain U16 indices"),
+        };
+
+        // Skip the degenerate north-pole fan and inspect the next ring.
+        let first_non_pole_triangle = 4 * 6;
+        let a = Vec3::from_array(positions[indices[first_non_pole_triangle] as usize]);
+        let b = Vec3::from_array(positions[indices[first_non_pole_triangle + 1] as usize]);
+        let c = Vec3::from_array(positions[indices[first_non_pole_triangle + 2] as usize]);
+        let face_normal = (b - a).cross(c - a);
+        let centroid = (a + b + c) / 3.0;
+        assert!(face_normal.dot(centroid) > 0.0);
     }
 }

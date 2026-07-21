@@ -12,9 +12,6 @@ use glam::DVec3;
 pub const ATTRIBUTE_MORPH: MeshVertexAttribute =
     MeshVertexAttribute::new("Morph", 988540918, VertexFormat::Float32);
 
-pub const ATTRIBUTE_GRID: MeshVertexAttribute =
-    MeshVertexAttribute::new("Grid", 988540919, VertexFormat::Uint32x2);
-
 pub const ATTRIBUTE_LOW_FREQ_ELEV: MeshVertexAttribute =
     MeshVertexAttribute::new("LowFreqElev", 988540920, VertexFormat::Float32);
 
@@ -35,9 +32,6 @@ pub const ATTRIBUTE_DRAINAGE: MeshVertexAttribute =
 
 pub const ATTRIBUTE_CURVATURE: MeshVertexAttribute =
     MeshVertexAttribute::new("Curvature", 988540927, VertexFormat::Float32);
-
-pub const ATTRIBUTE_DIRECTION: MeshVertexAttribute =
-    MeshVertexAttribute::new("Direction", 988540928, VertexFormat::Float32x3);
 
 // Skirts only conceal sub-pixel LOD cracks. Scaling them directly with a root
 // chunk makes their radial walls visible beyond the planet silhouette.
@@ -75,12 +69,67 @@ fn append_tri(indices: &mut Vec<u32>, a: u32, b: u32, c: u32, flip: bool) {
     }
 }
 
+#[derive(Clone, Copy, Default)]
 struct VertexData {
     low_freq: f32,
     moisture: f32,
     elevation: f64,
     temperature: f32,
     drainage: f32,
+}
+
+impl VertexData {
+    fn bilerp(v00: Self, v10: Self, v01: Self, v11: Self, tx: f64, ty: f64) -> Self {
+        fn interpolate(a: f64, b: f64, t: f64) -> f64 {
+            a + (b - a) * t
+        }
+        fn bilerp_value(a: f64, b: f64, c: f64, d: f64, tx: f64, ty: f64) -> f64 {
+            interpolate(interpolate(a, b, tx), interpolate(c, d, tx), ty)
+        }
+
+        Self {
+            low_freq: bilerp_value(
+                f64::from(v00.low_freq),
+                f64::from(v10.low_freq),
+                f64::from(v01.low_freq),
+                f64::from(v11.low_freq),
+                tx,
+                ty,
+            ) as f32,
+            moisture: bilerp_value(
+                f64::from(v00.moisture),
+                f64::from(v10.moisture),
+                f64::from(v01.moisture),
+                f64::from(v11.moisture),
+                tx,
+                ty,
+            ) as f32,
+            elevation: bilerp_value(
+                v00.elevation,
+                v10.elevation,
+                v01.elevation,
+                v11.elevation,
+                tx,
+                ty,
+            ),
+            temperature: bilerp_value(
+                f64::from(v00.temperature),
+                f64::from(v10.temperature),
+                f64::from(v01.temperature),
+                f64::from(v11.temperature),
+                tx,
+                ty,
+            ) as f32,
+            drainage: bilerp_value(
+                f64::from(v00.drainage),
+                f64::from(v10.drainage),
+                f64::from(v01.drainage),
+                f64::from(v11.drainage),
+                tx,
+                ty,
+            ) as f32,
+        }
+    }
 }
 
 impl From<TerrainSample> for VertexData {
@@ -117,10 +166,10 @@ fn compute_surface_shape(
     let d2_plus = (dir + t2 * eps).normalize();
     let d2_minus = (dir - t2 * eps).normalize();
 
-    let e1_plus = field.sample(d1_plus).elevation;
-    let e1_minus = field.sample(d1_minus).elevation;
-    let e2_plus = field.sample(d2_plus).elevation;
-    let e2_minus = field.sample(d2_minus).elevation;
+    let e1_plus = field.sample_elevation(d1_plus);
+    let e1_minus = field.sample_elevation(d1_minus);
+    let e2_plus = field.sample_elevation(d2_plus);
+    let e2_minus = field.sample_elevation(d2_minus);
 
     let sr1_plus = radius + e1_plus * elevation_scale as f64;
     let sr1_minus = radius + e1_minus * elevation_scale as f64;
@@ -145,27 +194,165 @@ fn compute_surface_shape(
     (normal, curvature)
 }
 
+fn mesh_sample_stride(chunk_lod: u8, radius: f64, field: &dyn TerrainField) -> usize {
+    let Some(max_spacing) = field.mesh_sample_spacing_m() else {
+        return 1;
+    };
+    let vertex_spacing = cell_size(chunk_lod, radius) / CHUNK_QUADS_PER_EDGE as f64;
+    [16usize, 8, 4, 2]
+        .into_iter()
+        .find(|stride| vertex_spacing * *stride as f64 <= max_spacing)
+        .unwrap_or(1)
+}
+
+fn populate_vertex_data(
+    directions: &[DVec3],
+    data: &mut [VertexData],
+    field: &dyn TerrainField,
+    chunk_lod: u8,
+    radius: f64,
+) {
+    let n = CHUNK_VERT_RES as usize;
+    let stride = mesh_sample_stride(chunk_lod, radius, field);
+
+    for gj in (0..n).step_by(stride) {
+        for gi in (0..n).step_by(stride) {
+            let index = gj * n + gi;
+            data[index] = field.sample(directions[index]).into();
+        }
+    }
+
+    if stride == 1 {
+        return;
+    }
+
+    for gj in 0..n {
+        for gi in 0..n {
+            if gi % stride == 0 && gj % stride == 0 {
+                continue;
+            }
+            let i0 = (gi / stride) * stride;
+            let j0 = (gj / stride) * stride;
+            let i1 = (i0 + stride).min(n - 1);
+            let j1 = (j0 + stride).min(n - 1);
+            let tx = if i1 == i0 {
+                0.0
+            } else {
+                (gi - i0) as f64 / (i1 - i0) as f64
+            };
+            let ty = if j1 == j0 {
+                0.0
+            } else {
+                (gj - j0) as f64 / (j1 - j0) as f64
+            };
+            data[gj * n + gi] = VertexData::bilerp(
+                data[j0 * n + i0],
+                data[j0 * n + i1],
+                data[j1 * n + i0],
+                data[j1 * n + i1],
+                tx,
+                ty,
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn populate_surface_shapes(
+    directions: &[DVec3],
+    elevations: &[f64],
+    normals: &mut [[f32; 3]],
+    curvatures: &mut [f32],
+    radius: f64,
+    elevation_scale: f32,
+    field: &dyn TerrainField,
+    chunk_lod: u8,
+) {
+    let n = CHUNK_VERT_RES as usize;
+    let stride = mesh_sample_stride(chunk_lod, radius, field);
+
+    for gj in (0..n).step_by(stride) {
+        for gi in (0..n).step_by(stride) {
+            let index = gj * n + gi;
+            let (normal, curvature) = compute_surface_shape(
+                directions[index],
+                elevations[index],
+                radius,
+                elevation_scale,
+                field,
+                chunk_lod,
+            );
+            normals[index] = normal.as_vec3().to_array();
+            curvatures[index] = curvature;
+        }
+    }
+
+    if stride == 1 {
+        return;
+    }
+
+    for gj in 0..n {
+        for gi in 0..n {
+            if gi % stride == 0 && gj % stride == 0 {
+                continue;
+            }
+            let i0 = (gi / stride) * stride;
+            let j0 = (gj / stride) * stride;
+            let i1 = (i0 + stride).min(n - 1);
+            let j1 = (j0 + stride).min(n - 1);
+            let tx = if i1 == i0 {
+                0.0
+            } else {
+                (gi - i0) as f32 / (i1 - i0) as f32
+            };
+            let ty = if j1 == j0 {
+                0.0
+            } else {
+                (gj - j0) as f32 / (j1 - j0) as f32
+            };
+            let index = gj * n + gi;
+            let n00 = glam::Vec3::from_array(normals[j0 * n + i0]);
+            let n10 = glam::Vec3::from_array(normals[j0 * n + i1]);
+            let n01 = glam::Vec3::from_array(normals[j1 * n + i0]);
+            let n11 = glam::Vec3::from_array(normals[j1 * n + i1]);
+            normals[index] = n00
+                .lerp(n10, tx)
+                .lerp(n01.lerp(n11, tx), ty)
+                .normalize_or_zero()
+                .to_array();
+
+            let c00 = curvatures[j0 * n + i0];
+            let c10 = curvatures[j0 * n + i1];
+            let c01 = curvatures[j1 * n + i0];
+            let c11 = curvatures[j1 * n + i1];
+            let c0 = c00 + (c10 - c00) * tx;
+            let c1 = c01 + (c11 - c01) * tx;
+            curvatures[index] = c0 + (c1 - c0) * ty;
+        }
+    }
+}
+
 pub fn generate_chunk_mesh(
     key: CellKey,
     radius: f64,
     elevation_scale: f32,
+    sea_level: f64,
     field: &dyn TerrainField,
 ) -> Mesh {
-    generate_chunk_mesh_stitched(key, radius, elevation_scale, field, [None; 4])
+    generate_chunk_mesh_stitched(key, radius, elevation_scale, sea_level, field, [None; 4])
 }
 
 pub fn generate_chunk_mesh_stitched(
     key: CellKey,
     radius: f64,
     elevation_scale: f32,
+    sea_level: f64,
     field: &dyn TerrainField,
     stitch_neighbors: StitchNeighbors,
 ) -> Mesh {
     let n = CHUNK_VERT_RES as usize;
     let quads = CHUNK_QUADS_PER_EDGE as usize;
     let cells = cells_per_edge(key.lod) as f64;
-    let n1 = (n - 1) as u32;
-
     let u_min = key.i as f64 / cells;
     let u_max = (key.i + 1) as f64 / cells;
     let v_min = key.j as f64 / cells;
@@ -180,7 +367,6 @@ pub fn generate_chunk_mesh_stitched(
     let total = n * n + 4 * n;
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(total);
     let mut morphs: Vec<f32> = Vec::with_capacity(total);
-    let mut grids: Vec<[u32; 2]> = Vec::with_capacity(total);
     let mut low_freq_elevs: Vec<f32> = Vec::with_capacity(total);
     let mut moisture_lows: Vec<f32> = Vec::with_capacity(total);
     let mut elevations: Vec<f32> = Vec::with_capacity(total);
@@ -188,7 +374,6 @@ pub fn generate_chunk_mesh_stitched(
     let mut temperatures: Vec<f32> = Vec::with_capacity(total);
     let mut drainages: Vec<f32> = Vec::with_capacity(total);
     let mut curvatures: Vec<f32> = Vec::with_capacity(total);
-    let mut directions: Vec<[f32; 3]> = Vec::with_capacity(total);
 
     let mut surf_low_freq: Vec<f32> = vec![0.0; n * n];
     let mut surf_moisture: Vec<f32> = vec![0.0; n * n];
@@ -197,16 +382,25 @@ pub fn generate_chunk_mesh_stitched(
     let mut surf_normals: Vec<[f32; 3]> = vec![[0.0; 3]; n * n];
     let mut surf_drainage: Vec<f32> = vec![0.0; n * n];
     let mut surf_curvature: Vec<f32> = vec![0.0; n * n];
-    let mut surf_directions: Vec<[f32; 3]> = vec![[0.0; 3]; n * n];
+    let mut sample_directions: Vec<DVec3> = vec![DVec3::ZERO; n * n];
+    let mut surf_data: Vec<VertexData> = vec![VertexData::default(); n * n];
 
     for gj in 0..n {
         for gi in 0..n {
             let u = u_min + (u_max - u_min) * (gi as f64 / (n - 1) as f64);
             let v = v_min + (v_max - v_min) * (gj as f64 / (n - 1) as f64);
             let dir = uv_to_dir(key.face, u, v);
-            let vd = VertexData::from(field.sample(dir));
-
             let surf_idx = gj * n + gi;
+            sample_directions[surf_idx] = dir;
+        }
+    }
+    populate_vertex_data(&sample_directions, &mut surf_data, field, key.lod, radius);
+
+    for gj in 0..n {
+        for gi in 0..n {
+            let surf_idx = gj * n + gi;
+            let dir = sample_directions[surf_idx];
+            let vd = surf_data[surf_idx];
             let lf = vd.low_freq;
             surf_low_freq[surf_idx] = lf;
             surf_moisture[surf_idx] = vd.moisture;
@@ -214,30 +408,35 @@ pub fn generate_chunk_mesh_stitched(
             surf_temp[surf_idx] = vd.temperature;
             surf_drainage[surf_idx] = vd.drainage;
 
-            let surface_radius = radius + vd.elevation * elevation_scale as f64;
+            let surface_radius = if f64::from(vd.low_freq) < sea_level {
+                radius + sea_level * elevation_scale as f64
+            } else {
+                radius + vd.elevation * elevation_scale as f64
+            };
             let pos = dir * surface_radius;
-            let (normal, curvature) =
-                compute_surface_shape(dir, vd.elevation, radius, elevation_scale, field, key.lod);
-            let normal = [normal.x as f32, normal.y as f32, normal.z as f32];
-            surf_normals[surf_idx] = normal;
-            surf_curvature[surf_idx] = curvature;
-            let direction = dir.as_vec3().to_array();
-            surf_directions[surf_idx] = direction;
-
             let local = pos - anchor;
             positions.push([local.x as f32, local.y as f32, local.z as f32]);
             morphs.push(1.0);
-            grids.push([gi as u32, gj as u32]);
             low_freq_elevs.push(lf);
             moisture_lows.push(vd.moisture);
             elevations.push(vd.elevation as f32);
-            normals.push(normal);
             temperatures.push(vd.temperature);
             drainages.push(vd.drainage);
-            curvatures.push(curvature);
-            directions.push(direction);
         }
     }
+
+    populate_surface_shapes(
+        &sample_directions,
+        &surf_elev,
+        &mut surf_normals,
+        &mut surf_curvature,
+        radius,
+        elevation_scale,
+        field,
+        key.lod,
+    );
+    normals.extend_from_slice(&surf_normals);
+    curvatures.extend_from_slice(&surf_curvature);
 
     for (side, coarse_neighbor) in NEIGHBOR_SIDES.into_iter().zip(stitch_neighbors) {
         if let Some(coarse_neighbor) = coarse_neighbor {
@@ -253,6 +452,7 @@ pub fn generate_chunk_mesh_stitched(
                 coarse_neighbor,
                 radius,
                 elevation_scale,
+                sea_level,
                 field,
             );
         }
@@ -269,7 +469,6 @@ pub fn generate_chunk_mesh_stitched(
         let local = pos - anchor;
         positions.push([local.x as f32, local.y as f32, local.z as f32]);
         morphs.push(0.0);
-        grids.push([gi as u32, 0]);
         low_freq_elevs.push(surf_low_freq[surf_idx]);
         moisture_lows.push(surf_moisture[surf_idx]);
         elevations.push(se as f32);
@@ -277,7 +476,6 @@ pub fn generate_chunk_mesh_stitched(
         temperatures.push(surf_temp[surf_idx]);
         drainages.push(surf_drainage[surf_idx]);
         curvatures.push(surf_curvature[surf_idx]);
-        directions.push(surf_directions[surf_idx]);
     }
 
     let bot_skirt = top_skirt + n;
@@ -289,7 +487,6 @@ pub fn generate_chunk_mesh_stitched(
         let local = pos - anchor;
         positions.push([local.x as f32, local.y as f32, local.z as f32]);
         morphs.push(0.0);
-        grids.push([gi as u32, n1]);
         low_freq_elevs.push(surf_low_freq[surf_idx]);
         moisture_lows.push(surf_moisture[surf_idx]);
         elevations.push(se as f32);
@@ -297,7 +494,6 @@ pub fn generate_chunk_mesh_stitched(
         temperatures.push(surf_temp[surf_idx]);
         drainages.push(surf_drainage[surf_idx]);
         curvatures.push(surf_curvature[surf_idx]);
-        directions.push(surf_directions[surf_idx]);
     }
 
     let left_skirt = bot_skirt + n;
@@ -309,7 +505,6 @@ pub fn generate_chunk_mesh_stitched(
         let local = pos - anchor;
         positions.push([local.x as f32, local.y as f32, local.z as f32]);
         morphs.push(0.0);
-        grids.push([0, gj as u32]);
         low_freq_elevs.push(surf_low_freq[surf_idx]);
         moisture_lows.push(surf_moisture[surf_idx]);
         elevations.push(se as f32);
@@ -317,7 +512,6 @@ pub fn generate_chunk_mesh_stitched(
         temperatures.push(surf_temp[surf_idx]);
         drainages.push(surf_drainage[surf_idx]);
         curvatures.push(surf_curvature[surf_idx]);
-        directions.push(surf_directions[surf_idx]);
     }
 
     let right_skirt = left_skirt + n;
@@ -329,7 +523,6 @@ pub fn generate_chunk_mesh_stitched(
         let local = pos - anchor;
         positions.push([local.x as f32, local.y as f32, local.z as f32]);
         morphs.push(0.0);
-        grids.push([n1, gj as u32]);
         low_freq_elevs.push(surf_low_freq[surf_idx]);
         moisture_lows.push(surf_moisture[surf_idx]);
         elevations.push(se as f32);
@@ -337,7 +530,6 @@ pub fn generate_chunk_mesh_stitched(
         temperatures.push(surf_temp[surf_idx]);
         drainages.push(surf_drainage[surf_idx]);
         curvatures.push(surf_curvature[surf_idx]);
-        directions.push(surf_directions[surf_idx]);
     }
 
     let mut indices: Vec<u32> = Vec::with_capacity(quads * quads * 6 + 4 * quads * 6);
@@ -400,11 +592,10 @@ pub fn generate_chunk_mesh_stitched(
 
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
+        RenderAssetUsages::RENDER_WORLD,
     );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_attribute(ATTRIBUTE_MORPH, morphs);
-    mesh.insert_attribute(ATTRIBUTE_GRID, grids);
     mesh.insert_attribute(ATTRIBUTE_LOW_FREQ_ELEV, low_freq_elevs);
     mesh.insert_attribute(ATTRIBUTE_MOISTURE_LOW, moisture_lows);
     mesh.insert_attribute(ATTRIBUTE_ELEVATION, elevations);
@@ -412,11 +603,15 @@ pub fn generate_chunk_mesh_stitched(
     mesh.insert_attribute(ATTRIBUTE_TEMPERATURE, temperatures);
     mesh.insert_attribute(ATTRIBUTE_DRAINAGE, drainages);
     mesh.insert_attribute(ATTRIBUTE_CURVATURE, curvatures);
-    mesh.insert_attribute(ATTRIBUTE_DIRECTION, directions);
-    mesh.insert_indices(Indices::U32(indices));
+    let indices = indices
+        .into_iter()
+        .map(|index| u16::try_from(index).expect("terrain chunk index exceeds u16"))
+        .collect();
+    mesh.insert_indices(Indices::U16(indices));
     mesh
 }
 
+#[allow(clippy::too_many_arguments)]
 fn snap_edge_to_coarse_mesh(
     positions: &mut [[f32; 3]],
     key: CellKey,
@@ -424,6 +619,7 @@ fn snap_edge_to_coarse_mesh(
     coarse: CellKey,
     radius: f64,
     elevation_scale: f32,
+    sea_level: f64,
     field: &dyn TerrainField,
 ) {
     debug_assert!(coarse.lod < key.lod);
@@ -455,6 +651,7 @@ fn snap_edge_to_coarse_mesh(
         coarse_v_max,
     );
 
+    let mut sampled_segment: Option<(usize, DVec3, DVec3)> = None;
     for k in 0..n {
         let t = k as f64 / (n - 1) as f64;
         let fine_dir = edge_direction(
@@ -474,41 +671,85 @@ fn snap_edge_to_coarse_mesh(
         let coarse_grid = edge_t * CHUNK_QUADS_PER_EDGE as f64;
         let segment = coarse_grid.floor().min((CHUNK_QUADS_PER_EDGE - 1) as f64) as usize;
         let segment_t = coarse_grid - segment as f64;
-        let segment_start = segment as f64 / CHUNK_QUADS_PER_EDGE as f64;
-        let segment_end = (segment + 1) as f64 / CHUNK_QUADS_PER_EDGE as f64;
-        let start_dir = edge_direction(
-            coarse.face,
-            coarse_edge,
-            coarse_u_min,
-            coarse_u_max,
-            coarse_v_min,
-            coarse_v_max,
-            segment_start,
-        );
-        let end_dir = edge_direction(
-            coarse.face,
-            coarse_edge,
-            coarse_u_min,
-            coarse_u_max,
-            coarse_v_min,
-            coarse_v_max,
-            segment_end,
-        );
-        let start = surface_position(start_dir, radius, elevation_scale, field);
-        let end = surface_position(end_dir, radius, elevation_scale, field);
-        let snapped = start.lerp(end, segment_t) - fine_anchor;
+        if sampled_segment
+            .as_ref()
+            .is_none_or(|cached| cached.0 != segment)
+        {
+            sampled_segment = Some(sample_coarse_edge_segment(
+                segment,
+                coarse,
+                coarse_edge,
+                coarse_u_min,
+                coarse_u_max,
+                coarse_v_min,
+                coarse_v_max,
+                radius,
+                elevation_scale,
+                sea_level,
+                field,
+            ));
+        }
+        let (_, start, end) = sampled_segment.as_ref().expect("segment sampled");
+        let snapped = start.lerp(*end, segment_t) - fine_anchor;
         positions[edge_vertex_index(side, k, n)] = snapped.as_vec3().to_array();
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sample_coarse_edge_segment(
+    segment: usize,
+    coarse: CellKey,
+    coarse_edge: NeighborSide,
+    coarse_u_min: f64,
+    coarse_u_max: f64,
+    coarse_v_min: f64,
+    coarse_v_max: f64,
+    radius: f64,
+    elevation_scale: f32,
+    sea_level: f64,
+    field: &dyn TerrainField,
+) -> (usize, DVec3, DVec3) {
+    let segment_start = segment as f64 / CHUNK_QUADS_PER_EDGE as f64;
+    let segment_end = (segment + 1) as f64 / CHUNK_QUADS_PER_EDGE as f64;
+    let start_dir = edge_direction(
+        coarse.face,
+        coarse_edge,
+        coarse_u_min,
+        coarse_u_max,
+        coarse_v_min,
+        coarse_v_max,
+        segment_start,
+    );
+    let end_dir = edge_direction(
+        coarse.face,
+        coarse_edge,
+        coarse_u_min,
+        coarse_u_max,
+        coarse_v_min,
+        coarse_v_max,
+        segment_end,
+    );
+    (
+        segment,
+        surface_position(start_dir, radius, elevation_scale, sea_level, field),
+        surface_position(end_dir, radius, elevation_scale, sea_level, field),
+    )
 }
 
 fn surface_position(
     dir: DVec3,
     radius: f64,
     elevation_scale: f32,
+    sea_level: f64,
     field: &dyn TerrainField,
 ) -> DVec3 {
-    let elevation = field.sample(dir).elevation * elevation_scale as f64;
-    dir * (radius + elevation)
+    let sample = field.sample(dir);
+    let surface_radius = if f64::from(sample.low_freq_elev) < sea_level {
+        radius + sea_level * elevation_scale as f64
+    } else {
+        radius + sample.elevation * elevation_scale as f64
+    };
+    dir * surface_radius
 }
 
 fn edge_direction(
@@ -530,7 +771,7 @@ fn edge_direction(
 
 fn direction_on_face(face: u8, dir: DVec3) -> (f64, f64) {
     let axis = (face / 2) as usize;
-    let sign = if face % 2 == 0 { 1.0 } else { -1.0 };
+    let sign = if face.is_multiple_of(2) { 1.0 } else { -1.0 };
     let axis_value = match axis {
         0 => dir.x,
         1 => dir.y,

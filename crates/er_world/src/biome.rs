@@ -115,7 +115,7 @@ pub fn classify_biome(
         if moisture < 0.7 {
             return Biome::Forest;
         }
-        return Biome::Snow;
+        Biome::Snow
     } else if temperature < 0.6 {
         if moisture < 0.35 {
             return Biome::Grassland;
@@ -123,7 +123,7 @@ pub fn classify_biome(
         if moisture < 0.7 {
             return Biome::Grassland;
         }
-        return Biome::Forest;
+        Biome::Forest
     } else {
         if moisture < 0.35 {
             return Biome::Desert;
@@ -131,7 +131,7 @@ pub fn classify_biome(
         if moisture < 0.7 {
             return Biome::Grassland;
         }
-        return Biome::Jungle;
+        Biome::Jungle
     }
 }
 
@@ -203,8 +203,11 @@ pub fn elevation_split(
 
     let low_freq_elev =
         (continental * params.continental_amp + mountains * params.mountain_amp) as f64;
-    let high_freq = (hills * params.hill_amp + detail * params.detail_amp) as f64;
-    let full_elev = low_freq_elev + high_freq;
+    // Preserve the exact f32 association used by `elevation` before widening.
+    let full_elev = (continental * params.continental_amp
+        + mountains * params.mountain_amp
+        + hills * params.hill_amp
+        + detail * params.detail_amp) as f64;
 
     let mountain_influence = (mountain_raw.max(0.0) * mountain_mask) as f64;
 
@@ -310,7 +313,7 @@ mod tests {
         let dirs = rand_dirs(0x1234, 1000);
         for d in &dirs {
             let t = temperature(*d, 0.5, &params, &noise);
-            assert!(t >= 0.0 && t <= 1.0, "temperature {t} out of [0,1]");
+            assert!((0.0..=1.0).contains(&t), "temperature {t} out of [0,1]");
         }
     }
 
@@ -321,7 +324,7 @@ mod tests {
         let dirs = rand_dirs(0x5678, 1000);
         for d in &dirs {
             let m = moisture(*d, 0.0, &params, &noise);
-            assert!(m >= 0.0 && m <= 1.0, "moisture {m} out of [0,1]");
+            assert!((0.0..=1.0).contains(&m), "moisture {m} out of [0,1]");
         }
     }
 
@@ -454,7 +457,7 @@ mod tests {
         let points = metric_points(0x1111, 1000);
         for p in &points {
             let t = temperature_at(*p, 5.0, &pp, &cn);
-            assert!(t >= 0.0 && t <= 1.0, "temperature_at {t} out of [0,1]");
+            assert!((0.0..=1.0).contains(&t), "temperature_at {t} out of [0,1]");
         }
     }
 
@@ -465,7 +468,7 @@ mod tests {
         let points = metric_points(0x2222, 1000);
         for p in &points {
             let m = moisture_at(*p, 0.0, &params, &noise);
-            assert!(m >= 0.0 && m <= 1.0, "moisture_at {m} out of [0,1]");
+            assert!((0.0..=1.0).contains(&m), "moisture_at {m} out of [0,1]");
         }
     }
 

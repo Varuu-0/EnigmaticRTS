@@ -4,13 +4,16 @@ use er_core::math::{cell_to_dir, cells_per_edge, CellKey};
 use er_core::seed::PlanetSeed;
 use er_terrain::{
     generate_chunk_mesh as generate_chunk_mesh_with_field, generate_chunk_mesh_stitched,
-    ChunkComponent, ATTRIBUTE_CURVATURE, ATTRIBUTE_DRAINAGE, ATTRIBUTE_GRID, ATTRIBUTE_MORPH,
+    ChunkComponent, ATTRIBUTE_CURVATURE, ATTRIBUTE_DRAINAGE, ATTRIBUTE_ELEVATION, ATTRIBUTE_MORPH,
     ATTRIBUTE_NORMAL,
 };
 use er_world::cache::WorldCache;
 use er_world::elevation::{elevation_params, ElevationNoise, ElevationParams};
 use er_world::params::{climate_noise, planet_params, ClimateNoise, PlanetParams};
-use er_world::terrain_field::ProceduralTerrainField;
+use er_world::terrain_field::{
+    ProceduralTerrainField, TerrainField, TerrainSample, TerrainSampleSource,
+};
+use er_world::Biome;
 use glam::DVec3;
 use glam::Vec3;
 
@@ -39,7 +42,13 @@ fn generate_chunk_mesh(
     _cache: Option<&WorldCache>,
 ) -> Mesh {
     let field = ProceduralTerrainField::new(*elevation_params, *planet_params);
-    generate_chunk_mesh_with_field(key, radius, elevation_scale, &field)
+    generate_chunk_mesh_with_field(
+        key,
+        radius,
+        elevation_scale,
+        planet_params.sea_level,
+        &field,
+    )
 }
 
 #[test]
@@ -78,10 +87,10 @@ fn chunk_mesh_vertex_and_index_counts() {
     }
 
     match mesh.indices() {
-        Some(Indices::U32(indices)) => {
+        Some(Indices::U16(indices)) => {
             assert_eq!(indices.len(), expected_indices, "index count mismatch");
         }
-        _ => panic!("expected U32 indices"),
+        _ => panic!("expected U16 indices"),
     }
 }
 
@@ -112,11 +121,11 @@ fn chunk_mesh_morph_values() {
     match morphs {
         VertexAttributeValues::Float32(vec) => {
             assert_eq!(vec.len(), n * n + 4 * n, "morph count mismatch");
-            for i in 0..surface_count {
-                assert_eq!(vec[i], 1.0, "surface vertex {i} morph should be 1.0");
+            for (i, &v) in vec.iter().enumerate().take(surface_count) {
+                assert_eq!(v, 1.0, "surface vertex {i} morph should be 1.0");
             }
-            for i in surface_count..(surface_count + 4 * n) {
-                assert_eq!(vec[i], 0.0, "skirt vertex {i} morph should be 0.0");
+            for (i, &v) in vec.iter().enumerate().skip(surface_count).take(4 * n) {
+                assert_eq!(v, 0.0, "skirt vertex {i} morph should be 0.0");
             }
         }
         _ => panic!("expected Float32 morphs"),
@@ -317,9 +326,9 @@ fn skirt_triangles_face_outward_on_every_face() {
         );
         let positions_raw = positions(&mesh);
         let positions = world_positions(key, radius, &positions_raw);
-        let indices = match mesh.indices().unwrap() {
-            Indices::U32(values) => values,
-            _ => panic!("expected U32 indices"),
+        let indices: Vec<u32> = match mesh.indices().unwrap() {
+            Indices::U16(values) => values.iter().map(|value| u32::from(*value)).collect(),
+            Indices::U32(values) => values.clone(),
         };
 
         for (strip, edge_indices) in indices[surface_index_count..]
@@ -419,41 +428,6 @@ fn chunk_component_neighbor_depth_default() {
     };
     let chunk = ChunkComponent::new(key);
     assert_eq!(chunk.neighbor_depth, [3, 3, 3, 3]);
-}
-
-#[test]
-fn grid_attribute_values() {
-    let (noise, elev_params, pp, cn) = test_elevation();
-    let key = CellKey {
-        face: 0,
-        i: 0,
-        j: 0,
-        lod: 0,
-    };
-    let mesh = generate_chunk_mesh(
-        key,
-        12000.0,
-        ELEVATION_SCALE,
-        &noise,
-        &elev_params,
-        &pp,
-        &cn,
-        None,
-    );
-    let n = CHUNK_VERT_RES as usize;
-    let n1 = (n - 1) as u32;
-
-    let grid = mesh.attribute(ATTRIBUTE_GRID).expect("grid attr");
-    match grid {
-        VertexAttributeValues::Uint32x2(v) => {
-            assert_eq!(v.len(), n * n + 4 * n, "grid count mismatch");
-            assert_eq!(v[0], [0, 0], "first surface grid");
-            assert_eq!(v[n * n - 1], [n1, n1], "last surface grid");
-            assert_eq!(v[n * n], [0, 0], "top skirt first");
-            assert_eq!(v[n * n + n], [0, n1], "bot skirt first");
-        }
-        _ => panic!("expected Uint32x2 grid"),
-    }
 }
 
 fn positions(mesh: &Mesh) -> Vec<[f32; 3]> {
@@ -655,10 +629,12 @@ fn generated_mixed_lod_edge_matches_coarse_mesh_segments() {
         fine,
         radius,
         ELEVATION_SCALE,
+        pp.sea_level,
         &field,
         [Some(coarse), None, None, None],
     );
-    let coarse_mesh = generate_chunk_mesh_with_field(coarse, radius, ELEVATION_SCALE, &field);
+    let coarse_mesh =
+        generate_chunk_mesh_with_field(coarse, radius, ELEVATION_SCALE, pp.sea_level, &field);
     let fine_world = world_positions(fine, radius, &positions(&fine_mesh));
     let coarse_world = world_positions(coarse, radius, &positions(&coarse_mesh));
 
@@ -685,16 +661,19 @@ fn generated_mixed_lod_edge_matches_coarse_mesh_segments() {
 // terrain field uses the full metric landform composition (continental +
 // mountain + tectonic + ridge + valley + drainage + erosion + talus).
 
-fn test_metric_field() -> ProceduralTerrainField {
+fn test_metric_field() -> (ProceduralTerrainField, PlanetParams) {
     let seed = PlanetSeed(0xC0FFEE);
     let elev_params = elevation_params(seed);
     let pp = planet_params(seed);
-    ProceduralTerrainField::new_metric(elev_params, pp, 6_371_000.0)
+    (
+        ProceduralTerrainField::new_metric(elev_params, pp, 6_371_000.0),
+        pp,
+    )
 }
 
 #[test]
 fn metric_earth_scale_adjacent_chunks_share_edge_vertices() {
-    let field = test_metric_field();
+    let (field, pp) = test_metric_field();
     let radius = 6_371_000.0;
     let lod = 2u8;
     let key1 = CellKey {
@@ -710,8 +689,8 @@ fn metric_earth_scale_adjacent_chunks_share_edge_vertices() {
         lod,
     };
 
-    let mesh1 = generate_chunk_mesh_with_field(key1, radius, ELEVATION_SCALE, &field);
-    let mesh2 = generate_chunk_mesh_with_field(key2, radius, ELEVATION_SCALE, &field);
+    let mesh1 = generate_chunk_mesh_with_field(key1, radius, ELEVATION_SCALE, pp.sea_level, &field);
+    let mesh2 = generate_chunk_mesh_with_field(key2, radius, ELEVATION_SCALE, pp.sea_level, &field);
 
     let n = CHUNK_VERT_RES as usize;
     let pos1_raw = match mesh1.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
@@ -742,8 +721,47 @@ fn metric_earth_scale_adjacent_chunks_share_edge_vertices() {
 }
 
 #[test]
+fn sparse_metric_sampling_keeps_deep_lod_edge_attributes_identical() {
+    let (field, pp) = test_metric_field();
+    let radius = 6_371_000.0;
+    let lod = 17u8;
+    let key1 = CellKey {
+        face: 0,
+        i: 65_535,
+        j: 65_536,
+        lod,
+    };
+    let key2 = CellKey { i: 65_536, ..key1 };
+    let mesh1 = generate_chunk_mesh_with_field(key1, radius, ELEVATION_SCALE, pp.sea_level, &field);
+    let mesh2 = generate_chunk_mesh_with_field(key2, radius, ELEVATION_SCALE, pp.sea_level, &field);
+    let n = CHUNK_VERT_RES as usize;
+
+    for attribute in [ATTRIBUTE_NORMAL, ATTRIBUTE_DRAINAGE, ATTRIBUTE_CURVATURE] {
+        match (mesh1.attribute(attribute), mesh2.attribute(attribute)) {
+            (
+                Some(VertexAttributeValues::Float32x3(left)),
+                Some(VertexAttributeValues::Float32x3(right)),
+            ) => {
+                for j in 0..n {
+                    assert_eq!(left[j * n + n - 1], right[j * n]);
+                }
+            }
+            (
+                Some(VertexAttributeValues::Float32(left)),
+                Some(VertexAttributeValues::Float32(right)),
+            ) => {
+                for j in 0..n {
+                    assert_eq!(left[j * n + n - 1], right[j * n]);
+                }
+            }
+            _ => panic!("unexpected attribute format"),
+        }
+    }
+}
+
+#[test]
 fn metric_earth_scale_face_edge_adjacent_across_boundary() {
-    let field = test_metric_field();
+    let (field, pp) = test_metric_field();
     let radius = 6_371_000.0;
     let lod = 2u8;
     let cells = cells_per_edge(lod);
@@ -755,7 +773,7 @@ fn metric_earth_scale_face_edge_adjacent_across_boundary() {
         j: cells / 2,
         lod,
     };
-    let mesh1 = generate_chunk_mesh_with_field(key1, radius, ELEVATION_SCALE, &field);
+    let mesh1 = generate_chunk_mesh_with_field(key1, radius, ELEVATION_SCALE, pp.sea_level, &field);
 
     let key2 = CellKey {
         face: 2,
@@ -763,7 +781,7 @@ fn metric_earth_scale_face_edge_adjacent_across_boundary() {
         j: cells / 2,
         lod,
     };
-    let mesh2 = generate_chunk_mesh_with_field(key2, radius, ELEVATION_SCALE, &field);
+    let mesh2 = generate_chunk_mesh_with_field(key2, radius, ELEVATION_SCALE, pp.sea_level, &field);
 
     let pos1_raw = match mesh1.attribute(Mesh::ATTRIBUTE_POSITION).unwrap() {
         VertexAttributeValues::Float32x3(v) => v,
@@ -793,7 +811,7 @@ fn metric_earth_scale_face_edge_adjacent_across_boundary() {
 
 #[test]
 fn metric_earth_scale_edge_stitch_snaps_to_coarse() {
-    let field = test_metric_field();
+    let (field, pp) = test_metric_field();
     let radius = 6_371_000.0;
     let n = CHUNK_VERT_RES as usize;
     // Fine chunk's left edge must be adjacent to the coarse chunk's
@@ -815,10 +833,12 @@ fn metric_earth_scale_edge_stitch_snaps_to_coarse() {
         fine,
         radius,
         ELEVATION_SCALE,
+        pp.sea_level,
         &field,
         [Some(coarse), None, None, None],
     );
-    let coarse_mesh = generate_chunk_mesh_with_field(coarse, radius, ELEVATION_SCALE, &field);
+    let coarse_mesh =
+        generate_chunk_mesh_with_field(coarse, radius, ELEVATION_SCALE, pp.sea_level, &field);
     let fine_world = world_positions_f64(fine, radius, &positions(&fine_mesh));
     let coarse_world = world_positions_f64(coarse, radius, &positions(&coarse_mesh));
 
@@ -841,14 +861,15 @@ fn metric_earth_scale_edge_stitch_snaps_to_coarse() {
 
 #[test]
 fn metric_material_inputs_are_finite_bounded_and_nonconstant() {
-    let field = test_metric_field();
+    let (field, pp) = test_metric_field();
     let key = CellKey {
         face: 0,
         i: 512,
         j: 512,
         lod: 10,
     };
-    let mesh = generate_chunk_mesh_with_field(key, 6_371_000.0, ELEVATION_SCALE, &field);
+    let mesh =
+        generate_chunk_mesh_with_field(key, 6_371_000.0, ELEVATION_SCALE, pp.sea_level, &field);
     let surface_count = (CHUNK_VERT_RES as usize).pow(2);
 
     for (name, attribute) in [
@@ -867,5 +888,215 @@ fn metric_material_inputs_are_finite_bounded_and_nonconstant() {
         eprintln!("metric material {name} range: [{min:.4}, {max:.4}]");
         assert!(min >= -1.0 && max <= 1.0, "{name} range [{min}, {max}]");
         assert!(max - min > 1e-6, "{name} is constant at {min}");
+    }
+}
+
+// ---- Macro-water sea-level clamp regression ----
+//
+// Terrain-owned macro-water vertices must be clamped exactly to the shared
+// sea-level radius even when the full elevation differs from sea level. This
+// guards the terrain-owned water surface decision (mesh_gen.rs:411-415 and the
+// stitched-edge `surface_position` path) against regressions that would let
+// macro-water vertices follow the full elevation and break the flat,
+// continuous, seam-safe ocean surface.
+
+/// Deterministic field where every sample is classified as macro-water
+/// (`low_freq_elev < sea_level`) but carries a full `elevation` that differs
+/// from sea level by a large margin. This isolates the clamp: if the clamp is
+/// removed, vertices would land at `radius + elevation * scale` instead of
+/// `radius + sea_level * scale`.
+struct MacroWaterField {
+    low_freq_elev: f32,
+    elevation: f64,
+}
+
+impl TerrainField for MacroWaterField {
+    fn sample(&self, _dir: DVec3) -> TerrainSample {
+        TerrainSample {
+            elevation: self.elevation,
+            low_freq_elev: self.low_freq_elev,
+            warped_dir: [0.0, 0.0, 0.0],
+            moisture: 0.0,
+            biome: Biome::OceanMid,
+            mountain_influence: 0.0,
+            temperature: 0.0,
+            drainage: 0.0,
+            source: TerrainSampleSource::Procedural,
+        }
+    }
+}
+
+#[test]
+fn macro_water_surface_vertices_clamped_to_sea_level() {
+    // low_freq below sea level => macro-water; full elevation far above sea
+    // level so a missing clamp would be immediately visible.
+    let sea_level = 0.0;
+    let field = MacroWaterField {
+        low_freq_elev: -0.5,
+        elevation: 0.8,
+    };
+    let radius = 12000.0;
+    let key = CellKey {
+        face: 0,
+        i: 0,
+        j: 0,
+        lod: 0,
+    };
+    let mesh = generate_chunk_mesh_with_field(key, radius, ELEVATION_SCALE, sea_level, &field);
+
+    let n = CHUNK_VERT_RES as usize;
+    let surface_count = n * n;
+    let positions_raw = positions(&mesh);
+    let world = world_positions_f64(key, radius, &positions_raw);
+
+    let expected_radius = radius + sea_level * ELEVATION_SCALE as f64;
+    let wrong_radius = radius + field.elevation * ELEVATION_SCALE as f64;
+    assert!(
+        (wrong_radius - expected_radius).abs() > 1.0,
+        "test setup must have a meaningful elevation/sea-level gap"
+    );
+
+    for (i, p) in world.iter().enumerate().take(surface_count) {
+        let r = p.length();
+        assert!(
+            (r - expected_radius).abs() < 1e-3,
+            "surface vertex {i} radius {r} != sea-level radius {expected_radius}"
+        );
+    }
+}
+
+#[test]
+fn macro_water_skirt_vertices_clamped_to_sea_level() {
+    let sea_level = 0.0;
+    let field = MacroWaterField {
+        low_freq_elev: -0.5,
+        elevation: 0.8,
+    };
+    let radius = 12000.0;
+    let key = CellKey {
+        face: 0,
+        i: 0,
+        j: 0,
+        lod: 0,
+    };
+    let mesh = generate_chunk_mesh_with_field(key, radius, ELEVATION_SCALE, sea_level, &field);
+
+    let n = CHUNK_VERT_RES as usize;
+    let surface_count = n * n;
+    let positions_raw = positions(&mesh);
+    let world = world_positions_f64(key, radius, &positions_raw);
+
+    let expected_radius = radius + sea_level * ELEVATION_SCALE as f64;
+
+    // Skirt vertices are pushed below their paired surface vertex, so they must
+    // be strictly below the sea-level radius while remaining radially aligned
+    // with the (clamped) surface vertex.
+    for skirt_index in surface_count..world.len() {
+        let strip = (skirt_index - surface_count) / n;
+        let surface_index = paired_surface_index(strip, (skirt_index - surface_count) % n, n);
+        let skirt = world[skirt_index];
+        let surface = world[surface_index];
+        assert!(
+            skirt.length() < surface.length(),
+            "skirt vertex {skirt_index} must be below paired surface vertex {surface_index}"
+        );
+        assert!(
+            skirt.normalize().distance(surface.normalize()) < 1e-5,
+            "skirt vertex {skirt_index} must be radially aligned with surface vertex {surface_index}"
+        );
+        assert!(
+            (surface.length() - expected_radius).abs() < 1e-3,
+            "paired surface vertex {surface_index} must be at sea-level radius"
+        );
+    }
+}
+
+#[test]
+fn macro_water_stitched_edge_clamped_to_sea_level() {
+    let sea_level = 0.0;
+    let field = MacroWaterField {
+        low_freq_elev: -0.5,
+        elevation: 0.8,
+    };
+    let radius = 12000.0;
+    let n = CHUNK_VERT_RES as usize;
+    let fine = CellKey {
+        face: 0,
+        i: 2,
+        j: 0,
+        lod: 3,
+    };
+    let coarse = CellKey {
+        face: 0,
+        i: 0,
+        j: 0,
+        lod: 2,
+    };
+
+    let fine_mesh = generate_chunk_mesh_stitched(
+        fine,
+        radius,
+        ELEVATION_SCALE,
+        sea_level,
+        &field,
+        [Some(coarse), None, None, None],
+    );
+    let fine_world = world_positions_f64(fine, radius, &positions(&fine_mesh));
+
+    let expected_radius = radius + sea_level * ELEVATION_SCALE as f64;
+    let wrong_radius = radius + field.elevation * ELEVATION_SCALE as f64;
+    assert!(
+        (wrong_radius - expected_radius).abs() > 1.0,
+        "test setup must have a meaningful elevation/sea-level gap"
+    );
+
+    // The stitched edge snaps to coarse-mesh segment endpoints (both clamped
+    // to sea level via `surface_position`) and linearly interpolates the chord
+    // between them. The chord sags below the sea-level sphere by a tiny amount
+    // (<1 m here), while the full-elevation sphere is ~800 m away. So every
+    // stitched vertex must sit far closer to the sea-level radius than to the
+    // full-elevation radius — proving the clamp held through the stitch path.
+    for k in 0..n {
+        let idx = k * n;
+        let r = fine_world[idx].length();
+        let sea_err = (r - expected_radius).abs();
+        let elev_err = (r - wrong_radius).abs();
+        assert!(
+            sea_err < elev_err,
+            "stitched edge vertex {k} radius {r} is closer to full-elevation radius {wrong_radius} ({elev_err}) than to sea-level radius {expected_radius} ({sea_err}); clamp missing"
+        );
+    }
+}
+
+#[test]
+fn macro_water_elevation_attribute_preserves_full_elevation() {
+    // The clamp affects only the vertex *position*; the per-vertex ELEVATION
+    // attribute must still report the full (unclamped) elevation so material
+    // shading and depth bands remain correct.
+    let sea_level = 0.0;
+    let field = MacroWaterField {
+        low_freq_elev: -0.5,
+        elevation: 0.8,
+    };
+    let radius = 12000.0;
+    let key = CellKey {
+        face: 0,
+        i: 0,
+        j: 0,
+        lod: 0,
+    };
+    let mesh = generate_chunk_mesh_with_field(key, radius, ELEVATION_SCALE, sea_level, &field);
+
+    let elevations = match mesh.attribute(ATTRIBUTE_ELEVATION).expect("elevation attr") {
+        VertexAttributeValues::Float32(values) => values,
+        _ => panic!("expected Float32 elevations"),
+    };
+
+    for (i, &e) in elevations.iter().enumerate() {
+        assert!(
+            (e as f64 - field.elevation).abs() < 1e-5,
+            "vertex {i} ELEVATION attribute {e} != full elevation {}",
+            field.elevation
+        );
     }
 }

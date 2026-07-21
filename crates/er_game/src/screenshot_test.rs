@@ -81,6 +81,7 @@ impl Plugin for ScreenshotTestPlugin {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn apply_screenshot_diagnostics(
     config: Res<ScreenshotTestConfig>,
     mut materials: ResMut<Assets<TerrainMaterial>>,
@@ -118,6 +119,7 @@ fn apply_screenshot_diagnostics(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_screenshot_test(
     mut config: ResMut<ScreenshotTestConfig>,
     mut camera_query: Query<(&mut crate::camera::OrbitCamera, &mut Transform), With<Camera3d>>,
@@ -243,7 +245,7 @@ fn run_screenshot_test(
         config.settled_frames += 1;
     } else {
         config.settled_frames = 0;
-        if config.frames_waited % 30 == 0 {
+        if config.frames_waited.is_multiple_of(30) {
             info!(
                 "Scenario {} waiting for terrain: {} pending meshes, {} active chunks, {} visible chunks",
                 scenario.name,
@@ -453,6 +455,7 @@ pub fn parse_test_args(planet_radius: f64) -> Option<ScreenshotTestConfig> {
 /// mid-range ground (1 km, 10 km), and orbital overview. Two pairs of
 /// boundary scenarios exercise camera stability at cube-face edges and
 /// across recenter events.
+#[allow(clippy::vec_init_then_push)]
 fn fixed_coverage_scenarios(radius: f64) -> Vec<ScreenshotScenario> {
     let mut scenarios = Vec::new();
 
@@ -574,6 +577,35 @@ fn fixed_coverage_scenarios(radius: f64) -> Vec<ScreenshotScenario> {
         target_altitude_m: Some(10_000.0),
     });
     scenarios
+}
+
+fn acceptance_timeout_fails(exploratory: bool) -> bool {
+    !exploratory
+}
+
+fn scenario_timed_out(frames: u32, elapsed_seconds: f64, max_wait_seconds: f64) -> bool {
+    frames >= MAX_FRAMES_PER_SCENARIO && elapsed_seconds >= max_wait_seconds
+}
+
+fn detail_target_met(scenario: &ScreenshotScenario, debug: &TerrainDebugInfo) -> bool {
+    scenario.target_altitude_m.is_none_or(|altitude| {
+        altitude > 10.0 || (debug.vertex_spacing_m > 0.0 && debug.vertex_spacing_m <= 5.0)
+    })
+}
+
+fn altitude_target_met(scenario: &ScreenshotScenario, debug: &TerrainDebugInfo) -> bool {
+    scenario.target_altitude_m.is_none_or(|requested| {
+        let tolerance = if requested <= 10.0 {
+            2.0
+        } else {
+            (requested as f64 * 0.01).max(0.5)
+        };
+        if scenario.name.starts_with("altitude_") {
+            (debug.camera_altitude_m - requested as f64).abs() <= tolerance
+        } else {
+            debug.camera_altitude_m + tolerance >= requested as f64
+        }
+    })
 }
 
 #[cfg(test)]
@@ -830,8 +862,10 @@ mod tests {
     #[test]
     fn ten_meter_acceptance_requires_five_meter_vertex_spacing() {
         let mut scenario = fixed_coverage_scenarios(6_371_000.0).remove(0);
-        let mut debug = TerrainDebugInfo::default();
-        debug.vertex_spacing_m = 5.01;
+        let mut debug = TerrainDebugInfo {
+            vertex_spacing_m: 5.01,
+            ..TerrainDebugInfo::default()
+        };
         assert!(!detail_target_met(&scenario, &debug));
         debug.vertex_spacing_m = 4.99;
         assert!(detail_target_met(&scenario, &debug));
@@ -844,8 +878,10 @@ mod tests {
     #[test]
     fn altitude_acceptance_rejects_clearance_drift() {
         let scenario = fixed_coverage_scenarios(6_371_000.0).remove(0);
-        let mut debug = TerrainDebugInfo::default();
-        debug.camera_altitude_m = 330.7;
+        let mut debug = TerrainDebugInfo {
+            camera_altitude_m: 330.7,
+            ..TerrainDebugInfo::default()
+        };
         assert!(!altitude_target_met(&scenario, &debug));
 
         debug.camera_altitude_m = 10.4;
@@ -879,33 +915,4 @@ mod tests {
             );
         }
     }
-}
-
-fn acceptance_timeout_fails(exploratory: bool) -> bool {
-    !exploratory
-}
-
-fn scenario_timed_out(frames: u32, elapsed_seconds: f64, max_wait_seconds: f64) -> bool {
-    frames >= MAX_FRAMES_PER_SCENARIO && elapsed_seconds >= max_wait_seconds
-}
-
-fn detail_target_met(scenario: &ScreenshotScenario, debug: &TerrainDebugInfo) -> bool {
-    scenario.target_altitude_m.is_none_or(|altitude| {
-        altitude > 10.0 || (debug.vertex_spacing_m > 0.0 && debug.vertex_spacing_m <= 5.0)
-    })
-}
-
-fn altitude_target_met(scenario: &ScreenshotScenario, debug: &TerrainDebugInfo) -> bool {
-    scenario.target_altitude_m.is_none_or(|requested| {
-        let tolerance = if requested <= 10.0 {
-            2.0
-        } else {
-            (requested as f64 * 0.01).max(0.5)
-        };
-        if scenario.name.starts_with("altitude_") {
-            (debug.camera_altitude_m - requested as f64).abs() <= tolerance
-        } else {
-            debug.camera_altitude_m + tolerance >= requested as f64
-        }
-    })
 }

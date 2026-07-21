@@ -34,6 +34,7 @@ fn bench_generate_chunk_mesh(c: &mut Criterion) {
                     black_box(key),
                     black_box(radius),
                     black_box(elevation_scale),
+                    black_box(pp.sea_level),
                     black_box(&field),
                 ))
             })

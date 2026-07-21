@@ -696,3 +696,15 @@ fn elevation_metric_full_eval(@builtin(global_invocation_id) gid: vec3<u32>) {
     elevs[i] = compute_elevation_metric_full(dirs[i], params, 6371000.0);
 }
 
+// Isolated brush-displacement parity entry point. Returns only the brush
+// displacement (no noise layers) for the supplied direction, using the seed
+// from params. Mirrors CPU `BrushSet::displacement_exhaustive`.
+@compute @workgroup_size(64)
+fn brush_displacement_eval(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i: u32 = gid.x;
+    if (i >= arrayLength(&dirs)) {
+        return;
+    }
+    elevs[i] = compute_brush_displacement(normalize(dirs[i]), params.seed);
+}
+

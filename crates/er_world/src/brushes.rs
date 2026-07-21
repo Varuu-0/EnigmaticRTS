@@ -486,7 +486,7 @@ mod tests {
             let disp = set.displacement_indexed(dir_to_f32(*d));
             assert!(disp.is_finite(), "non-finite displacement");
             assert!(
-                disp >= -BRUSH_TOTAL_CAP && disp <= BRUSH_TOTAL_CAP,
+                (-BRUSH_TOTAL_CAP..=BRUSH_TOTAL_CAP).contains(&disp),
                 "displacement {disp} outside [-{BRUSH_TOTAL_CAP}, {BRUSH_TOTAL_CAP}]"
             );
         }

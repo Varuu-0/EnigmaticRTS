@@ -1,11 +1,14 @@
 /target
 **/*.rs.bk
 *.pdb
+__pycache__/
 AGENTS.md
 *.playwright-mcp
 /screenshots/
 /crash_reports/
 /tools/terrain_diffusion/.venv/
 /tools/terrain_diffusion/upstream/
+/tools/terrain_diffusion/bench/*.json
+/tools/terrain_diffusion/locked_manifest.json
 .kilo/plans/earth-scale-natural-terrain-plan.md
 .kilo/plans/terrain-diffusion-integration-plan.md

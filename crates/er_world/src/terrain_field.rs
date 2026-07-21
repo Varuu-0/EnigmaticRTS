@@ -5,8 +5,8 @@
 //! this module must always be safe to call from a mesh worker.
 
 use crate::biome::{
-    biome, biome_metric, elevation_low_freq, moisture, moisture_at, temperature, temperature_at,
-    Biome,
+    classify_biome, elevation_low_freq, elevation_split, moisture, moisture_at, temperature,
+    temperature_at, Biome,
 };
 use crate::cache::{CachedWorldData, WorldCache};
 use crate::elevation::{elevation, metric_landform_sample, ElevationNoise, ElevationParams};
@@ -61,6 +61,14 @@ impl From<CachedWorldData> for TerrainSample {
 
 pub trait TerrainField: Send + Sync {
     fn sample(&self, dir: DVec3) -> TerrainSample;
+    fn sample_elevation(&self, dir: DVec3) -> f64 {
+        self.sample(dir).elevation
+    }
+    /// Maximum safe spacing for interpolated CPU mesh samples. Fields with
+    /// learned or unknown high-frequency content keep exact per-vertex sampling.
+    fn mesh_sample_spacing_m(&self) -> Option<f64> {
+        None
+    }
     fn revision(&self) -> u64 {
         0
     }
@@ -200,13 +208,12 @@ impl ProceduralTerrainField {
             );
             let elev = lf.full_elevation;
             let temp = temperature_at(pos, elev, &self.planet_params, &self.climate_noise);
-            let biom = biome_metric(
-                pos,
+            let biom = classify_biome(
                 elev,
+                temp,
+                moist,
                 lf.macro_displacement,
-                lf.mountain_influence,
                 &self.planet_params,
-                &self.climate_noise,
             );
 
             TerrainSample {
@@ -225,37 +232,30 @@ impl ProceduralTerrainField {
                 source: TerrainSampleSource::Procedural,
             }
         } else {
-            // Macro field: low-frequency continent/mountain elevation.
-            let macro_sample = elevation_low_freq(dir, &self.noise, &self.elevation_params);
+            // Compute macro and residual layers once; the previous separate
+            // low-frequency and full calls repeated warp/continent/mountain.
+            let split = elevation_split(dir, &self.noise, &self.elevation_params);
             let moist = moisture(
                 dir,
-                macro_sample.mountain_influence,
+                split.mountain_influence,
                 &self.planet_params,
                 &self.climate_noise,
             );
-            // Composed elevation: macro + residual (hill/detail displacement).
-            let elev = elevation(dir, &self.noise, &self.elevation_params);
+            let elev = split.full_elev;
             let temp = temperature(dir, elev, &self.planet_params, &self.climate_noise);
-            let biom = biome(
-                dir,
-                elev,
-                macro_sample.low_freq_elev,
-                macro_sample.mountain_influence,
-                &self.planet_params,
-                &self.climate_noise,
-            );
+            let biom = classify_biome(elev, temp, moist, split.low_freq_elev, &self.planet_params);
 
             TerrainSample {
                 elevation: elev,
-                low_freq_elev: macro_sample.low_freq_elev as f32,
+                low_freq_elev: split.low_freq_elev as f32,
                 warped_dir: [
-                    macro_sample.warped_dir.x as f32,
-                    macro_sample.warped_dir.y as f32,
-                    macro_sample.warped_dir.z as f32,
+                    split.warped_dir.x as f32,
+                    split.warped_dir.y as f32,
+                    split.warped_dir.z as f32,
                 ],
                 moisture: moist as f32,
                 biome: biom,
-                mountain_influence: macro_sample.mountain_influence as f32,
+                mountain_influence: split.mountain_influence as f32,
                 temperature: temp as f32,
                 drainage: 0.0,
                 source: TerrainSampleSource::Procedural,
@@ -284,6 +284,25 @@ impl TerrainField for ProceduralTerrainField {
             Some(cache) => cache.get_or_insert(dir, compute).into(),
             None => compute().into(),
         }
+    }
+
+    fn sample_elevation(&self, dir: DVec3) -> f64 {
+        let compute = || {
+            if let Some(radius) = self.metric_radius_m {
+                let pos = crate::terrain_space::metric_surface_point(dir, radius);
+                metric_landform_sample(pos, &self.noise).full_elevation
+            } else {
+                elevation(dir, &self.noise, &self.elevation_params)
+            }
+        };
+        match &self.cache {
+            Some(cache) => cache.get_or_insert_elevation(dir, compute),
+            None => compute(),
+        }
+    }
+
+    fn mesh_sample_spacing_m(&self) -> Option<f64> {
+        self.metric_radius_m.map(|_| 80.0)
     }
 }
 
@@ -433,6 +452,23 @@ mod tests {
             sample.elevation.to_bits(),
             elevation(dir, &noise, &ep).to_bits()
         );
+        assert_eq!(
+            field.sample_elevation(dir).to_bits(),
+            sample.elevation.to_bits()
+        );
+    }
+
+    #[test]
+    fn sparse_mesh_sampling_is_procedural_metric_only() {
+        let seed = PlanetSeed(0xC0FFEE);
+        let ep = elevation_params(seed);
+        let pp = planet_params(seed);
+        let procedural = Arc::new(ProceduralTerrainField::new_metric(ep, pp, 6_371_000.0));
+        assert_eq!(procedural.mesh_sample_spacing_m(), Some(80.0));
+
+        let fallback: Arc<dyn TerrainField> = procedural;
+        let hybrid = HybridTerrainField::new(fallback, Arc::new(ConstantMacro(0.0)));
+        assert_eq!(hybrid.mesh_sample_spacing_m(), None);
     }
 
     #[test]

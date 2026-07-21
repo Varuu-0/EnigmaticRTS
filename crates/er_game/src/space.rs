@@ -249,7 +249,7 @@ fn make_sphere(radius: f32, segments: usize, rings: usize) -> Mesh {
     }
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
+        RenderAssetUsages::RENDER_WORLD,
     );
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
     mesh.insert_indices(Indices::U32(indices));
@@ -288,6 +288,7 @@ impl Plugin for SpacePlugin {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn setup_space(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -410,6 +411,7 @@ fn setup_space(
     ));
 }
 
+#[allow(clippy::type_complexity)]
 fn update_space(
     camera_query: Query<&GlobalTransform, With<Camera3d>>,
     mut starfield_query: Query<&mut Transform, With<StarfieldComponent>>,
@@ -504,6 +506,9 @@ fn update_sun(
     let t = (sim_time.0 % day_length) * (2.0 * std::f32::consts::PI / day_length);
     let sun_dir = Vec3::new(t.sin() * 0.8, t.cos(), t.sin() * 0.3).normalize();
 
+    if sun_direction.0 == sun_dir {
+        return;
+    }
     sun_direction.0 = sun_dir;
 
     let planet_radius = terrain_state.planet_radius as f32;
@@ -560,18 +565,20 @@ fn update_sun(
 }
 
 fn update_terrain_uniforms(
-    sim_time: Res<SimTime>,
     camera_world: Res<er_terrain::CameraWorldPosition>,
+    sun_direction: Res<er_terrain::SunDirection>,
     terrain_material: Res<SharedTerrainMaterial>,
     mut terrain_materials: ResMut<Assets<TerrainMaterial>>,
     mut ocean_materials: ResMut<Assets<er_terrain::ocean::OceanMaterial>>,
     render_origin: Res<er_terrain::RenderOrigin>,
 ) {
+    if !camera_world.is_changed() && !render_origin.is_changed() && !sun_direction.is_changed() {
+        return;
+    }
+
     let cam_pos = (camera_world.0 - render_origin.world).as_vec3();
 
-    let day_length = DEFAULT_DAY_LENGTH_SEC as f32;
-    let t = (sim_time.0 % day_length) * (2.0 * std::f32::consts::PI / day_length);
-    let sun_dir = Vec3::new(t.sin() * 0.8, t.cos(), t.sin() * 0.3).normalize();
+    let sun_dir = sun_direction.0;
 
     let sx = sun_dir.x;
     let sy = sun_dir.y;
