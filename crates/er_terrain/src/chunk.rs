@@ -30,3 +30,27 @@ pub struct HoldHidden;
 /// reveal/despawn. This prevents the 1–2 frame black gap of a plain merge.
 #[derive(Component, Clone, Debug, Default)]
 pub struct HoldForMerge;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LodTransitionRole {
+    Incoming,
+    Outgoing,
+}
+
+/// Short-lived visual handoff between otherwise atomic LOD replacements.
+/// The progress is encoded in Bevy's per-instance `MeshTag`, avoiding mesh
+/// uploads and per-chunk material instances during the transition.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct LodTransition {
+    pub role: LodTransitionRole,
+    pub elapsed_seconds: f32,
+}
+
+impl LodTransition {
+    pub fn new(role: LodTransitionRole) -> Self {
+        Self {
+            role,
+            elapsed_seconds: 0.0,
+        }
+    }
+}

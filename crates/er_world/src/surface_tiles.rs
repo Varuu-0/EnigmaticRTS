@@ -41,12 +41,22 @@ pub struct LearnedTileKey {
 /// Validated elevation payload for one face-local learned tile. `elevation_m`
 /// is row-major signed meters and includes a pre-generated halo around its
 /// `core_resolution` by `halo` samples per side.
+///
+/// `climate` carries the four upstream climate channels (interleaved per
+/// sample) when available. It is `None` for elevation-only requests and for
+/// the procedural fallback path. The M4 cache record retains climate; the
+/// legacy `LearnedTileCache` ignores it for sampling but stores it so the
+/// versioned cache can persist it.
 #[derive(Clone, Debug)]
 pub struct LearnedTerrainTile {
     pub key: LearnedTileKey,
     pub core_resolution: u16,
     pub halo: u16,
     pub elevation_m: Arc<[i16]>,
+    /// Four climate channels interleaved per sample
+    /// (`[s0c0, s0c1, s0c2, s0c3, s1c0, ...]`), or `None` when the source
+    /// response did not include climate.
+    pub climate: Option<Arc<[f32]>>,
 }
 
 impl LearnedTerrainTile {
@@ -78,6 +88,14 @@ impl LearnedTerrainTile {
                 actual: self.elevation_m.len(),
             });
         }
+        if let Some(climate) = &self.climate {
+            if climate.len() != expected * 4 {
+                return Err(TileInsertError::ClimatePayloadLength {
+                    expected: expected * 4,
+                    actual: climate.len(),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -108,6 +126,7 @@ pub enum TileInsertError {
     CoreResolutionTooSmall(u16),
     StoredResolutionOverflow,
     PayloadLength { expected: usize, actual: usize },
+    ClimatePayloadLength { expected: usize, actual: usize },
 }
 
 impl fmt::Display for TileInsertError {
@@ -134,6 +153,10 @@ impl fmt::Display for TileInsertError {
             Self::PayloadLength { expected, actual } => write!(
                 formatter,
                 "tile payload has {actual} samples; expected {expected}"
+            ),
+            Self::ClimatePayloadLength { expected, actual } => write!(
+                formatter,
+                "tile climate payload has {actual} values; expected {expected}"
             ),
         }
     }
@@ -253,6 +276,7 @@ impl MacroTerrainField for LearnedTileCache {
         Some(MacroTerrainSample {
             elevation: (elevation_m - self.generation.sea_level_datum_m as f64)
                 / self.elevation_scale_m,
+            visual_climate: crate::terrain_field::VisualClimate::default(),
         })
     }
 
@@ -312,6 +336,7 @@ mod tests {
             core_resolution: resolution,
             halo: 0,
             elevation_m: Arc::from(elevation_m),
+            climate: None,
         }
     }
 
@@ -375,6 +400,7 @@ mod tests {
             core_resolution: 3,
             halo: 0,
             elevation_m: Arc::from(vec![0_i16; 8]),
+            climate: None,
         };
         assert_eq!(
             cache.insert(invalid),

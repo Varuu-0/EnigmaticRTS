@@ -14,6 +14,7 @@ pub mod systems;
 
 pub use chunk::{ChunkComponent, HoldForMerge, HoldHidden};
 pub use debug::{TerrainDebugInfo, ESTIMATED_BYTES_PER_CHUNK_MESH};
+pub use er_world::terrain_field::BlendTransitionChecker;
 pub use material::{TerrainMaterial, TerrainMaterialUniform};
 pub use mesh_gen::{
     generate_chunk_mesh, generate_chunk_mesh_stitched, StitchNeighbors, ATTRIBUTE_CURVATURE,
@@ -27,8 +28,9 @@ pub use quadtree::{
 };
 pub use systems::{
     anchor_render_translation, chunk_render_translation, CameraWorldPosition, PendingChunkMeshes,
-    QueuedChunkMeshes, RenderOrigin, SharedTerrainMaterial, SunDirection, TerrainPlugin,
-    TerrainState, TerrainUpdate,
+    QueuedChunkMeshes, RebuildChunkSource, RenderOrigin, SampleSourceRecorder,
+    SharedTerrainMaterial, SunDirection, TerrainPlugin, TerrainSampleSourceRecorder, TerrainState,
+    TerrainUpdate,
 };
 
 pub fn version() -> &'static str {

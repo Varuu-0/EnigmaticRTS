@@ -1,6 +1,7 @@
 use bevy::camera::visibility::NoCpuCulling;
 use bevy::ecs::schedule::ApplyDeferred;
 use bevy::ecs::schedule::SystemSet;
+use bevy::mesh::MeshTag;
 use bevy::pbr::MaterialPlugin;
 use bevy::prelude::*;
 use bevy::shader::Shader;
@@ -17,17 +18,18 @@ use er_world::cache::WorldCache;
 use er_world::elevation::{elevation_params, ElevationParams};
 use er_world::params::{planet_params as make_planet_params, PlanetParams};
 use er_world::terrain_field::{
-    HybridTerrainField, MacroTerrainField, ProceduralTerrainField, TerrainField,
-    TerrainSampleSource, TerrainSourceMode,
+    BlendTransitionChecker, BlendedHybridTerrainField, ChunkFieldSnapshot, HaloResidencyChecker,
+    MacroTerrainField, ProceduralTerrainField, TerrainField, TerrainSampleSource,
+    TerrainSourceMode,
 };
 use glam::DVec3;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use crate::chunk::{ChunkComponent, HoldForMerge, HoldHidden};
+use crate::chunk::{ChunkComponent, HoldForMerge, HoldHidden, LodTransition, LodTransitionRole};
 use crate::culling::{
     frustum_cull_sphere, is_beyond_render_distance, is_minimum_coverage_chunk, HorizonCuller,
 };
@@ -47,6 +49,16 @@ const NEIGHBOR_SIDES: [NeighborSide; 4] = [
     NeighborSide::NegV,
     NeighborSide::PosV,
 ];
+
+/// A brief dithered handoff hides geometry and lighting pops without changing
+/// mesh resolution or generating transition meshes.
+const LOD_TRANSITION_DURATION_SECONDS: f32 = 0.12;
+/// Bounds transient overlap independently of the split/merge scheduling budget.
+/// Incoming meshes replace normal coverage; only outgoing meshes add draws.
+const MAX_LOD_TRANSITION_EXTRA_DRAWS: usize = 64;
+const LOD_TRANSITION_ACTIVE_BIT: u32 = 1 << 31;
+const LOD_TRANSITION_INCOMING_BIT: u32 = 1 << 30;
+const LOD_TRANSITION_PROGRESS_MASK: u32 = u16::MAX as u32;
 
 #[derive(Resource, Clone, Copy)]
 pub struct SunDirection(pub Vec3);
@@ -100,6 +112,9 @@ pub struct PendingMeshPayload {
     pub key: CellKey,
     pub source_anchor: DVec3,
     pub origin_generation: u64,
+    /// Whether this chunk used learned data (all halo deps resident) or
+    /// procedural fallback. Recorded at mesh-build time for telemetry.
+    pub learned_eligible: bool,
 }
 
 #[derive(SystemSet, Clone, PartialEq, Eq, Hash, Debug)]
@@ -113,6 +128,18 @@ pub struct TerrainState {
     pub planet_params: PlanetParams,
     pub source_mode: TerrainSourceMode,
     pub field: Arc<dyn TerrainField>,
+    /// Optional halo-residency checker for the M5 chunk-wide residency gate.
+    /// When present, chunk mesh generation wraps the field in a
+    /// `ChunkFieldSnapshot` that uses learned data only if ALL halo deps are
+    /// resident; otherwise entirely procedural.
+    pub halo_checker: Option<Arc<dyn HaloResidencyChecker>>,
+    /// Optional source of targeted chunk rebuilds after learned data arrives.
+    /// When present, only chunks intersecting the arrived chart/tile are
+    /// rebuilt, not all active chunks.
+    pub rebuild_source: Option<Arc<dyn RebuildChunkSource>>,
+    /// Optional blend-transition checker for scheduling bounded follow-up
+    /// rebuilds of chunks still transitioning from procedural to learned.
+    pub blend_checker: Option<Arc<dyn BlendTransitionChecker>>,
     pub base_uniform: TerrainMaterialUniform,
     pub max_quadtree_depth: u8,
     pub screen_error_threshold: f32,
@@ -133,19 +160,35 @@ impl TerrainState {
             seed,
             PlanetPreset::default(),
             None,
+            None,
+            None,
+            None,
         )
     }
 
     pub fn for_preset(preset: PlanetPreset, elevation_scale: f32, seed: PlanetSeed) -> Self {
-        Self::with_optional_macro_field(preset.radius_m(), elevation_scale, seed, preset, None)
+        Self::with_optional_macro_field(
+            preset.radius_m(),
+            elevation_scale,
+            seed,
+            preset,
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn with_optional_macro_field(
         planet_radius: f64,
         elevation_scale: f32,
         seed: PlanetSeed,
         preset: PlanetPreset,
         macro_field: Option<Arc<dyn MacroTerrainField>>,
+        halo_checker: Option<Arc<dyn HaloResidencyChecker>>,
+        rebuild_source: Option<Arc<dyn RebuildChunkSource>>,
+        blend_checker: Option<Arc<dyn BlendTransitionChecker>>,
     ) -> Self {
         let params = elevation_params(seed);
         let planet_params = make_planet_params(seed);
@@ -164,15 +207,28 @@ impl TerrainState {
                 planet_radius,
             )),
         };
-        let (source_mode, field): (TerrainSourceMode, Arc<dyn TerrainField>) =
-            if let Some(macro_field) = macro_field {
-                (
-                    TerrainSourceMode::HybridLearned,
-                    Arc::new(HybridTerrainField::new(fallback, macro_field)),
-                )
-            } else {
-                (TerrainSourceMode::Procedural, fallback)
-            };
+        // Use BlendedHybridTerrainField (M5) which blends learned macro
+        // provenance over a smoothstep transition without blending world
+        // coordinates, preserving procedural shoreline ownership.
+        let (source_mode, field, derived_blend_checker): (
+            TerrainSourceMode,
+            Arc<dyn TerrainField>,
+            Option<Arc<dyn BlendTransitionChecker>>,
+        ) = if let Some(macro_field) = macro_field {
+            let blended = Arc::new(BlendedHybridTerrainField::new(fallback, macro_field, 2.0));
+            let checker: Arc<dyn BlendTransitionChecker> =
+                Arc::clone(&blended) as Arc<dyn BlendTransitionChecker>;
+            (
+                TerrainSourceMode::HybridLearned,
+                blended as Arc<dyn TerrainField>,
+                Some(checker),
+            )
+        } else {
+            (TerrainSourceMode::Procedural, fallback, None)
+        };
+        // Use the caller-provided blend checker if present, otherwise the
+        // one derived from the BlendedHybridTerrainField.
+        let blend_checker = blend_checker.or(derived_blend_checker);
         let base_uniform = TerrainMaterialUniform::from_params(
             &params,
             planet_radius as f32,
@@ -186,6 +242,9 @@ impl TerrainState {
             planet_params,
             source_mode,
             field,
+            halo_checker,
+            rebuild_source,
+            blend_checker,
             base_uniform,
             max_quadtree_depth: preset.max_quadtree_depth(),
             screen_error_threshold: SCREEN_ERROR_THRESHOLD,
@@ -214,6 +273,11 @@ struct ChunkMeshRequest {
     elevation_scale: f32,
     sea_level: f64,
     field: Arc<dyn TerrainField>,
+    /// Optional halo-residency checker for the M5 chunk-wide residency gate.
+    /// When present, the async mesh task wraps the field in a
+    /// `ChunkFieldSnapshot` that uses learned data only if ALL halo deps
+    /// are resident.
+    halo_checker: Option<Arc<dyn HaloResidencyChecker>>,
     origin_generation: u64,
     source_anchor: DVec3,
     stitch_neighbors: StitchNeighbors,
@@ -238,15 +302,46 @@ impl QueuedChunkMeshes {
     }
 }
 
+/// A source of chunk keys that need rebuilding after learned data arrives.
+/// The integration (which owns the streaming queue) implements this to
+/// A source of chart arrivals that need targeted chunk rebuilds. The
+/// integration (which owns the streaming queue) implements this to provide
+/// the chart footprint of each arrived tile. The terrain system computes
+/// intersecting active chunks via `chunks_intersecting_chart` and rebuilds
+/// only those — not all active chunks.
+pub trait RebuildChunkSource: Send + Sync {
+    /// Pop the next arrived chart footprint. Returns `None` when no arrivals
+    /// are pending.
+    fn pop_arrived_chart(&self) -> Option<er_world::streaming::ChartFootprint>;
+    /// The number of rebuilds completed so far (for telemetry).
+    fn rebuilds_completed(&self) -> u64;
+    /// The number of rebuilds queued so far (for telemetry).
+    fn rebuilds_queued(&self) -> u64;
+}
+
 /// Chunks awaiting a rebuild after resident learned macro data changes. Work is
 /// throttled so a sidecar tile arrival cannot monopolize mesh worker capacity.
 #[derive(Resource, Default)]
 struct TerrainFieldRefresh {
+    /// The last revision we processed. When the macro field revision changes,
+    /// we pull targeted rebuilds from the `RebuildChunkSource` instead of
+    /// rebuilding all active chunks.
     revision: u64,
     queued: VecDeque<(Entity, CellKey)>,
+    /// Chunks scheduled for a bounded follow-up rebuild because their blend
+    /// transition is still in progress. This makes time-based blend visible
+    /// in live meshes without thrashing or starving mesh scheduling.
+    blend_follow_ups: VecDeque<(Entity, CellKey, Instant)>,
+    /// Cooldown to prevent blend follow-up scheduling from running every frame.
+    last_blend_check: Option<Instant>,
 }
 
 const LEARNED_FIELD_REBUILD_BUDGET: usize = 8;
+/// Maximum follow-up rebuilds per frame for transitioning chunks. Bounded to
+/// prevent thrashing or starving normal mesh scheduling.
+const BLEND_FOLLOW_UP_BUDGET: usize = 4;
+/// Minimum interval between blend follow-up checks (prevents per-frame thrash).
+const BLEND_CHECK_INTERVAL: Duration = Duration::from_millis(100);
 
 /// All terrain chunks share one bind group. Per-chunk geometry is baked into
 /// each mesh, which lets Bevy batch their render-phase work.
@@ -266,6 +361,9 @@ pub struct TerrainPlugin {
     pub preset: PlanetPreset,
     render_origin_cell_size_m: f64,
     macro_field: Option<Arc<dyn MacroTerrainField>>,
+    halo_checker: Option<Arc<dyn HaloResidencyChecker>>,
+    rebuild_source: Option<Arc<dyn RebuildChunkSource>>,
+    blend_checker: Option<Arc<dyn BlendTransitionChecker>>,
 }
 
 impl Default for TerrainPlugin {
@@ -277,6 +375,9 @@ impl Default for TerrainPlugin {
             preset: PlanetPreset::default(),
             render_origin_cell_size_m: 1000.0,
             macro_field: None,
+            halo_checker: None,
+            rebuild_source: None,
+            blend_checker: None,
         }
     }
 }
@@ -286,6 +387,29 @@ impl TerrainPlugin {
     /// fallback behavior for every tile that is not yet resident.
     pub fn with_hybrid_macro_field(mut self, macro_field: Arc<dyn MacroTerrainField>) -> Self {
         self.macro_field = Some(macro_field);
+        self
+    }
+
+    /// Sets the halo-residency checker for the M5 chunk-wide residency gate.
+    /// When present, chunk mesh generation uses learned data only if ALL halo
+    /// dependencies are resident; otherwise entirely procedural.
+    pub fn with_halo_checker(mut self, checker: Arc<dyn HaloResidencyChecker>) -> Self {
+        self.halo_checker = Some(checker);
+        self
+    }
+
+    /// Sets the rebuild-chunk source for M5 targeted refreshes. When present,
+    /// only chunks intersecting the arrived chart/tile are rebuilt, not all
+    /// active chunks.
+    pub fn with_rebuild_source(mut self, source: Arc<dyn RebuildChunkSource>) -> Self {
+        self.rebuild_source = Some(source);
+        self
+    }
+
+    /// Sets the blend-transition checker for scheduling bounded follow-up
+    /// rebuilds of chunks still transitioning from procedural to learned.
+    pub fn with_blend_checker(mut self, checker: Arc<dyn BlendTransitionChecker>) -> Self {
+        self.blend_checker = Some(checker);
         self
     }
 
@@ -305,6 +429,9 @@ impl TerrainPlugin {
             preset,
             render_origin_cell_size_m: 1000.0,
             macro_field: None,
+            halo_checker: None,
+            rebuild_source: None,
+            blend_checker: None,
         }
     }
 }
@@ -317,6 +444,9 @@ impl Plugin for TerrainPlugin {
             self.seed,
             self.preset,
             self.macro_field.clone(),
+            self.halo_checker.clone(),
+            self.rebuild_source.clone(),
+            self.blend_checker.clone(),
         ))
         .insert_resource(ActiveChunks::default())
         .insert_resource(RetainedSplits::default())
@@ -340,6 +470,7 @@ impl Plugin for TerrainPlugin {
                 apply_render_origin_to_chunks,
                 update_lod,
                 queue_resident_field_refreshes,
+                schedule_blend_follow_ups,
                 process_lod_queue,
                 ApplyDeferred,
                 dispatch_chunk_meshes,
@@ -348,6 +479,8 @@ impl Plugin for TerrainPlugin {
                 finalize_retirements,
                 ApplyDeferred,
                 finalize_retained_merges,
+                ApplyDeferred,
+                advance_lod_transitions,
                 ApplyDeferred,
                 queue_stitch_rebuilds,
                 cull_chunks,
@@ -407,6 +540,7 @@ fn setup_terrain(
             terrain_state.elevation_scale,
             terrain_state.planet_params.sea_level,
             Arc::clone(&terrain_state.field),
+            terrain_state.halo_checker.clone(),
             &origin,
             [None; 4],
         );
@@ -446,6 +580,104 @@ fn queue_resident_field_refreshes(
     pending: Res<PendingChunkMeshes>,
     origin: Res<RenderOrigin>,
 ) {
+    // M5 targeted refresh: if a rebuild source is present, pop arrived chart
+    // footprints and compute ALL active chunks intersecting each footprint
+    // (including halo). This rebuilds only intersecting chunks, not all
+    // active chunks.
+    if let Some(rebuild_source) = &terrain_state.rebuild_source {
+        let budget = LEARNED_FIELD_REBUILD_BUDGET;
+        let mut processed = 0usize;
+        while processed < budget {
+            let Some(chart_footprint) = rebuild_source.pop_arrived_chart() else {
+                break;
+            };
+            processed += 1;
+            // Compute all active chunks intersecting this chart footprint.
+            // The footprint carries the exact charts_per_face_edge (e.g. 652
+            // for Earth), NOT a padded power-of-two.
+            let halo_cells = 1u32; // one-cell halo margin
+            for (&active_key, &entity) in active_chunks.chunks.iter() {
+                // Only chunks on the same face can intersect.
+                if active_key.face != chart_footprint.face {
+                    continue;
+                }
+                // Compute the intersecting chunks at the active chunk's LOD.
+                let intersecting = er_world::streaming::chunks_intersecting_chart(
+                    chart_footprint.face,
+                    chart_footprint.x,
+                    chart_footprint.y,
+                    chart_footprint.charts_per_face_edge,
+                    active_key.lod,
+                    halo_cells,
+                );
+                if !intersecting.contains(&active_key) {
+                    continue;
+                }
+                // This active chunk intersects the arrived chart. Queue it
+                // for rebuild if it's not already pending/queued.
+                if !chunk_query
+                    .get(entity)
+                    .is_ok_and(|(_, chunk)| pending_mesh_matches_chunk(chunk.key, active_key))
+                {
+                    continue;
+                }
+                if pending.0.contains_key(&entity) || queued_meshes.contains(entity) {
+                    // Let the in-flight mesh finish, then rebuild it from
+                    // the newest resident field data on a later frame.
+                    if !refresh.queued.iter().any(|(_, k)| *k == active_key) {
+                        refresh.queued.push_back((entity, active_key));
+                    }
+                    continue;
+                }
+                queue_chunk_mesh(
+                    &mut queued_meshes,
+                    entity,
+                    active_key,
+                    terrain_state.planet_radius,
+                    terrain_state.elevation_scale,
+                    terrain_state.planet_params.sea_level,
+                    Arc::clone(&terrain_state.field),
+                    terrain_state.halo_checker.clone(),
+                    origin.generation,
+                    stitch_neighbors(active_key, &active_chunks),
+                );
+            }
+        }
+        // Process any re-queued chunks from the previous loop.
+        let attempts = refresh.queued.len().min(LEARNED_FIELD_REBUILD_BUDGET);
+        for _ in 0..attempts {
+            let Some((entity, key)) = refresh.queued.pop_front() else {
+                break;
+            };
+            if !chunk_query
+                .get(entity)
+                .is_ok_and(|(_, chunk)| pending_mesh_matches_chunk(chunk.key, key))
+            {
+                continue;
+            }
+            if pending.0.contains_key(&entity) || queued_meshes.contains(entity) {
+                refresh.queued.push_back((entity, key));
+                continue;
+            }
+            queue_chunk_mesh(
+                &mut queued_meshes,
+                entity,
+                key,
+                terrain_state.planet_radius,
+                terrain_state.elevation_scale,
+                terrain_state.planet_params.sea_level,
+                Arc::clone(&terrain_state.field),
+                terrain_state.halo_checker.clone(),
+                origin.generation,
+                stitch_neighbors(key, &active_chunks),
+            );
+        }
+        return;
+    }
+
+    // Fallback (no rebuild source): use the legacy all-active-chunk refresh.
+    // This path is only taken when the streaming queue is not wired (e.g.
+    // procedural-only mode or tests).
     let revision = terrain_state.field.revision();
     if revision != refresh.revision {
         refresh.revision = revision;
@@ -482,6 +714,117 @@ fn queue_resident_field_refreshes(
             terrain_state.elevation_scale,
             terrain_state.planet_params.sea_level,
             Arc::clone(&terrain_state.field),
+            terrain_state.halo_checker.clone(),
+            origin.generation,
+            stitch_neighbors(key, &active_chunks),
+        );
+    }
+}
+
+/// Schedule bounded follow-up rebuilds for chunks whose blend transition is
+/// still in progress. This makes time-based blend visible in live meshes by
+/// re-meshing chunks at intervals until their blend weight reaches 1.0.
+/// Bounded by `BLEND_FOLLOW_UP_BUDGET` and `BLEND_CHECK_INTERVAL` to prevent
+/// thrashing or starving normal mesh scheduling.
+fn schedule_blend_follow_ups(
+    terrain_state: Res<TerrainState>,
+    mut refresh: ResMut<TerrainFieldRefresh>,
+    chunk_query: Query<(Entity, &ChunkComponent)>,
+    active_chunks: Res<ActiveChunks>,
+    mut queued_meshes: ResMut<QueuedChunkMeshes>,
+    pending: Res<PendingChunkMeshes>,
+    origin: Res<RenderOrigin>,
+) {
+    let Some(blend_checker) = &terrain_state.blend_checker else {
+        return;
+    };
+    let now = Instant::now();
+
+    // If no chunks are transitioning, drain any pending follow-ups (they
+    // should have completed).
+    if !blend_checker.has_transitioning_chunks() {
+        refresh.blend_follow_ups.clear();
+        return;
+    }
+
+    // Throttle the scan: only check at intervals to prevent per-frame thrash.
+    let should_scan = refresh
+        .last_blend_check
+        .is_none_or(|last| now.duration_since(last) >= BLEND_CHECK_INTERVAL);
+    if should_scan {
+        refresh.last_blend_check = Some(now);
+
+        // Scan active chunks and enqueue those that are still transitioning.
+        // This populates blend_follow_ups with actual arrived/active chunks
+        // that built at a transition weight in (0,1).
+        let existing: HashSet<CellKey> = refresh
+            .blend_follow_ups
+            .iter()
+            .map(|(_, key, _)| *key)
+            .collect();
+        for (&key, &entity) in active_chunks.chunks.iter() {
+            // Skip if already in the follow-up queue.
+            if existing.contains(&key) {
+                continue;
+            }
+            // Skip if the chunk is pending or queued (let it finish first).
+            if pending.0.contains_key(&entity) || queued_meshes.contains(entity) {
+                continue;
+            }
+            // Check if this chunk is still transitioning by sampling its
+            // center direction's blend weight.
+            let dir = cell_to_dir(key);
+            if let Some(blended) = terrain_state
+                .field
+                .as_ref()
+                .as_any()
+                .downcast_ref::<BlendedHybridTerrainField>()
+            {
+                let weight = blended.current_blend_weight(dir);
+                if weight > 0.0 && weight < 1.0 {
+                    refresh
+                        .blend_follow_ups
+                        .push_back((entity, key, now + BLEND_CHECK_INTERVAL));
+                }
+            }
+        }
+    }
+
+    // Process pending follow-up rebuilds (bounded).
+    let budget = BLEND_FOLLOW_UP_BUDGET.min(refresh.blend_follow_ups.len());
+    for _ in 0..budget {
+        let Some((entity, key, scheduled_for)) = refresh.blend_follow_ups.pop_front() else {
+            break;
+        };
+        // Only rebuild if enough time has passed since scheduling.
+        if now < scheduled_for {
+            refresh
+                .blend_follow_ups
+                .push_back((entity, key, scheduled_for));
+            continue;
+        }
+        if !chunk_query
+            .get(entity)
+            .is_ok_and(|(_, chunk)| pending_mesh_matches_chunk(chunk.key, key))
+        {
+            continue;
+        }
+        if pending.0.contains_key(&entity) || queued_meshes.contains(entity) {
+            // Re-schedule for later.
+            refresh
+                .blend_follow_ups
+                .push_back((entity, key, now + BLEND_CHECK_INTERVAL));
+            continue;
+        }
+        queue_chunk_mesh(
+            &mut queued_meshes,
+            entity,
+            key,
+            terrain_state.planet_radius,
+            terrain_state.elevation_scale,
+            terrain_state.planet_params.sea_level,
+            Arc::clone(&terrain_state.field),
+            terrain_state.halo_checker.clone(),
             origin.generation,
             stitch_neighbors(key, &active_chunks),
         );
@@ -660,6 +1003,7 @@ fn process_lod_queue(
     camera_world: Res<CameraWorldPosition>,
     origin: Res<RenderOrigin>,
     mesh_query: Query<(), With<Mesh3d>>,
+    transition_query: Query<(), With<LodTransition>>,
     mut debug: ResMut<TerrainDebugInfo>,
     mut queued_meshes: ResMut<QueuedChunkMeshes>,
     pending_meshes: Res<PendingChunkMeshes>,
@@ -701,6 +1045,9 @@ fn process_lod_queue(
         }
 
         let parent_entity = *active_chunks.chunks.get(&key).unwrap();
+        if transition_query.get(parent_entity).is_ok() {
+            continue;
+        }
 
         // Gate: only split a chunk that already has a mesh. A freshly-spawned
         // (still-meshless) child is never split, so the cascade is serialized
@@ -735,6 +1082,7 @@ fn process_lod_queue(
                 terrain_state.elevation_scale,
                 terrain_state.planet_params.sea_level,
                 Arc::clone(&terrain_state.field),
+                terrain_state.halo_checker.clone(),
                 &origin,
                 child_stitch_neighbors,
             );
@@ -776,6 +1124,14 @@ fn process_lod_queue(
         }
         let children = children_of(parent_key);
         if !children.iter().all(|c| active_chunks.contains(c)) {
+            continue;
+        }
+        if children.iter().any(|child| {
+            active_chunks
+                .chunks
+                .get(child)
+                .is_some_and(|entity| transition_query.get(*entity).is_ok())
+        }) {
             continue;
         }
 
@@ -824,6 +1180,7 @@ fn process_lod_queue(
             terrain_state.elevation_scale,
             terrain_state.planet_params.sea_level,
             Arc::clone(&terrain_state.field),
+            terrain_state.halo_checker.clone(),
             &origin,
             stitch_neighbors(parent_key, &active_chunks),
         );
@@ -1034,6 +1391,7 @@ fn update_debug_info(
     let vs = cs / CHUNK_QUADS_PER_EDGE as f64;
     debug.nearest_chunk_lod = container.lod;
     debug.nearest_chunk_width_m = cs;
+    debug.containing_chunk = Some(container);
     debug.vertex_spacing_m = vs;
     let normal_spacing = normal_sample_spacing_m(container.lod, radius);
     debug.normal_diff_spacing_m = normal_spacing;
@@ -1106,6 +1464,7 @@ fn spawn_chunk_entity(
     elevation_scale: f32,
     sea_level: f64,
     field: Arc<dyn TerrainField>,
+    halo_checker: Option<Arc<dyn HaloResidencyChecker>>,
     origin: &RenderOrigin,
     stitch_neighbors: StitchNeighbors,
 ) -> Entity {
@@ -1132,6 +1491,7 @@ fn spawn_chunk_entity(
         elevation_scale,
         sea_level,
         field,
+        halo_checker,
         origin.generation,
         stitch_neighbors,
     );
@@ -1148,6 +1508,7 @@ fn queue_chunk_mesh(
     elevation_scale: f32,
     sea_level: f64,
     field: Arc<dyn TerrainField>,
+    halo_checker: Option<Arc<dyn HaloResidencyChecker>>,
     origin_generation: u64,
     stitch_neighbors: StitchNeighbors,
 ) {
@@ -1161,6 +1522,7 @@ fn queue_chunk_mesh(
             elevation_scale,
             sea_level,
             field,
+            halo_checker,
             origin_generation,
             source_anchor,
             stitch_neighbors,
@@ -1207,23 +1569,60 @@ fn dispatch_chunk_meshes(
             elevation_scale,
             sea_level,
             field,
+            halo_checker,
             origin_generation,
             source_anchor,
             stitch_neighbors,
         } = request;
         let task = AsyncComputeTaskPool::get().spawn(async move {
+            // M5 chunk-wide halo residency gate: if a halo checker is
+            // present, capture the residency decision at mesh-build time so
+            // the entire chunk uses one source (all-learned or
+            // all-procedural). This prevents per-vertex mixing.
+            let (snapshot_field, learned_eligible) = if let Some(checker) = &halo_checker {
+                let halo_resident = checker.chunk_halo_resident(key);
+                // Check the actual blend weight to report the real source
+                // after the blend, not just halo eligibility. If the blend
+                // weight is > 0, the chunk uses some learned data.
+                let blend_weight = if halo_resident {
+                    if let Some(blended) = field
+                        .as_ref()
+                        .as_any()
+                        .downcast_ref::<BlendedHybridTerrainField>()
+                    {
+                        blended.current_blend_weight(cell_to_dir(key))
+                    } else {
+                        1.0
+                    }
+                } else {
+                    0.0
+                };
+                let snapshot = Arc::new(ChunkFieldSnapshot::new(
+                    Arc::clone(&field),
+                    key,
+                    halo_resident,
+                    blend_weight,
+                ));
+                // Report learned if the blend weight is > 0 (some learned
+                // data is visible in the mesh).
+                let eligible = blend_weight > 0.0;
+                (snapshot as Arc<dyn TerrainField>, eligible)
+            } else {
+                (field, false)
+            };
             PendingMeshPayload {
                 mesh: generate_chunk_mesh_stitched(
                     key,
                     radius,
                     elevation_scale,
                     sea_level,
-                    field.as_ref(),
+                    snapshot_field.as_ref(),
                     stitch_neighbors,
                 ),
                 key,
                 source_anchor,
                 origin_generation,
+                learned_eligible,
             }
         });
         pending.0.insert(entity, task);
@@ -1330,6 +1729,7 @@ fn queue_stitch_rebuilds(
             terrain_state.elevation_scale,
             terrain_state.planet_params.sea_level,
             Arc::clone(&terrain_state.field),
+            terrain_state.halo_checker.clone(),
             origin.generation,
             neighbors,
         );
@@ -1370,6 +1770,20 @@ fn despawn_chunk(commands: &mut Commands, entity: Entity) {
     }
 }
 
+/// A recorder for mesh sample-source telemetry. The integration (which owns
+/// the streaming queue) implements this to feed real fallback/learned
+/// percentages from the mesh-generation path.
+pub trait SampleSourceRecorder: Send + Sync {
+    /// Record that a chunk mesh was built with the given source.
+    fn record_sample_source(&self, learned: bool);
+}
+
+/// Optional resource holding the sample-source recorder. When present,
+/// `apply_pending_chunk_meshes` feeds real telemetry to the streaming queue.
+#[derive(Resource, Clone)]
+pub struct TerrainSampleSourceRecorder(pub Arc<dyn SampleSourceRecorder>);
+
+#[allow(clippy::too_many_arguments)]
 fn apply_pending_chunk_meshes(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1377,6 +1791,7 @@ fn apply_pending_chunk_meshes(
     chunk_query: Query<&ChunkComponent>,
     origin: Res<RenderOrigin>,
     mut debug: ResMut<TerrainDebugInfo>,
+    recorder: Option<Res<TerrainSampleSourceRecorder>>,
     mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
     let t0 = Instant::now();
@@ -1403,6 +1818,12 @@ fn apply_pending_chunk_meshes(
                         )),
                     ));
                     meshes_applied += 1;
+                    // B2: Record the sample source for real telemetry. This
+                    // feeds the streaming queue's fallback_percent and
+                    // cache_hit_rate without blocking mesh workers.
+                    if let Some(rec) = &recorder {
+                        rec.0.record_sample_source(payload.learned_eligible);
+                    }
                     if !generation_is_current {
                         cross_gen_attaches += 1;
                         trace!(
@@ -1433,15 +1854,15 @@ pub fn anchor_render_translation(source_anchor: DVec3, render_origin: DVec3) -> 
     (source_anchor - render_origin).as_vec3()
 }
 
-/// Finalize retained splits: once all four children of a retained parent have
-/// meshes, reveal the children and despawn the parent atomically (same frame).
-/// This is the no-gap / no-overlap handoff — the parent was the visible
-/// fallback right up to the frame its replacement coverage is ready.
+/// Finalize retained splits once all four child meshes are ready. When the
+/// bounded transition budget permits, the parent and children use a short
+/// complementary dither handoff; otherwise the original atomic swap remains.
 fn finalize_retirements(
     mut commands: Commands,
     mut retained: ResMut<RetainedSplits>,
     mesh_query: Query<(), With<Mesh3d>>,
     chunk_query: Query<&ChunkComponent>,
+    transition_query: Query<&LodTransition>,
     mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
     let t0 = Instant::now();
@@ -1460,11 +1881,30 @@ fn finalize_retirements(
         }
     }
 
+    let mut extra_draws_in_use = transition_query
+        .iter()
+        .filter(|transition| transition.role == LodTransitionRole::Outgoing)
+        .count();
+
     for &key in &done {
         let entry = retained.map.get(&key).unwrap();
+        let can_transition = despawn_parents.contains(&entry.parent_entity)
+            && !entry
+                .children
+                .iter()
+                .any(|child| despawn_parents.contains(child))
+            && lod_transition_has_capacity(extra_draws_in_use, 1);
         if despawn_parents.contains(&entry.parent_entity) {
             if let Ok(mut parent_cmd) = commands.get_entity(entry.parent_entity) {
-                parent_cmd.despawn();
+                if can_transition {
+                    parent_cmd.insert((
+                        LodTransition::new(LodTransitionRole::Outgoing),
+                        MeshTag(lod_transition_tag(LodTransitionRole::Outgoing, 0.0)),
+                    ));
+                    extra_draws_in_use += 1;
+                } else {
+                    parent_cmd.despawn();
+                }
             }
         } else if is_minimum_coverage_chunk(key) {
             if let Ok(mut parent_cmd) = commands.get_entity(entry.parent_entity) {
@@ -1475,6 +1915,12 @@ fn finalize_retirements(
             if !despawn_parents.contains(&c) {
                 if let Ok(mut child_cmd) = commands.get_entity(c) {
                     child_cmd.remove::<HoldHidden>().insert(Visibility::Visible);
+                    if can_transition {
+                        child_cmd.insert((
+                            LodTransition::new(LodTransitionRole::Incoming),
+                            MeshTag(lod_transition_tag(LodTransitionRole::Incoming, 0.0)),
+                        ));
+                    }
                 }
             }
         }
@@ -1486,15 +1932,16 @@ fn finalize_retirements(
     profiler.record("finalize_retirements", t0.elapsed());
 }
 
-/// Finalize retained merges: once the newly-spawned (coarser) parent has a
-/// mesh, reveal it and despawn the four fallback children atomically in the
-/// same frame. The children were kept visible as the fallback while the
-/// parent's mesh generated, so there is no gap.
+/// Finalize retained merges once the coarser parent mesh is ready. Simple
+/// handoffs use the same bounded complementary dither as splits; nested or
+/// over-budget merges retain the original atomic behavior.
+#[allow(clippy::too_many_arguments)]
 fn finalize_retained_merges(
     mut commands: Commands,
     mut retained_merges: ResMut<RetainedMerges>,
     mesh_query: Query<(), With<Mesh3d>>,
     chunk_query: Query<&ChunkComponent>,
+    transition_query: Query<&LodTransition>,
     mut active_chunks: ResMut<ActiveChunks>,
     mut dirty_stitches: ResMut<DirtyStitchChunks>,
     mut profiler: ResMut<crate::profiler::FrameProfiler>,
@@ -1516,14 +1963,47 @@ fn finalize_retained_merges(
         }
     }
 
+    let parent_entities: HashSet<Entity> = done
+        .iter()
+        .filter_map(|key| {
+            retained_merges
+                .map
+                .get(key)
+                .map(|entry| entry.parent_entity)
+        })
+        .collect();
+    let mut extra_draws_in_use = transition_query
+        .iter()
+        .filter(|transition| transition.role == LodTransitionRole::Outgoing)
+        .count();
+
     for &key in &done {
         let entry = retained_merges.map.get(&key).unwrap();
+        let outgoing_count = entry
+            .children
+            .iter()
+            .filter(|&&child| child != Entity::PLACEHOLDER && despawn_children.contains(&child))
+            .count();
+        let nested_handoff = despawn_children.contains(&entry.parent_entity)
+            || entry
+                .children
+                .iter()
+                .any(|child| parent_entities.contains(child));
+        let can_transition = !nested_handoff
+            && outgoing_count > 0
+            && lod_transition_has_capacity(extra_draws_in_use, outgoing_count);
         // An inner merge can finalize alongside its coarser parent. The inner
         // parent is then a child scheduled for despawn, so revealing it would
         // queue an insert/remove command against a dead entity.
         if !despawn_children.contains(&entry.parent_entity) {
             if let Ok(mut e) = commands.get_entity(entry.parent_entity) {
                 e.remove::<HoldForMerge>().insert(Visibility::Visible);
+                if can_transition {
+                    e.insert((
+                        LodTransition::new(LodTransitionRole::Incoming),
+                        MeshTag(lod_transition_tag(LodTransitionRole::Incoming, 0.0)),
+                    ));
+                }
             }
             if !active_chunks.contains(&key) {
                 active_chunks.insert(key, entry.parent_entity);
@@ -1534,9 +2014,19 @@ fn finalize_retained_merges(
         for &c in &entry.children {
             if c != Entity::PLACEHOLDER && despawn_children.contains(&c) {
                 if let Ok(mut child_cmd) = commands.get_entity(c) {
-                    child_cmd.despawn();
+                    if can_transition {
+                        child_cmd.insert((
+                            LodTransition::new(LodTransitionRole::Outgoing),
+                            MeshTag(lod_transition_tag(LodTransitionRole::Outgoing, 0.0)),
+                        ));
+                    } else {
+                        child_cmd.despawn();
+                    }
                 }
             }
+        }
+        if can_transition {
+            extra_draws_in_use += outgoing_count;
         }
     }
 
@@ -1544,6 +2034,53 @@ fn finalize_retained_merges(
         retained_merges.map.remove(&key);
     }
     profiler.record("finalize_retained_merges", t0.elapsed());
+}
+
+fn advance_lod_transitions(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut transitions: Query<(Entity, &mut LodTransition, &mut MeshTag)>,
+    mut profiler: ResMut<crate::profiler::FrameProfiler>,
+) {
+    let t0 = Instant::now();
+    let delta_seconds = time.delta_secs().min(LOD_TRANSITION_DURATION_SECONDS);
+    for (entity, mut transition, mut tag) in &mut transitions {
+        transition.elapsed_seconds += delta_seconds;
+        let progress =
+            (transition.elapsed_seconds / LOD_TRANSITION_DURATION_SECONDS).clamp(0.0, 1.0);
+        if progress >= 1.0 {
+            match transition.role {
+                LodTransitionRole::Incoming => {
+                    tag.0 = 0;
+                    if let Ok(mut entity_commands) = commands.get_entity(entity) {
+                        entity_commands.remove::<(LodTransition, MeshTag)>();
+                    }
+                }
+                LodTransitionRole::Outgoing => {
+                    if let Ok(mut entity_commands) = commands.get_entity(entity) {
+                        entity_commands.despawn();
+                    }
+                }
+            }
+        } else {
+            tag.0 = lod_transition_tag(transition.role, progress);
+        }
+    }
+    profiler.record("lod_transitions", t0.elapsed());
+}
+
+fn lod_transition_tag(role: LodTransitionRole, progress: f32) -> u32 {
+    let quantized = (progress.clamp(0.0, 1.0) * LOD_TRANSITION_PROGRESS_MASK as f32).round() as u32;
+    LOD_TRANSITION_ACTIVE_BIT
+        | match role {
+            LodTransitionRole::Incoming => LOD_TRANSITION_INCOMING_BIT,
+            LodTransitionRole::Outgoing => 0,
+        }
+        | quantized
+}
+
+fn lod_transition_has_capacity(extra_draws_in_use: usize, additional_draws: usize) -> bool {
+    extra_draws_in_use.saturating_add(additional_draws) <= MAX_LOD_TRANSITION_EXTRA_DRAWS
 }
 
 fn has_merged_ancestor(key: CellKey, merged_keys: &HashSet<CellKey>) -> bool {
@@ -1632,10 +2169,13 @@ mod tests {
         anchor_render_translation, balancing_split_for, camera_clip_planes, can_admit_split_meshes,
         chunk_render_translation, containing_ancestor_key, has_conflicting_merge,
         has_merged_ancestor, hide_far_coverage_root, is_child_of_retained_split,
-        mesh_dispatch_slots, pending_mesh_matches_chunk, queue_chunk_mesh,
-        sort_chunk_mesh_requests, sort_pending_splits_by_screen_error, stitch_neighbors,
-        ChunkMeshRequest, QueuedChunkMeshes, RenderOrigin, TerrainPlugin, TerrainState,
+        lod_transition_has_capacity, lod_transition_tag, mesh_dispatch_slots,
+        pending_mesh_matches_chunk, queue_chunk_mesh, sort_chunk_mesh_requests,
+        sort_pending_splits_by_screen_error, stitch_neighbors, ChunkMeshRequest, QueuedChunkMeshes,
+        RenderOrigin, TerrainPlugin, TerrainState, LOD_TRANSITION_ACTIVE_BIT,
+        LOD_TRANSITION_INCOMING_BIT, LOD_TRANSITION_PROGRESS_MASK,
     };
+    use crate::chunk::LodTransitionRole;
     use crate::culling::frustum_cull_sphere;
     use crate::lod::screen_error;
     use crate::quadtree::{parent_of, ActiveChunks, RetainedSplit, RetainedSplits};
@@ -1657,6 +2197,7 @@ mod tests {
             elevation_scale: state.elevation_scale,
             sea_level: state.planet_params.sea_level,
             field: state.field.clone(),
+            halo_checker: None,
             origin_generation: 0,
             source_anchor: cell_to_dir(key) * state.planet_radius,
             stitch_neighbors: [None; 4],
@@ -1669,6 +2210,44 @@ mod tests {
         assert_eq!(mesh_dispatch_slots(MAX_INFLIGHT_TERRAIN_MESHES, 127), 1);
         assert_eq!(mesh_dispatch_slots(MAX_INFLIGHT_TERRAIN_MESHES, 128), 0);
         assert_eq!(mesh_dispatch_slots(MAX_INFLIGHT_TERRAIN_MESHES, 160), 0);
+    }
+
+    #[test]
+    fn lod_transition_tags_encode_role_and_clamped_progress() {
+        let incoming_start = lod_transition_tag(LodTransitionRole::Incoming, -1.0);
+        let incoming_end = lod_transition_tag(LodTransitionRole::Incoming, 2.0);
+        let outgoing_half = lod_transition_tag(LodTransitionRole::Outgoing, 0.5);
+
+        assert_ne!(incoming_start & LOD_TRANSITION_ACTIVE_BIT, 0);
+        assert_ne!(incoming_start & LOD_TRANSITION_INCOMING_BIT, 0);
+        assert_eq!(incoming_start & LOD_TRANSITION_PROGRESS_MASK, 0);
+        assert_eq!(
+            incoming_end & LOD_TRANSITION_PROGRESS_MASK,
+            LOD_TRANSITION_PROGRESS_MASK
+        );
+        assert_eq!(outgoing_half & LOD_TRANSITION_INCOMING_BIT, 0);
+        assert!((outgoing_half & LOD_TRANSITION_PROGRESS_MASK).abs_diff(32_768) <= 1);
+    }
+
+    #[test]
+    fn lod_transition_dither_roles_are_complementary() {
+        for step in 0..=16 {
+            let progress = step as f32 / 16.0;
+            for sample in 0..16 {
+                let threshold = (sample as f32 + 0.5) / 16.0;
+                let incoming_visible = threshold < progress;
+                let outgoing_visible = threshold >= progress;
+                assert_ne!(incoming_visible, outgoing_visible);
+            }
+        }
+    }
+
+    #[test]
+    fn lod_transition_overlap_budget_is_strictly_bounded() {
+        assert!(lod_transition_has_capacity(0, 1));
+        assert!(lod_transition_has_capacity(60, 4));
+        assert!(!lod_transition_has_capacity(64, 1));
+        assert!(!lod_transition_has_capacity(usize::MAX, 1));
     }
 
     #[test]
@@ -1704,6 +2283,7 @@ mod tests {
             state.elevation_scale,
             state.planet_params.sea_level,
             state.field.clone(),
+            None,
             1,
             [None; 4],
         );
@@ -1715,6 +2295,7 @@ mod tests {
             state.elevation_scale,
             state.planet_params.sea_level,
             state.field.clone(),
+            None,
             2,
             [None; 4],
         );

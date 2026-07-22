@@ -7,6 +7,9 @@ pub mod brushes;
 pub mod cache;
 pub mod elevation;
 pub mod params;
+pub mod streaming;
+pub mod surface_cache;
+pub mod surface_charts;
 pub mod surface_tiles;
 pub mod terrain_field;
 pub mod terrain_space;
@@ -22,14 +25,24 @@ pub use elevation::{
     ElevationParams, MetricLandformSample,
 };
 pub use params::{climate_noise, planet_params, ClimateNoise, PlanetParams};
+pub use surface_cache::{
+    ChartMacroField, CreationMetadata, SurfaceCache, SurfaceCacheError, SurfaceCacheKey,
+    SurfaceDiskCache, SurfaceRamCache, SurfaceTileRecord, SURFACE_CACHE_FORMAT_VERSION,
+};
+pub use surface_charts::{
+    all_cube_corners, all_cube_edges, edge_uv, faces_at_corner, field_normal_deg, ChartOwnership,
+    ChartSamplePoint, SurfaceChartField, SurfaceChartId, SurfaceChartMetadata, SurfacePatchId,
+    SurfaceRegion, SyntheticGradientField, SURFACE_CHART_PROJECTION_REVISION,
+};
 pub use surface_tiles::{
     LearnedTerrainTile, LearnedTileCache, LearnedTileGeneration, LearnedTileKey, TileCoordinate,
     TileInsertError,
 };
 pub use terrain_field::{
-    GlobalMacroField, HybridTerrainField, MacroSample, MacroTerrainField, MacroTerrainSample,
+    BlendTransitionChecker, BlendedHybridTerrainField, ChunkFieldSnapshot, GlobalMacroField,
+    HaloResidencyChecker, HybridTerrainField, MacroSample, MacroTerrainField, MacroTerrainSample,
     ProceduralResidualField, ProceduralTerrainField, ResidualSample, TerrainField, TerrainSample,
-    TerrainSampleSource, TerrainSourceMode,
+    TerrainSampleSource, TerrainSourceMode, VisualClimate,
 };
 pub use terrain_space::{
     metric_surface_point, vertex_spacing_m, CONTINENTAL_WAVELENGTH_M, DRAINAGE_WAVELENGTH_M,

@@ -15,6 +15,8 @@ use bevy::{
 };
 use er_core::config::PlanetPreset;
 use std::num::NonZeroU32;
+#[cfg(feature = "terrain_diffusion")]
+use std::sync::Arc;
 
 mod baseline_manifest;
 mod bench;
@@ -23,6 +25,10 @@ mod crash;
 mod debug_overlay;
 mod diagnostics;
 mod frame_timing;
+#[cfg(feature = "terrain_diffusion")]
+mod learned_stress;
+#[cfg(feature = "terrain_diffusion")]
+mod m5_surface_test;
 mod menu;
 mod projection;
 mod screenshot_test;
@@ -63,10 +69,22 @@ fn main() {
     let is_stress_mode = stress_config.is_some();
     #[cfg(not(feature = "terrain_diffusion"))]
     let is_stress_mode = false;
+    #[cfg(feature = "terrain_diffusion")]
+    let learned_stress_config = learned_stress::LearnedStressConfig::parse_args();
+    #[cfg(feature = "terrain_diffusion")]
+    let is_learned_stress_mode = learned_stress_config.is_some();
+    #[cfg(not(feature = "terrain_diffusion"))]
+    let is_learned_stress_mode = false;
+    #[cfg(feature = "terrain_diffusion")]
+    let m5_test_config = m5_surface_test::M5TestConfig::parse_args();
+    #[cfg(feature = "terrain_diffusion")]
+    let is_m5_test_mode = m5_test_config.is_some();
+    #[cfg(not(feature = "terrain_diffusion"))]
+    let is_m5_test_mode = false;
     let gpu_diagnostics = has_gpu_diagnostics_flag();
     let dump_manifest_path = baseline_manifest::parse_dump_path();
     let exit_after_manifest_dump = dump_manifest_path.is_some();
-    let headless = is_bench_mode || is_stress_mode;
+    let headless = is_bench_mode || is_stress_mode || is_learned_stress_mode || is_m5_test_mode;
 
     let settings = settings::load_settings();
     let present_mode = settings.present_mode();
@@ -98,8 +116,13 @@ fn main() {
     let terrain_plugin = terrain_diffusion
         .as_ref()
         .map(|startup| {
+            let rebuild_source = Arc::new(terrain_diffusion::StreamingRebuildSource::new(
+                Arc::clone(&startup.streaming_queue),
+            ));
             TerrainPlugin::from_preset(planet_preset, 1000.0, planet_seed)
-                .with_hybrid_macro_field(startup.cache.clone())
+                .with_hybrid_macro_field(startup.chart_field.clone())
+                .with_halo_checker(startup.chart_field.clone())
+                .with_rebuild_source(rebuild_source)
         })
         .unwrap_or_else(|| TerrainPlugin::from_preset(planet_preset, 1000.0, planet_seed));
     #[cfg(not(feature = "terrain_diffusion"))]
@@ -120,9 +143,12 @@ fn main() {
     }
 
     let render_plugin = RenderPlugin {
-        // Screenshot and benchmark modes need deterministic shader readiness before
-        // their first captured frame.
-        synchronous_pipeline_compilation: is_test_mode || is_bench_mode,
+        // Screenshot, benchmark, and learned-stress modes need deterministic
+        // shader readiness before their first captured frame/report.
+        synchronous_pipeline_compilation: is_test_mode
+            || is_bench_mode
+            || is_learned_stress_mode
+            || is_m5_test_mode,
         render_creation: wgpu_settings.into(),
         ..default()
     };
@@ -208,8 +234,14 @@ fn main() {
 
     #[cfg(feature = "terrain_diffusion")]
     if let Some(startup) = terrain_diffusion {
+        let recorder = Arc::new(terrain_diffusion::StreamingSampleRecorder::new(Arc::clone(
+            &startup.streaming_queue,
+        )));
+        app.insert_resource(er_terrain::TerrainSampleSourceRecorder(recorder));
         app.add_plugins(terrain_diffusion::TerrainDiffusionPlugin::new(
             startup.cache,
+            startup.chart_field,
+            startup.streaming_queue,
             startup.config,
         ));
     }
@@ -233,6 +265,20 @@ fn main() {
         let config = stress_config.unwrap();
         app.insert_resource(config);
         app.add_plugins(terrain_diffusion_stress::TerrainDiffusionStressPlugin);
+    }
+
+    #[cfg(feature = "terrain_diffusion")]
+    if is_learned_stress_mode {
+        let config = learned_stress_config.unwrap();
+        app.insert_resource(config);
+        app.add_plugins(learned_stress::LearnedStressPlugin);
+    }
+
+    #[cfg(feature = "terrain_diffusion")]
+    if is_m5_test_mode {
+        let config = m5_test_config.unwrap();
+        app.insert_resource(config);
+        app.add_plugins(m5_surface_test::M5TestPlugin);
     }
 
     app.add_systems(Startup, (setup, apply_startup_window_mode));

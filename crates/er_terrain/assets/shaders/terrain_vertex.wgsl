@@ -1,4 +1,4 @@
-#import bevy_pbr::mesh_functions::{get_world_from_local, mesh_position_local_to_world, mesh_position_local_to_clip}
+#import bevy_pbr::mesh_functions::{get_tag, get_world_from_local, mesh_position_local_to_world, mesh_position_local_to_clip}
 
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
@@ -24,6 +24,7 @@ struct VertexOutput {
     @location(6) morph: f32,
     @location(7) drainage: f32,
     @location(8) curvature: f32,
+    @interpolate(flat) @location(9) transition_tag: u32,
 };
 
 @vertex
@@ -44,5 +45,6 @@ fn vertex(in: Vertex) -> VertexOutput {
     out.morph = in.morph;
     out.drainage = in.drainage;
     out.curvature = in.curvature;
+    out.transition_tag = get_tag(in.instance_index);
     return out;
 }

@@ -1,5 +1,6 @@
 use bevy::ecs::resource::Resource;
 use er_core::config::{CHUNK_QUADS_PER_EDGE, CHUNK_VERT_RES};
+use er_core::math::CellKey;
 use er_world::terrain_field::TerrainSourceMode;
 use glam::DVec3;
 
@@ -47,6 +48,10 @@ pub struct TerrainDebugInfo {
     pub procedural_source_coverage_percent: f32,
     pub learned_source_coverage_percent: f32,
     pub cross_generation_mesh_attaches: usize,
+    /// The actual camera-containing active chunk CellKey. Published from
+    /// `update_debug_info` via `containing_ancestor_key`. This is the real
+    /// live mesh chunk, not a synthetic `dir_to_cell` guess.
+    pub containing_chunk: Option<CellKey>,
 }
 
 impl Default for TerrainDebugInfo {
@@ -74,6 +79,7 @@ impl Default for TerrainDebugInfo {
             procedural_source_coverage_percent: 0.0,
             learned_source_coverage_percent: 0.0,
             cross_generation_mesh_attaches: 0,
+            containing_chunk: None,
         }
     }
 }

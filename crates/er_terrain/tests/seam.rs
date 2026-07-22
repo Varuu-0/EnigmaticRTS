@@ -922,6 +922,7 @@ impl TerrainField for MacroWaterField {
             temperature: 0.0,
             drainage: 0.0,
             source: TerrainSampleSource::Procedural,
+            visual_climate: er_world::terrain_field::VisualClimate::default(),
         }
     }
 }

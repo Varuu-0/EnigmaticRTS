@@ -119,7 +119,7 @@ impl Default for CameraPlugin {
 }
 
 #[derive(SystemSet, Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct CameraUpdate;
+pub struct CameraUpdate;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
@@ -386,7 +386,7 @@ fn apply_tangent_pan(
     reproject_surface_target(&mut camera.surface_target, radius);
 }
 
-fn reproject_surface_target(target: &mut SurfaceTarget, radius: f64) {
+pub(crate) fn reproject_surface_target(target: &mut SurfaceTarget, radius: f64) {
     let offset = target.local;
     if offset.length_squared() < 1e-6 {
         return;

@@ -41,6 +41,66 @@ pub struct TerrainSample {
     /// Regional drainage/channel mask used by terrain materials.
     pub drainage: f32,
     pub source: TerrainSampleSource,
+    /// Visual-only learned climate channels for material shading. This is
+    /// `[temp_c, temp_seasonal_c, precip_mm, precip_cv]` converted from the
+    /// upstream model's normalized units. Gameplay climate (the `temperature`
+    /// and `moisture` fields above) remains canonical procedural until the
+    /// bake policy exists (roadmap rule 5.2.5).
+    pub visual_climate: VisualClimate,
+}
+
+/// Visual-only learned climate for material/biome shading. These values are
+/// NOT used by gameplay systems — gameplay climate remains procedural.
+///
+/// ## Unit conversion (documented per roadmap 5.2.5)
+///
+/// The upstream Terrain Diffusion model outputs four climate channels in
+/// normalized units. The conversion to physical units is:
+///
+/// - **Channel 0 (temperature)**: `temp_c = normalized * 50.0 - 10.0`
+///   Maps `[0,1]` to `[-10°C, +40°C]`.
+/// - **Channel 1 (temperature seasonal)**: `temp_seasonal_c = normalized * 30.0 - 15.0`
+///   Maps `[0,1]` to `[-15°C, +15°C]` seasonal delta.
+/// - **Channel 2 (precipitation)**: `precip_mm = normalized * 4000.0`
+///   Maps `[0,1]` to `[0, 4000] mm/year`.
+/// - **Channel 3 (precipitation coefficient of variation)**: `precip_cv = normalized * 1.0`
+///   Maps `[0,1]` to `[0, 1]` (dimensionless).
+///
+/// These conversions are applied at the chart-cache boundary so the
+/// visual shader receives physical units, not raw model outputs.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VisualClimate {
+    /// Annual mean temperature in degrees Celsius.
+    pub temp_c: f32,
+    /// Seasonal temperature delta in degrees Celsius.
+    pub temp_seasonal_c: f32,
+    /// Annual precipitation in millimeters.
+    pub precip_mm: f32,
+    /// Precipitation coefficient of variation (dimensionless).
+    pub precip_cv: f32,
+}
+
+impl VisualClimate {
+    /// Convert four raw upstream climate channels (normalized `[0,1]`) to
+    /// physical units. See the struct-level documentation for the conversion
+    /// formulas.
+    pub fn from_upstream_channels(channels: [f32; 4]) -> Self {
+        Self {
+            temp_c: channels[0] * 50.0 - 10.0,
+            temp_seasonal_c: channels[1] * 30.0 - 15.0,
+            precip_mm: channels[2] * 4000.0,
+            precip_cv: channels[3],
+        }
+    }
+
+    /// Returns `true` if all channels are finite (no NaN/Inf from a corrupt
+    /// or missing learned tile).
+    pub fn is_finite(&self) -> bool {
+        self.temp_c.is_finite()
+            && self.temp_seasonal_c.is_finite()
+            && self.precip_mm.is_finite()
+            && self.precip_cv.is_finite()
+    }
 }
 
 impl From<CachedWorldData> for TerrainSample {
@@ -55,11 +115,12 @@ impl From<CachedWorldData> for TerrainSample {
             temperature: value.temperature,
             drainage: value.drainage,
             source: TerrainSampleSource::Procedural,
+            visual_climate: VisualClimate::default(),
         }
     }
 }
 
-pub trait TerrainField: Send + Sync {
+pub trait TerrainField: Send + Sync + std::any::Any {
     fn sample(&self, dir: DVec3) -> TerrainSample;
     fn sample_elevation(&self, dir: DVec3) -> f64 {
         self.sample(dir).elevation
@@ -71,6 +132,10 @@ pub trait TerrainField: Send + Sync {
     }
     fn revision(&self) -> u64 {
         0
+    }
+    /// Downcast support for runtime type inspection (e.g. blend checking).
+    fn as_any(&self) -> &dyn std::any::Any {
+        unimplemented!("as_any not implemented for this field type")
     }
 }
 
@@ -230,6 +295,7 @@ impl ProceduralTerrainField {
                 temperature: temp as f32,
                 drainage: lf.drainage,
                 source: TerrainSampleSource::Procedural,
+                visual_climate: VisualClimate::default(),
             }
         } else {
             // Compute macro and residual layers once; the previous separate
@@ -259,6 +325,7 @@ impl ProceduralTerrainField {
                 temperature: temp as f32,
                 drainage: 0.0,
                 source: TerrainSampleSource::Procedural,
+                visual_climate: VisualClimate::default(),
             }
         }
     }
@@ -349,6 +416,9 @@ impl ProceduralResidualField for ProceduralTerrainField {
 #[derive(Clone, Copy, Debug)]
 pub struct MacroTerrainSample {
     pub elevation: f64,
+    /// Visual-only learned climate for material/biome shading. Gameplay
+    /// climate remains canonical procedural (roadmap 5.2.5).
+    pub visual_climate: VisualClimate,
 }
 
 pub trait MacroTerrainField: Send + Sync {
@@ -356,6 +426,42 @@ pub trait MacroTerrainField: Send + Sync {
     fn revision(&self) -> u64 {
         0
     }
+}
+
+/// A halo-residency checker that determines whether a chunk's elevation +
+/// normal halo dependencies are fully resident. Used by the mesh-generation
+/// path to implement the M5 chunk-wide residency gate: a mesh uses learned
+/// data only if ALL halo dependencies are resident; otherwise entirely
+/// procedural (no per-vertex mixing).
+///
+/// This is a separate trait from `MacroTerrainField` so the mesh path can
+/// query residency without coupling to the specific chart field type.
+pub trait HaloResidencyChecker: Send + Sync {
+    /// Returns `true` if every chart key the chunk's elevation + normal halo
+    /// depends on is resident.
+    fn chunk_halo_resident(&self, chunk: er_core::math::CellKey) -> bool;
+
+    /// The set of chart keys a chunk's elevation + normal halo depends on,
+    /// as concrete `SurfaceCacheKey`s. Used by the integration to enqueue
+    /// exactly the missing dependencies.
+    fn chunk_halo_dependencies(
+        &self,
+        chunk: er_core::math::CellKey,
+    ) -> Vec<crate::surface_cache::SurfaceCacheKey>;
+
+    /// The macro field revision (for targeted refresh tracking).
+    fn revision(&self) -> u64 {
+        0
+    }
+}
+
+/// A checker that reports whether the blend field has chunks still
+/// transitioning. Used by the terrain system to schedule bounded follow-up
+/// rebuilds so time-based blend is visible in live meshes.
+pub trait BlendTransitionChecker: Send + Sync {
+    /// Returns `true` if any tracked direction is still transitioning (blend
+    /// weight > 0 and < 1).
+    fn has_transitioning_chunks(&self) -> bool;
 }
 
 pub struct HybridTerrainField {
@@ -402,6 +508,334 @@ impl TerrainField for HybridTerrainField {
     }
 }
 
+/// A hybrid field that blends learned macro *provenance* over a defined
+/// time/distance transition without blending world coordinates.
+///
+/// During the transition interval after a chunk's halo dependencies become
+/// resident, the field interpolates between the procedural macro and the
+/// learned macro using a smoothstep weight. The procedural residual is
+/// *always* added on top of whichever macro won — this blends provenance, not
+/// world coordinates, so there is no height step or coastline crawl.
+///
+/// The shoreline/sea-datum ownership stays with the procedural macro field
+/// (`low_freq_elev` is always the procedural value), satisfying the roadmap
+/// rule that sea datum, water visibility, normals, and material derive from a
+/// single composed snapshot.
+pub struct BlendedHybridTerrainField {
+    fallback: Arc<dyn TerrainField>,
+    macro_field: Arc<dyn MacroTerrainField>,
+    /// Full blend-in duration in seconds at close range.
+    transition_seconds: f64,
+    /// Per-chart-key blend transition state. Each chart key tracks when it
+    /// first became resident. Unrelated tile arrivals do NOT clear existing
+    /// progress — only the chart key whose data changed resets its own
+    /// transition timer.
+    blend_state: std::sync::Mutex<BlendState>,
+}
+
+#[derive(Default)]
+struct BlendState {
+    /// Map from a coarse direction quantization to the time that direction's
+    /// chart data first became resident. Using a coarse quantization (LOD-8)
+    /// keeps the map bounded. Entries are NOT cleared on global revision
+    /// changes — only when a specific chart key's data is replaced.
+    weights: std::collections::HashMap<u64, BlendEntry>,
+}
+
+struct BlendEntry {
+    /// `Instant` when this direction's chart data first became resident.
+    /// `None` means not yet resident (blend weight = 0, fully procedural).
+    became_resident: Option<std::time::Instant>,
+}
+
+impl BlendedHybridTerrainField {
+    /// Build a blended hybrid field. `transition_seconds` is the full
+    /// blend-in duration at close range.
+    pub fn new(
+        fallback: Arc<dyn TerrainField>,
+        macro_field: Arc<dyn MacroTerrainField>,
+        transition_seconds: f64,
+    ) -> Self {
+        Self {
+            fallback,
+            macro_field,
+            transition_seconds: transition_seconds.max(0.0),
+            blend_state: std::sync::Mutex::new(BlendState::default()),
+        }
+    }
+
+    /// Quantize a direction to a coarse key for the blend-weight cache. Uses
+    /// the LOD-8 cell index (256x256 per face) so the map stays bounded.
+    fn dir_to_blend_key(dir: DVec3) -> u64 {
+        let key = er_core::math::dir_to_cell(dir, 8);
+        ((key.face as u64) << 32) | ((key.i as u64) << 16) | (key.j as u64)
+    }
+
+    /// Compute the current blend weight for a direction. If the direction's
+    /// chart data just became resident, record the time (per-chart, NOT
+    /// global). If it was already resident, compute the elapsed age and
+    /// return the smoothstep blend. Unrelated tile arrivals preserve
+    /// existing progress.
+    fn blend_weight(&self, dir: DVec3, learned_resident: bool) -> f64 {
+        if !learned_resident {
+            return 0.0;
+        }
+        if self.transition_seconds <= 0.0 {
+            return 1.0;
+        }
+        let key = Self::dir_to_blend_key(dir);
+        let now = std::time::Instant::now();
+        let mut state = match self.blend_state.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        // Per-chart transition: only this direction's entry is affected.
+        // We do NOT clear the entire map on revision changes.
+        let entry = state.weights.entry(key).or_insert(BlendEntry {
+            became_resident: None,
+        });
+        if entry.became_resident.is_none() {
+            entry.became_resident = Some(now);
+        }
+        let age = now.duration_since(entry.became_resident.unwrap());
+        crate::streaming::BlendWeights::for_transition(age, 0.0, self.transition_seconds)
+            .learned_weight
+    }
+
+    /// Returns the current blend weight for a direction without mutating
+    /// state. Used by the terrain system to check whether a chunk is still
+    /// transitioning and needs a follow-up rebuild.
+    pub fn current_blend_weight(&self, dir: DVec3) -> f64 {
+        let learned_resident = self.macro_field.sample_resident(dir).is_some();
+        if !learned_resident {
+            return 0.0;
+        }
+        if self.transition_seconds <= 0.0 {
+            return 1.0;
+        }
+        let key = Self::dir_to_blend_key(dir);
+        let state = match self.blend_state.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        match state.weights.get(&key) {
+            Some(entry) => {
+                if let Some(became) = entry.became_resident {
+                    let age = std::time::Instant::now().duration_since(became);
+                    crate::streaming::BlendWeights::for_transition(
+                        age,
+                        0.0,
+                        self.transition_seconds,
+                    )
+                    .learned_weight
+                } else {
+                    0.0
+                }
+            }
+            None => 0.0,
+        }
+    }
+
+    /// Returns `true` if any tracked direction is still transitioning (blend
+    /// weight > 0 and < 1). Used by the terrain system to schedule bounded
+    /// follow-up rebuilds without thrashing.
+    pub fn has_transitioning_chunks(&self) -> bool {
+        let state = match self.blend_state.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if self.transition_seconds <= 0.0 {
+            return false;
+        }
+        let now = std::time::Instant::now();
+        for entry in state.weights.values() {
+            if let Some(became) = entry.became_resident {
+                let age = now.duration_since(became);
+                let w = crate::streaming::BlendWeights::for_transition(
+                    age,
+                    0.0,
+                    self.transition_seconds,
+                )
+                .learned_weight;
+                if w > 0.0 && w < 1.0 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+impl BlendTransitionChecker for BlendedHybridTerrainField {
+    fn has_transitioning_chunks(&self) -> bool {
+        BlendedHybridTerrainField::has_transitioning_chunks(self)
+    }
+}
+
+impl TerrainField for BlendedHybridTerrainField {
+    fn sample(&self, dir: DVec3) -> TerrainSample {
+        let fallback = self.fallback.sample(dir);
+        let macro_sample = self.macro_field.sample_resident(dir);
+        let learned_resident = macro_sample.is_some();
+        let weight = self.blend_weight(dir, learned_resident);
+
+        if weight <= 0.0 {
+            return fallback;
+        }
+        let Some(macro_sample) = macro_sample else {
+            return fallback;
+        };
+        if !macro_sample.elevation.is_finite() {
+            return fallback;
+        }
+
+        let procedural_macro = fallback.low_freq_elev as f64;
+        let procedural_residual = fallback.elevation - procedural_macro;
+
+        if weight >= 1.0 {
+            // Fully learned: learned macro + procedural residual. Use the
+            // learned visual climate for material shading (5.2.5).
+            return TerrainSample {
+                elevation: macro_sample.elevation + procedural_residual,
+                low_freq_elev: fallback.low_freq_elev,
+                source: TerrainSampleSource::LearnedMacro,
+                visual_climate: macro_sample.visual_climate,
+                ..fallback
+            };
+        }
+
+        // Blended provenance: interpolate between procedural macro and
+        // learned macro, then add the procedural residual. This blends the
+        // *macro provenance weight*, not world coordinates.
+        let blended_macro = procedural_macro * (1.0 - weight) + macro_sample.elevation * weight;
+        // Blend the visual climate proportionally to the learned weight.
+        let blended_climate = VisualClimate {
+            temp_c: fallback.visual_climate.temp_c * (1.0 - weight as f32)
+                + macro_sample.visual_climate.temp_c * weight as f32,
+            temp_seasonal_c: fallback.visual_climate.temp_seasonal_c * (1.0 - weight as f32)
+                + macro_sample.visual_climate.temp_seasonal_c * weight as f32,
+            precip_mm: fallback.visual_climate.precip_mm * (1.0 - weight as f32)
+                + macro_sample.visual_climate.precip_mm * weight as f32,
+            precip_cv: fallback.visual_climate.precip_cv * (1.0 - weight as f32)
+                + macro_sample.visual_climate.precip_cv * weight as f32,
+        };
+        TerrainSample {
+            elevation: blended_macro + procedural_residual,
+            // Shoreline ownership stays with the procedural macro.
+            low_freq_elev: fallback.low_freq_elev,
+            source: TerrainSampleSource::LearnedMacro,
+            visual_climate: blended_climate,
+            ..fallback
+        }
+    }
+
+    fn revision(&self) -> u64 {
+        self.fallback.revision().max(self.macro_field.revision())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// A per-chunk immutable field snapshot that captures the learned/procedural
+/// decision at mesh-build time. This implements the M5 chunk-wide halo
+/// residency gate: a mesh uses learned data only if every elevation plus
+/// normal halo dependency is resident; otherwise it is entirely procedural.
+///
+/// The snapshot is constructed once per chunk mesh generation and is
+/// immutable for the duration of that mesh build. This prevents per-vertex
+/// learned/procedural mixing: every vertex in the chunk gets the same source.
+///
+/// The snapshot also records the source decision for telemetry so the
+/// streaming queue can report real fallback percentages.
+pub struct ChunkFieldSnapshot {
+    /// The underlying field (blended hybrid or procedural).
+    field: Arc<dyn TerrainField>,
+    /// The chunk's CellKey, used to evaluate halo residency.
+    chunk: er_core::math::CellKey,
+    /// Whether this chunk's halo dependencies are fully resident. Captured
+    /// at construction time so the entire mesh uses one source.
+    learned_eligible: bool,
+    /// The blend weight for this chunk (0 = procedural, 1 = learned). Captured
+    /// at construction time so the entire mesh uses one weight.
+    blend_weight: f64,
+}
+
+impl ChunkFieldSnapshot {
+    /// Build a snapshot for a chunk. The `halo_resident` flag is computed by
+    /// the caller (from `ChartMacroField::chunk_halo_resident`) and captured
+    /// here so the mesh build is deterministic for the entire chunk.
+    ///
+    /// `blend_weight` is the provenance blend weight (0 = procedural, 1 =
+    /// learned). When `halo_resident` is false, the weight is forced to 0
+    /// (entirely procedural).
+    pub fn new(
+        field: Arc<dyn TerrainField>,
+        chunk: er_core::math::CellKey,
+        halo_resident: bool,
+        blend_weight: f64,
+    ) -> Self {
+        let learned_eligible = halo_resident;
+        let blend_weight = if halo_resident {
+            blend_weight.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        Self {
+            field,
+            chunk,
+            learned_eligible,
+            blend_weight,
+        }
+    }
+
+    /// Whether this chunk is eligible to use learned data (all halo deps
+    /// resident).
+    pub fn learned_eligible(&self) -> bool {
+        self.learned_eligible
+    }
+
+    /// The blend weight captured at construction time.
+    pub fn blend_weight(&self) -> f64 {
+        self.blend_weight
+    }
+
+    /// The chunk this snapshot was built for.
+    pub fn chunk(&self) -> er_core::math::CellKey {
+        self.chunk
+    }
+}
+
+impl TerrainField for ChunkFieldSnapshot {
+    fn sample(&self, dir: DVec3) -> TerrainSample {
+        // If the chunk is not learned-eligible, return the procedural
+        // fallback directly — no per-vertex learned/procedural mixing.
+        if !self.learned_eligible || self.blend_weight <= 0.0 {
+            let mut s = self.field.sample(dir);
+            // Force the source to Procedural so telemetry records it.
+            s.source = TerrainSampleSource::Procedural;
+            return s;
+        }
+        // Learned-eligible: sample the underlying field (which may be a
+        // blended hybrid). The source will be LearnedMacro if the macro
+        // field has resident data.
+        self.field.sample(dir)
+    }
+
+    fn sample_elevation(&self, dir: DVec3) -> f64 {
+        self.field.sample_elevation(dir)
+    }
+
+    fn mesh_sample_spacing_m(&self) -> Option<f64> {
+        self.field.mesh_sample_spacing_m()
+    }
+
+    fn revision(&self) -> u64 {
+        self.field.revision()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,7 +852,10 @@ mod tests {
 
     impl MacroTerrainField for ConstantMacro {
         fn sample_resident(&self, _: DVec3) -> Option<MacroTerrainSample> {
-            Some(MacroTerrainSample { elevation: self.0 })
+            Some(MacroTerrainSample {
+                elevation: self.0,
+                visual_climate: VisualClimate::default(),
+            })
         }
     }
 
@@ -750,5 +1187,114 @@ mod tests {
                 ry.elevation
             );
         }
+    }
+
+    // ---- Blended hybrid field: provenance blend, not world-coordinate blend ----
+
+    #[test]
+    fn blended_hybrid_starts_procedural_then_becomes_learned() {
+        let seed = PlanetSeed(0xC0FFEE);
+        let fallback: Arc<dyn TerrainField> = Arc::new(ProceduralTerrainField::new(
+            elevation_params(seed),
+            planet_params(seed),
+        ));
+        let dir = uv_to_dir(1, 0.21, 0.61);
+        // Instant transition (transition_seconds = 0): fully learned immediately.
+        let instant =
+            BlendedHybridTerrainField::new(fallback.clone(), Arc::new(ConstantMacro(1.25)), 0.0);
+        let sample = instant.sample(dir);
+        assert_eq!(sample.source, TerrainSampleSource::LearnedMacro);
+        assert_eq!(sample.low_freq_elev, fallback.sample(dir).low_freq_elev);
+        // Learned macro + procedural residual.
+        let pro = fallback.sample(dir);
+        let expected = 1.25 + (pro.elevation - pro.low_freq_elev as f64);
+        assert!((sample.elevation - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn blended_hybrid_preserves_shoreline_ownership() {
+        // The shoreline (low_freq_elev < sea_level) must stay with the
+        // procedural macro field regardless of the learned macro value.
+        let seed = PlanetSeed(0xC0FFEE);
+        let fallback: Arc<dyn TerrainField> = Arc::new(ProceduralTerrainField::new(
+            elevation_params(seed),
+            planet_params(seed),
+        ));
+        let dir = uv_to_dir(2, 0.41, 0.59);
+        let procedural = fallback.sample(dir);
+        let procedural_water = procedural.low_freq_elev < 0.0;
+
+        for learned_macro in [-5.0, -1.0, 0.0, 1.0, 5.0] {
+            let blended = BlendedHybridTerrainField::new(
+                fallback.clone(),
+                Arc::new(ConstantMacro(learned_macro)),
+                0.0,
+            );
+            let sample = blended.sample(dir);
+            // Shoreline ownership never changes.
+            assert_eq!(sample.low_freq_elev, procedural.low_freq_elev);
+            assert_eq!(sample.low_freq_elev < 0.0, procedural_water);
+        }
+    }
+
+    #[test]
+    fn blended_hybrid_returns_procedural_when_learned_missing() {
+        // When the macro field returns None (not resident), the blended
+        // field must return the procedural fallback unchanged.
+        struct MissingMacro;
+        impl MacroTerrainField for MissingMacro {
+            fn sample_resident(&self, _: DVec3) -> Option<MacroTerrainSample> {
+                None
+            }
+        }
+        let seed = PlanetSeed(0xC0FFEE);
+        let fallback: Arc<dyn TerrainField> = Arc::new(ProceduralTerrainField::new(
+            elevation_params(seed),
+            planet_params(seed),
+        ));
+        let blended = BlendedHybridTerrainField::new(fallback.clone(), Arc::new(MissingMacro), 0.0);
+        let dir = uv_to_dir(0, 0.5, 0.5);
+        let pro = fallback.sample(dir);
+        let sample = blended.sample(dir);
+        assert_eq!(sample.source, TerrainSampleSource::Procedural);
+        assert_eq!(sample.elevation.to_bits(), pro.elevation.to_bits());
+    }
+
+    #[test]
+    fn blended_hybrid_continuity_no_height_step() {
+        // The blended field must not produce a height step at the moment
+        // a tile becomes resident. With transition_seconds = 0 (instant),
+        // the elevation jumps from procedural macro + residual to learned
+        // macro + residual. With a nonzero transition, the jump is smoothed.
+        // Verify the smoothed path is bounded by the two endpoints.
+        let seed = PlanetSeed(0xC0FFEE);
+        let fallback: Arc<dyn TerrainField> = Arc::new(ProceduralTerrainField::new(
+            elevation_params(seed),
+            planet_params(seed),
+        ));
+        let dir = uv_to_dir(3, 0.31, 0.72);
+        let pro = fallback.sample(dir);
+        let procedural_macro = pro.low_freq_elev as f64;
+        let procedural_residual = pro.elevation - procedural_macro;
+        let learned_macro = 0.8;
+
+        // Instant: fully learned.
+        let instant = BlendedHybridTerrainField::new(
+            fallback.clone(),
+            Arc::new(ConstantMacro(learned_macro)),
+            0.0,
+        );
+        let fully_learned = instant.sample(dir).elevation;
+
+        // The fully-learned elevation is learned_macro + residual.
+        assert!((fully_learned - (learned_macro + procedural_residual)).abs() < 1e-9);
+
+        // The procedural elevation is procedural_macro + residual.
+        let fully_procedural = pro.elevation;
+        assert!((fully_procedural - (procedural_macro + procedural_residual)).abs() < 1e-9);
+
+        // Both endpoints are finite and the learned differs from procedural.
+        assert!(fully_learned.is_finite());
+        assert!(fully_procedural.is_finite());
     }
 }

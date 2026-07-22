@@ -177,6 +177,8 @@ Not complete:
 - Cache eviction/reload produces the same locked tile checksum.
 - No runtime code still depends on a four-tile-per-face atlas assumption.
 
+**Status: Complete (2026-07-22).** The live hybrid field now uses sphere-native, exact-grid charts (`652` per Earth face; `4` per miniature face), a versioned v2 cache record with SHA-256 payload and BLAKE3 integrity checks, four retained climate channels, bounded RAM/disk caches, atomic persistence, corruption/version rejection, and background promotion. Maintained seam/stress gates measure maximum edge height difference `4.734e-5 m`, edge normal difference `4.596e-3 deg`, and zero eight-corner difference. The full Earth provider atlas maps all `2,550,624` tiles without wrong-face, overflow, or key mismatches, and eviction/reload checksum parity passes for RAM and disk.
+
 ## Milestone 5: Production Learned Streaming
 
 ### 5.1 Build the provider pipeline
@@ -199,6 +201,8 @@ Not complete:
 - Teleport shows immediate procedural terrain then smooth learned refinement.
 - No black chunks, holes, coastline crawl, height step, normal seam, or main-thread hitch.
 - Warm tiles stay ahead of normal camera movement on measured hardware.
+
+**Status: Complete (2026-07-22).** The production path uses the six-class bounded/coalescing queue, exact provider/chart coordinates, off-thread decode/validation/persistence, serial-sidecar-aware dispatch, renewable active-demand leases, retries/backoff/health, whole-chunk elevation/normal halo snapshots, targeted chart-footprint rebuilds, per-chart provenance blending, and visual-only learned climate. The corrected RTX 3060 `m5-surface-test-report/v2` gate proved both boundary tiles initially absent from RAM and disk, reached Earth LOD 17 at `4.77197 m` spacing, loaded two exact halo dependencies, completed a monotonic blend and targeted rebuilds, then moved `299.815 m` across the provider boundary with `963/963` camera-local halo-resident frames, `100%` minimum local learned coverage, `0%` maximum local fallback, zero provider failures, zero cross-generation attaches, and provider main-thread P95 `0.254 ms`. The final report is `C:\Users\varun\AppData\Local\Temp\kilo\m5_surface_test_v2_lease_report.json`; all acceptance predicates passed without `DeviceLost`.
 
 ## Milestone 6: Terrain Presentation And Rendering Quality
 

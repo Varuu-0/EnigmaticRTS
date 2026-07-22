@@ -1,4 +1,5 @@
 struct FragmentInput {
+    @builtin(position) frag_coord: vec4<f32>,
     @location(0) world_position: vec3<f32>,
     @location(1) elevation: f32,
     @location(2) moisture: f32,
@@ -8,6 +9,7 @@ struct FragmentInput {
     @location(6) morph: f32,
     @location(7) drainage: f32,
     @location(8) curvature: f32,
+    @interpolate(flat) @location(9) transition_tag: u32,
 };
 
 // --- Simple value noise for detail/palette variation ---
@@ -193,6 +195,15 @@ fn biome_color_blended(
 
 @fragment
 fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
+    if ((input.transition_tag & 0x80000000u) != 0u) {
+        let progress = f32(input.transition_tag & 0xffffu) / 65535.0;
+        let incoming = (input.transition_tag & 0x40000000u) != 0u;
+        let threshold = hash3(vec3<f32>(floor(input.frag_coord.xy), 91.0));
+        if ((incoming && threshold >= progress) || (!incoming && threshold < progress)) {
+            discard;
+        }
+    }
+
     if (material.debug_skirt_highlight > 0.5 && input.morph < 0.5) {
         return vec4<f32>(1.0, 0.0, 1.0, 1.0);
     }
