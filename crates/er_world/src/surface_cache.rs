@@ -22,7 +22,7 @@
 //! rule. Disk I/O happens only on the cache-population path (background
 //! worker), never on the mesh-worker read path.
 
-use crate::surface_charts::{SurfaceChartMetadata, SurfacePatchId};
+use crate::surface_charts::{ChartOwnership, SurfaceChartMetadata, SurfacePatchId};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt;
@@ -33,12 +33,11 @@ use std::sync::{Arc, Mutex};
 
 /// On-disk container version. Bumped on any breaking change to the record
 /// layout; old records are rejected as a migration boundary.
-/// Version 2: adds `charts_per_face_edge` to the key, supersedes version 1
-/// which used padded `2^level` chart grids.
-pub const SURFACE_CACHE_FORMAT_VERSION: u32 = 2;
+/// Version 3: adds planet radius and shoreline ownership to the key.
+pub const SURFACE_CACHE_FORMAT_VERSION: u32 = 3;
 
 /// Magic header identifying a surface-cache record file.
-const MAGIC: &[u8; 8] = b"ERSURF02";
+const MAGIC: &[u8; 8] = b"ERSURF03";
 
 /// A 32-byte checksum. Used for both the upstream-compatible payload
 /// checksum (SHA-256 over elevation || climate, matching
@@ -61,6 +60,8 @@ pub struct SurfaceCacheKey {
     pub conditioning_revision: u32,
     pub residual_revision: u32,
     pub sea_level_datum_m: i32,
+    pub ownership: ChartOwnership,
+    pub planet_radius_m: u64,
     pub pixel_scale_m: u32,
     pub halo_samples: u32,
     pub core_resolution: u32,
@@ -92,6 +93,8 @@ impl SurfaceCacheKey {
             conditioning_revision: meta.conditioning_revision,
             residual_revision: meta.residual_revision,
             sea_level_datum_m: meta.sea_level_datum_m,
+            ownership: meta.ownership,
+            planet_radius_m: meta.planet_radius_m,
             pixel_scale_m: meta.pixel_scale_m,
             halo_samples: patch.halo,
             core_resolution: meta.core_resolution,
@@ -143,6 +146,8 @@ impl SurfaceCacheKey {
         hasher.update(&self.conditioning_revision.to_le_bytes());
         hasher.update(&self.residual_revision.to_le_bytes());
         hasher.update(&self.sea_level_datum_m.to_le_bytes());
+        hasher.update(&[self.ownership as u8]);
+        hasher.update(&self.planet_radius_m.to_le_bytes());
         hasher.update(&self.pixel_scale_m.to_le_bytes());
         hasher.update(&self.halo_samples.to_le_bytes());
         hasher.update(&self.core_resolution.to_le_bytes());
@@ -383,6 +388,8 @@ impl SurfaceTileRecord {
         buf.extend_from_slice(&self.key.conditioning_revision.to_le_bytes());
         buf.extend_from_slice(&self.key.residual_revision.to_le_bytes());
         buf.extend_from_slice(&self.key.sea_level_datum_m.to_le_bytes());
+        buf.push(self.key.ownership as u8);
+        buf.extend_from_slice(&self.key.planet_radius_m.to_le_bytes());
         buf.extend_from_slice(&self.key.pixel_scale_m.to_le_bytes());
         buf.extend_from_slice(&self.key.halo_samples.to_le_bytes());
         buf.extend_from_slice(&self.key.core_resolution.to_le_bytes());
@@ -453,6 +460,17 @@ impl SurfaceTileRecord {
         let sea_level_datum_m = r
             .read_i32()
             .ok_or(SurfaceCacheError::CorruptRecord("sea_level_datum_m"))?;
+        let ownership = match r
+            .take(1)
+            .ok_or(SurfaceCacheError::CorruptRecord("ownership"))?[0]
+        {
+            0 => ChartOwnership::LearnedReliefProceduralShoreline,
+            1 => ChartOwnership::LearnedOwnsDatum,
+            _ => return Err(SurfaceCacheError::CorruptRecord("invalid ownership")),
+        };
+        let planet_radius_m = r
+            .read_u64()
+            .ok_or(SurfaceCacheError::CorruptRecord("planet_radius_m"))?;
         let pixel_scale_m = r
             .read_u32()
             .ok_or(SurfaceCacheError::CorruptRecord("pixel_scale_m"))?;
@@ -492,6 +510,8 @@ impl SurfaceTileRecord {
             conditioning_revision,
             residual_revision,
             sea_level_datum_m,
+            ownership,
+            planet_radius_m,
             pixel_scale_m,
             halo_samples,
             core_resolution,
@@ -613,6 +633,10 @@ fn write_u64(buf: &mut Vec<u8>, v: u64) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
 
+fn chart_local_coordinate(global: f64, chart_index: u32, charts_per_edge: f64) -> f64 {
+    (global * charts_per_edge - chart_index as f64).clamp(0.0, 1.0)
+}
+
 struct Reader<'a> {
     data: &'a [u8],
     pos: usize,
@@ -623,11 +647,12 @@ impl<'a> Reader<'a> {
         Self { data, pos: 0 }
     }
     fn take(&mut self, n: usize) -> Option<&'a [u8]> {
-        if self.pos + n > self.data.len() {
+        let end = self.pos.checked_add(n)?;
+        if end > self.data.len() {
             return None;
         }
-        let s = &self.data[self.pos..self.pos + n];
-        self.pos += n;
+        let s = &self.data[self.pos..end];
+        self.pos = end;
         Some(s)
     }
     fn read_u16(&mut self) -> Option<u16> {
@@ -805,6 +830,7 @@ impl SurfaceDiskCache {
     pub fn new(root: impl Into<PathBuf>, max_entries: usize) -> io::Result<Self> {
         let root = root.into();
         fs::create_dir_all(&root)?;
+        Self::cleanup_interrupted_writes(&root)?;
         Ok(Self {
             root,
             max_entries: max_entries.max(1),
@@ -818,6 +844,21 @@ impl SurfaceDiskCache {
 
     pub fn max_entries(&self) -> usize {
         self.max_entries
+    }
+
+    fn cleanup_interrupted_writes(root: &Path) -> io::Result<()> {
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            let path = entry.path();
+            let is_surface_temp = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".surf.tmp"));
+            if is_surface_temp {
+                let _ = fs::remove_file(path);
+            }
+        }
+        Ok(())
     }
 
     pub fn path_for(&self, key: &SurfaceCacheKey) -> PathBuf {
@@ -1246,8 +1287,8 @@ impl MacroTerrainField for ChartMacroField {
         // charts_per_face_edge (not a padded power-of-two). This matches
         // the payload footprint: a tile at (x,y) covers uv [x/N, (x+1)/N].
         let n = self.metadata.charts_per_face_edge as f64;
-        let local_u = (u * n).fract();
-        let local_v = (v * n).fract();
+        let local_u = chart_local_coordinate(u, key.x, n);
+        let local_v = chart_local_coordinate(v, key.y, n);
         let _ = face;
         let elevation_m = self.sample_elevation_m(&record, local_u, local_v);
         let normalized =
@@ -1487,6 +1528,17 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_string_length_is_rejected_without_overflow() {
+        let mut bytes = record().to_bytes();
+        // Header + version + seed + projection revision precede model length.
+        bytes[22..30].fill(0xFF);
+        assert!(matches!(
+            SurfaceTileRecord::from_bytes(&bytes),
+            Err(SurfaceCacheError::CorruptRecord("model_revision"))
+        ));
+    }
+
+    #[test]
     fn rejects_non_square_elevation_grid() {
         let mut r = record();
         // Make elevation non-square: add one extra sample.
@@ -1563,6 +1615,28 @@ mod tests {
         assert_eq!(loaded.climate.as_ref(), r.climate.as_ref());
         assert_eq!(loaded.payload_checksum, r.payload_checksum);
         assert_eq!(loaded.cache_integrity, r.cache_integrity);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_cache_removes_interrupted_temp_writes_on_startup() {
+        let dir = std::env::temp_dir().join(format!(
+            "ersurf_test_temp_cleanup_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stale = dir.join("interrupted.surf.tmp");
+        let unrelated = dir.join("keep.tmp");
+        std::fs::write(&stale, b"partial").unwrap();
+        std::fs::write(&unrelated, b"unrelated").unwrap();
+
+        let _disk = SurfaceDiskCache::new(&dir, 16).unwrap();
+        assert!(!stale.exists());
+        assert!(unrelated.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1725,5 +1799,17 @@ mod tests {
         let mut k5 = k1.clone();
         k5.request_bounds[0] += 1;
         assert_ne!(k1.filename(), k5.filename());
+        let mut k6 = k1.clone();
+        k6.planet_radius_m += 1;
+        assert_ne!(k1.filename(), k6.filename());
+        let mut k7 = k1.clone();
+        k7.ownership = ChartOwnership::LearnedOwnsDatum;
+        assert_ne!(k1.filename(), k7.filename());
+    }
+
+    #[test]
+    fn exact_face_boundary_samples_last_chart_right_edge() {
+        assert_eq!(chart_local_coordinate(1.0, 3, 4.0), 1.0);
+        assert_eq!(chart_local_coordinate(0.75, 3, 4.0), 0.0);
     }
 }

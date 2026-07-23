@@ -8,10 +8,13 @@ use bevy::diagnostic::{
 };
 use bevy::prelude::*;
 use bevy::render::diagnostic::MeshAllocatorDiagnosticPlugin;
+use bevy::tasks::{futures::check_ready, IoTaskPool, Task};
 
 use er_terrain::TerrainDebugInfo;
 
 use er_game::gpu_telemetry::{self, GpuTelemetryStatus};
+
+use crate::frame_timing::MainWorldFrameTimings;
 
 const FRAME_HISTORY_CAPACITY: usize = 600;
 const SYSTEM_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
@@ -22,6 +25,8 @@ const SYSTEM_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 /// so `None` means the platform has not provided a measurement yet.
 #[derive(Clone, Debug, Default, Resource)]
 pub struct PerformanceSnapshot {
+    pub sample_revision: u64,
+    pub rolling_fps: f32,
     pub frame_ms: f32,
     pub frame_p50_ms: f32,
     pub frame_p95_ms: f32,
@@ -70,8 +75,14 @@ struct PerformanceHistory {
     hitch_16ms_count: u64,
     hitch_33ms_count: u64,
     hitch_50ms_count: u64,
-    last_gpu_sample: Instant,
     frames_until_refresh: u8,
+    last_timing_revision: u64,
+}
+
+#[derive(Resource)]
+struct GpuTelemetryWorker {
+    task: Option<Task<gpu_telemetry::GpuTelemetrySample>>,
+    last_started: Instant,
 }
 
 #[derive(Default, Resource)]
@@ -87,11 +98,23 @@ impl Default for PerformanceHistory {
             hitch_16ms_count: 0,
             hitch_33ms_count: 0,
             hitch_50ms_count: 0,
-            last_gpu_sample: Instant::now() - SYSTEM_SAMPLE_INTERVAL,
             frames_until_refresh: 0,
+            last_timing_revision: 0,
         }
     }
 }
+
+impl Default for GpuTelemetryWorker {
+    fn default() -> Self {
+        Self {
+            task: None,
+            last_started: Instant::now() - SYSTEM_SAMPLE_INTERVAL,
+        }
+    }
+}
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PerformanceSnapshotUpdate;
 
 pub struct PerformanceDiagnosticsPlugin;
 
@@ -105,8 +128,12 @@ impl Plugin for PerformanceDiagnosticsPlugin {
         .insert_resource(PerformanceSnapshot::default())
         .insert_resource(PerformanceHistory::default())
         .insert_resource(InputLatencyProbe::default())
+        .insert_resource(GpuTelemetryWorker::default())
         .add_systems(First, observe_input)
-        .add_systems(PostUpdate, update_performance_snapshot);
+        .add_systems(
+            PostUpdate,
+            (poll_gpu_telemetry, update_performance_snapshot).in_set(PerformanceSnapshotUpdate),
+        );
     }
 }
 
@@ -114,6 +141,7 @@ fn update_performance_snapshot(
     diagnostics: Res<DiagnosticsStore>,
     time: Res<Time>,
     terrain: Res<TerrainDebugInfo>,
+    main_world_timings: Option<Res<MainWorldFrameTimings>>,
     mut input_probe: ResMut<InputLatencyProbe>,
     mut history: ResMut<PerformanceHistory>,
     mut snapshot: ResMut<PerformanceSnapshot>,
@@ -121,20 +149,23 @@ fn update_performance_snapshot(
     let frame_ms = time.delta_secs() * 1000.0;
     push_frame_sample(&mut history, frame_ms);
 
-    snapshot.frame_ms = frame_ms;
-    snapshot.hitch_16ms_count = history.hitch_16ms_count;
-    snapshot.hitch_33ms_count = history.hitch_33ms_count;
-    snapshot.hitch_50ms_count = history.hitch_50ms_count;
-    snapshot.input_to_cpu_frame_end_ms = input_probe
-        .observed_at
-        .take()
-        .map(|observed_at| observed_at.elapsed().as_secs_f32() * 1000.0);
-
-    if history.frames_until_refresh > 0 {
-        history.frames_until_refresh -= 1;
-        return;
-    }
-    history.frames_until_refresh = 7;
+    let published_frame_ms = if let Some(timings) = main_world_timings.as_ref() {
+        if timings.sample_revision == 0 || timings.sample_revision == history.last_timing_revision {
+            return;
+        }
+        history.last_timing_revision = timings.sample_revision;
+        timings
+            .frame_duration
+            .map(|duration| duration.as_secs_f32() * 1000.0)
+            .unwrap_or(frame_ms)
+    } else {
+        if history.frames_until_refresh > 0 {
+            history.frames_until_refresh -= 1;
+            return;
+        }
+        history.frames_until_refresh = 7;
+        frame_ms
+    };
 
     let PerformanceHistory {
         frame_ms,
@@ -148,6 +179,16 @@ fn update_performance_snapshot(
     snapshot.frame_p95_ms = percentile_sorted(&history.sorted_frame_ms, 95.0);
     snapshot.frame_p99_ms = percentile_sorted(&history.sorted_frame_ms, 99.0);
     snapshot.one_percent_low_fps = one_percent_low_fps_sorted(&history.sorted_frame_ms);
+    snapshot.sample_revision = snapshot.sample_revision.wrapping_add(1);
+    snapshot.rolling_fps = rolling_fps(&history.frame_ms);
+    snapshot.frame_ms = published_frame_ms;
+    snapshot.hitch_16ms_count = history.hitch_16ms_count;
+    snapshot.hitch_33ms_count = history.hitch_33ms_count;
+    snapshot.hitch_50ms_count = history.hitch_50ms_count;
+    snapshot.input_to_cpu_frame_end_ms = input_probe
+        .observed_at
+        .take()
+        .map(|observed_at| observed_at.elapsed().as_secs_f32() * 1000.0);
     snapshot.process_cpu_percent = diagnostic_value(
         &diagnostics,
         &SystemInformationDiagnosticsPlugin::PROCESS_CPU_USAGE,
@@ -180,11 +221,6 @@ fn update_performance_snapshot(
     snapshot.opaque_render_cpu_ms = render_diagnostic_value(&diagnostics, "elapsed_cpu");
     snapshot.opaque_render_gpu_ms = render_diagnostic_value(&diagnostics, "elapsed_gpu");
     snapshot.render_cpu_spans = render_cpu_spans(&diagnostics);
-
-    if history.last_gpu_sample.elapsed() >= SYSTEM_SAMPLE_INTERVAL {
-        update_gpu_snapshot(&mut snapshot);
-        history.last_gpu_sample = Instant::now();
-    }
 }
 
 fn observe_input(
@@ -230,12 +266,36 @@ fn diagnostic_value(
         .and_then(|diagnostic| diagnostic.smoothed().or(diagnostic.value()))
 }
 
-fn update_gpu_snapshot(snapshot: &mut PerformanceSnapshot) {
-    let gpu = gpu_telemetry::sample();
+fn poll_gpu_telemetry(
+    mut worker: ResMut<GpuTelemetryWorker>,
+    mut snapshot: ResMut<PerformanceSnapshot>,
+) {
+    if let Some(task) = worker.task.as_mut() {
+        if let Some(gpu) = check_ready(task) {
+            update_gpu_snapshot(&mut snapshot, gpu);
+            worker.task = None;
+        }
+    }
+
+    if worker.task.is_none() && worker.last_started.elapsed() >= SYSTEM_SAMPLE_INTERVAL {
+        worker.task = Some(IoTaskPool::get().spawn(async { gpu_telemetry::sample() }));
+        worker.last_started = Instant::now();
+    }
+}
+
+fn update_gpu_snapshot(snapshot: &mut PerformanceSnapshot, gpu: gpu_telemetry::GpuTelemetrySample) {
     snapshot.gpu_telemetry_available = matches!(gpu.status, GpuTelemetryStatus::Available);
     snapshot.gpu_name = (!gpu.description.is_empty()).then_some(gpu.description);
     snapshot.gpu_vram_usage_bytes = (gpu.vram_usage_bytes > 0).then_some(gpu.vram_usage_bytes);
     snapshot.gpu_vram_budget_bytes = (gpu.vram_budget_bytes > 0).then_some(gpu.vram_budget_bytes);
+}
+
+fn rolling_fps(frame_ms: &VecDeque<f32>) -> f32 {
+    if frame_ms.is_empty() {
+        return 0.0;
+    }
+    let average_frame_ms = frame_ms.iter().sum::<f32>() / frame_ms.len() as f32;
+    1000.0 / average_frame_ms.max(0.001)
 }
 
 fn push_frame_sample(history: &mut PerformanceHistory, frame_ms: f32) {
@@ -301,6 +361,14 @@ mod tests {
             .extend(history.frame_ms.iter().copied());
         history.sorted_frame_ms.sort_by(|a, b| a.total_cmp(b));
         assert_eq!(one_percent_low_fps_sorted(&history.sorted_frame_ms), 10.0);
+    }
+
+    #[test]
+    fn rolling_fps_uses_average_frame_time() {
+        let mut history = PerformanceHistory::default();
+        push_frame_sample(&mut history, 10.0);
+        push_frame_sample(&mut history, 30.0);
+        assert_eq!(rolling_fps(&history.frame_ms), 50.0);
     }
 
     #[test]

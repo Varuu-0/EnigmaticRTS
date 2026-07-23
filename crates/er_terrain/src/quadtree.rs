@@ -150,6 +150,9 @@ pub fn root_chunks() -> Vec<CellKey> {
 pub struct RetainedSplit {
     pub parent_entity: Entity,
     pub children: [Entity; 4],
+    /// Animate only the final handoff in a refinement cascade. Intermediate
+    /// levels swap atomically so the transition duration does not throttle LOD.
+    pub animate_handoff: bool,
 }
 
 #[derive(Resource, Default)]

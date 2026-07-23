@@ -280,14 +280,17 @@ impl LatencyHistory {
         self.samples.push_back(sample);
     }
 
-    fn percentile(&self, pct: f64) -> Option<Duration> {
+    fn percentiles(&self, low_pct: f64, high_pct: f64) -> (Option<Duration>, Option<Duration>) {
         if self.samples.is_empty() {
-            return None;
+            return (None, None);
         }
         let mut sorted: Vec<Duration> = self.samples.iter().copied().collect();
         sorted.sort();
-        let idx = ((pct / 100.0) * (sorted.len() as f64 - 1.0)).round() as usize;
-        Some(sorted[idx.min(sorted.len() - 1)])
+        let at = |pct: f64| {
+            let idx = ((pct / 100.0) * (sorted.len() as f64 - 1.0)).round() as usize;
+            sorted[idx.min(sorted.len() - 1)]
+        };
+        (Some(at(low_pct)), Some(at(high_pct)))
     }
 }
 
@@ -1018,6 +1021,7 @@ impl StreamingQueue {
             Err(p) => p.into_inner(),
         };
         let queue_depth: usize = inner.buckets.iter().map(|b| b.len()).sum();
+        let (latency_p50, latency_p95) = inner.latency.percentiles(50.0, 95.0);
         StreamingTelemetry {
             queue_depth,
             resident_tiles: inner.resident.len(),
@@ -1039,14 +1043,8 @@ impl StreamingQueue {
                     .as_millis()
                     .min(u64::MAX as u128) as u64,
             },
-            latency_p50_ms: inner
-                .latency
-                .percentile(50.0)
-                .map(|d| d.as_secs_f64() * 1000.0),
-            latency_p95_ms: inner
-                .latency
-                .percentile(95.0)
-                .map(|d| d.as_secs_f64() * 1000.0),
+            latency_p50_ms: latency_p50.map(|d| d.as_secs_f64() * 1000.0),
+            latency_p95_ms: latency_p95.map(|d| d.as_secs_f64() * 1000.0),
             provider_state: ProviderStateSnapshot {
                 attempts_total: inner.attempts_total,
                 timeouts_total: inner.timeouts_total,

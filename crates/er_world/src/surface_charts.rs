@@ -43,6 +43,7 @@ pub const SURFACE_CHART_PROJECTION_REVISION: u16 = 4;
 /// visibility, normals, and material masks derive from a single composed
 /// field revision; learned charts supply local relief only, while the
 /// procedural macro field retains shoreline ownership (Milestone 4 policy).
+#[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ChartOwnership {
     /// Learned chart supplies local relief only; the procedural macro field

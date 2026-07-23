@@ -21,6 +21,7 @@ use std::sync::Arc;
 mod baseline_manifest;
 mod bench;
 mod camera;
+mod cli;
 mod crash;
 mod debug_overlay;
 mod diagnostics;
@@ -60,7 +61,7 @@ fn main() {
     let planet_preset = detect_planet_preset();
     let planet_seed = detect_planet_seed();
     let test_config = parse_test_args(planet_preset.radius_m());
-    let bench_config = bench::parse_bench_args();
+    let bench_config = bench::parse_bench_args(planet_preset.radius_m());
     let is_test_mode = test_config.is_some();
     let is_bench_mode = bench_config.is_some();
     #[cfg(feature = "terrain_diffusion")]
@@ -152,7 +153,6 @@ fn main() {
         render_creation: wgpu_settings.into(),
         ..default()
     };
-
     if headless {
         app.add_plugins(
             DefaultPlugins
@@ -320,11 +320,7 @@ fn detect_planet_seed() -> er_core::seed::PlanetSeed {
     let seed = args
         .windows(2)
         .find(|pair| pair[0] == "--seed")
-        .and_then(|pair| {
-            u64::from_str_radix(pair[1].trim_start_matches("0x"), 16)
-                .ok()
-                .or_else(|| pair[1].parse().ok())
-        })
+        .and_then(|pair| cli::parse_seed_value(&pair[1]))
         .unwrap_or(0xC0FFEE);
     er_core::seed::PlanetSeed(seed)
 }

@@ -23,12 +23,12 @@ use crate::diagnostics::PerformanceSnapshot;
 const DEFAULT_WARMUP: u32 = 30;
 const DEFAULT_MEASURE: u32 = 60;
 
-const SCENARIO_DISTANCES: &[(&str, f32)] = &[
-    ("far", 150000.0),
-    ("mid", 70000.0),
-    ("close", 45000.0),
-    ("very_close", 38000.0),
-    ("surface", 37000.0),
+const SCENARIO_RADIUS_MULTIPLIERS: &[(&str, f64)] = &[
+    ("far", 4.166_666_666_7),
+    ("mid", 1.944_444_444_4),
+    ("close", 1.25),
+    ("very_close", 1.055_555_555_6),
+    ("surface", 1.027_777_777_8),
 ];
 
 #[derive(Resource)]
@@ -96,7 +96,7 @@ impl Plugin for BenchPlugin {
     }
 }
 
-pub fn parse_bench_args() -> Option<BenchConfig> {
+pub fn parse_bench_args(planet_radius_m: f64) -> Option<BenchConfig> {
     let args: Vec<String> = std::env::args().collect();
     let mut bench = false;
     let mut output_path: Option<PathBuf> = None;
@@ -136,11 +136,11 @@ pub fn parse_bench_args() -> Option<BenchConfig> {
         return None;
     }
 
-    let scenarios = SCENARIO_DISTANCES
+    let scenarios = SCENARIO_RADIUS_MULTIPLIERS
         .iter()
-        .map(|(name, dist)| BenchScenario {
+        .map(|(name, multiplier)| BenchScenario {
             name: name.to_string(),
-            distance: *dist,
+            distance: (planet_radius_m * multiplier) as f32,
         })
         .collect();
 
@@ -384,5 +384,25 @@ fn write_report(config: &BenchConfig, report: &str) {
             let _ = std::fs::create_dir_all(parent);
         }
         let _ = std::fs::write(path, report);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_bench_args;
+
+    #[test]
+    fn earth_benchmark_scenarios_remain_outside_planet() {
+        // Construct the same radius-scaled scenarios without depending on
+        // process arguments, which may not include --bench under the harness.
+        let radius = 6_371_000.0;
+        for (_, multiplier) in super::SCENARIO_RADIUS_MULTIPLIERS {
+            assert!(radius * multiplier > radius);
+        }
+    }
+
+    #[test]
+    fn parser_signature_accepts_planet_radius() {
+        let _ = parse_bench_args(6_371_000.0);
     }
 }

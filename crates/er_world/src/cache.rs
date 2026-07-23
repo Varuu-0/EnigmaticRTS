@@ -1,7 +1,7 @@
 use crate::biome::Biome;
 use er_core::math::{dir_to_cell, CellKey};
 use glam::DVec3;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::RwLock;
 
 const CACHE_SHARDS: usize = 32;
@@ -31,8 +31,20 @@ pub struct WorldCache {
 
 #[derive(Default)]
 struct CacheShard {
-    entries: RwLock<HashMap<CellKey, CachedWorldData>>,
-    elevations: RwLock<HashMap<[u64; 3], f64>>,
+    entries: RwLock<CellCache>,
+    elevations: RwLock<ElevationCache>,
+}
+
+#[derive(Default)]
+struct CellCache {
+    values: HashMap<CellKey, CachedWorldData>,
+    ordered_keys: BTreeSet<(u8, u8, u32, u32)>,
+}
+
+#[derive(Default)]
+struct ElevationCache {
+    values: HashMap<[u64; 3], f64>,
+    ordered_keys: BTreeSet<[u64; 3]>,
 }
 
 impl WorldCache {
@@ -45,8 +57,14 @@ impl WorldCache {
         let capacity_per_shard = capacity.div_ceil(shard_count).max(1);
         Self {
             shards: std::array::from_fn(|_| CacheShard {
-                entries: RwLock::new(HashMap::with_capacity(capacity_per_shard)),
-                elevations: RwLock::new(HashMap::with_capacity(capacity_per_shard)),
+                entries: RwLock::new(CellCache {
+                    values: HashMap::with_capacity(capacity_per_shard),
+                    ordered_keys: BTreeSet::new(),
+                }),
+                elevations: RwLock::new(ElevationCache {
+                    values: HashMap::with_capacity(capacity_per_shard),
+                    ordered_keys: BTreeSet::new(),
+                }),
             }),
             shard_count,
             capacity_per_shard,
@@ -63,24 +81,27 @@ impl WorldCache {
         let shard = &self.shards[cell_shard(key, self.shard_count)];
 
         if let Ok(entries) = shard.entries.read() {
-            if let Some(data) = entries.get(&key) {
+            if let Some(data) = entries.values.get(&key) {
                 return *data;
             }
         }
 
         let data = compute();
         if let Ok(mut entries) = shard.entries.write() {
-            if let Some(existing) = entries.get(&key) {
+            if let Some(existing) = entries.values.get(&key) {
                 return *existing;
             }
 
-            if entries.len() >= self.capacity_per_shard {
-                if let Some(key) = entries.keys().next().copied() {
-                    entries.remove(&key);
+            if entries.values.len() >= self.capacity_per_shard {
+                // Preserve stable eviction without scanning every hash-map key
+                // while holding the shard's write lock.
+                if let Some(ordered_key) = entries.ordered_keys.pop_first() {
+                    entries.values.remove(&cell_key_from_ordered(ordered_key));
                 }
             }
 
-            entries.insert(key, data);
+            entries.ordered_keys.insert(ordered_cell_key(key));
+            entries.values.insert(key, data);
         }
         data
     }
@@ -90,22 +111,23 @@ impl WorldCache {
         let shard = &self.shards[elevation_shard(key, self.shard_count)];
 
         if let Ok(elevations) = shard.elevations.read() {
-            if let Some(elevation) = elevations.get(&key) {
+            if let Some(elevation) = elevations.values.get(&key) {
                 return *elevation;
             }
         }
 
         let elevation = compute();
         if let Ok(mut elevations) = shard.elevations.write() {
-            if let Some(existing) = elevations.get(&key) {
+            if let Some(existing) = elevations.values.get(&key) {
                 return *existing;
             }
-            if elevations.len() >= self.capacity_per_shard {
-                if let Some(key) = elevations.keys().next().copied() {
-                    elevations.remove(&key);
+            if elevations.values.len() >= self.capacity_per_shard {
+                if let Some(evicted_key) = elevations.ordered_keys.pop_first() {
+                    elevations.values.remove(&evicted_key);
                 }
             }
-            elevations.insert(key, elevation);
+            elevations.ordered_keys.insert(key);
+            elevations.values.insert(key, elevation);
         }
         elevation
     }
@@ -115,14 +137,14 @@ impl WorldCache {
         self.shards[cell_shard(key, self.shard_count)]
             .entries
             .read()
-            .map(|e| e.contains_key(&key))
+            .map(|e| e.values.contains_key(&key))
             .unwrap_or(false)
     }
 
     pub fn len(&self) -> usize {
         self.shards
             .iter()
-            .map(|shard| shard.entries.read().map(|e| e.len()).unwrap_or(0))
+            .map(|shard| shard.entries.read().map(|e| e.values.len()).unwrap_or(0))
             .sum()
     }
 
@@ -133,13 +155,23 @@ impl WorldCache {
     pub fn clear(&self) {
         for shard in &self.shards {
             if let Ok(mut entries) = shard.entries.write() {
-                entries.clear();
+                entries.values.clear();
+                entries.ordered_keys.clear();
             }
             if let Ok(mut elevations) = shard.elevations.write() {
-                elevations.clear();
+                elevations.values.clear();
+                elevations.ordered_keys.clear();
             }
         }
     }
+}
+
+fn ordered_cell_key(key: CellKey) -> (u8, u8, u32, u32) {
+    (key.face, key.lod, key.i, key.j)
+}
+
+fn cell_key_from_ordered((face, lod, i, j): (u8, u8, u32, u32)) -> CellKey {
+    CellKey { face, i, j, lod }
 }
 
 fn cell_shard(key: CellKey, shard_count: usize) -> usize {
@@ -214,5 +246,31 @@ mod tests {
         assert_eq!(cache.get_or_insert_elevation(a, || 1.0), 1.0);
         assert_eq!(cache.get_or_insert_elevation(b, || 2.0), 2.0);
         assert_eq!(cache.get_or_insert_elevation(a, || panic!("cached")), 1.0);
+    }
+
+    #[test]
+    fn eviction_keeps_ordered_indexes_in_sync() {
+        let cache = WorldCache::with_lod(1, 8);
+        for i in 0..100u32 {
+            let dir = uv_to_dir(0, (f64::from(i) + 0.5) / 100.0, 0.5);
+            cache.get_or_insert(dir, || CachedWorldData {
+                elevation: f64::from(i),
+                low_freq_elev: 0.0,
+                warped_dir: [0.0; 3],
+                moisture: 0.0,
+                biome: Biome::OceanShallow,
+                mountain_influence: 0.0,
+                temperature: 0.0,
+                drainage: 0.0,
+            });
+            cache.get_or_insert_elevation(dir, || f64::from(i));
+        }
+
+        let entries = cache.shards[0].entries.read().unwrap();
+        let elevations = cache.shards[0].elevations.read().unwrap();
+        assert_eq!(entries.values.len(), 1);
+        assert_eq!(entries.ordered_keys.len(), entries.values.len());
+        assert_eq!(elevations.values.len(), 1);
+        assert_eq!(elevations.ordered_keys.len(), elevations.values.len());
     }
 }

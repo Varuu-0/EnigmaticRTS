@@ -56,6 +56,10 @@ const LOD_TRANSITION_DURATION_SECONDS: f32 = 0.12;
 /// Bounds transient overlap independently of the split/merge scheduling budget.
 /// Incoming meshes replace normal coverage; only outgoing meshes add draws.
 const MAX_LOD_TRANSITION_EXTRA_DRAWS: usize = 64;
+/// Avoid burying the next camera-critical LOD handoff behind a full async-pool
+/// backlog. Sixteen breadth jobs still saturate typical desktop CPUs while
+/// leaving the remaining configured capacity available to focused work.
+const MAX_BREADTH_INFLIGHT_TERRAIN_MESHES: usize = 16;
 const LOD_TRANSITION_ACTIVE_BIT: u32 = 1 << 31;
 const LOD_TRANSITION_INCOMING_BIT: u32 = 1 << 30;
 const LOD_TRANSITION_PROGRESS_MASK: u32 = u16::MAX as u32;
@@ -71,6 +75,15 @@ impl Default for SunDirection {
 
 #[derive(Resource, Clone, Copy, Debug, Default)]
 pub struct CameraWorldPosition(pub DVec3);
+
+#[derive(Resource, Clone, Copy, Debug)]
+struct TerrainViewFocus(DVec3);
+
+impl Default for TerrainViewFocus {
+    fn default() -> Self {
+        Self(DVec3::Y)
+    }
+}
 
 #[derive(Resource, Clone, Debug)]
 pub struct RenderOrigin {
@@ -269,6 +282,9 @@ pub struct PendingChunkMeshes(pub HashMap<Entity, Task<PendingMeshPayload>>);
 struct ChunkMeshRequest {
     entity: Entity,
     key: CellKey,
+    /// True when this mesh is part of the split/balance chain required to
+    /// refine the chunk under the camera.
+    critical: bool,
     radius: f64,
     elevation_scale: f32,
     sea_level: f64,
@@ -459,6 +475,7 @@ impl Plugin for TerrainPlugin {
         .insert_resource(crate::profiler::FrameProfiler::default())
         .insert_resource(SunDirection::default())
         .insert_resource(CameraWorldPosition::default())
+        .insert_resource(TerrainViewFocus::default())
         .insert_resource(RenderOrigin::with_cell_size(self.render_origin_cell_size_m))
         .add_plugins(MaterialPlugin::<TerrainMaterial>::default())
         .add_plugins(MaterialPlugin::<OceanMaterial>::default())
@@ -596,23 +613,17 @@ fn queue_resident_field_refreshes(
             // The footprint carries the exact charts_per_face_edge (e.g. 652
             // for Earth), NOT a padded power-of-two.
             let halo_cells = 1u32; // one-cell halo margin
-            for (&active_key, &entity) in active_chunks.chunks.iter() {
-                // Only chunks on the same face can intersect.
-                if active_key.face != chart_footprint.face {
+            for active_key in intersecting_active_chunk_keys(
+                &active_chunks,
+                chart_footprint.face,
+                chart_footprint.x,
+                chart_footprint.y,
+                chart_footprint.charts_per_face_edge,
+                halo_cells,
+            ) {
+                let Some(&entity) = active_chunks.chunks.get(&active_key) else {
                     continue;
-                }
-                // Compute the intersecting chunks at the active chunk's LOD.
-                let intersecting = er_world::streaming::chunks_intersecting_chart(
-                    chart_footprint.face,
-                    chart_footprint.x,
-                    chart_footprint.y,
-                    chart_footprint.charts_per_face_edge,
-                    active_key.lod,
-                    halo_cells,
-                );
-                if !intersecting.contains(&active_key) {
-                    continue;
-                }
+                };
                 // This active chunk intersects the arrived chart. Queue it
                 // for rebuild if it's not already pending/queued.
                 if !chunk_query
@@ -721,6 +732,39 @@ fn queue_resident_field_refreshes(
     }
 }
 
+fn intersecting_active_chunk_keys(
+    active_chunks: &ActiveChunks,
+    face: u8,
+    chart_x: u32,
+    chart_y: u32,
+    charts_per_face_edge: u32,
+    halo_cells: u32,
+) -> Vec<CellKey> {
+    let mut active_lods: Vec<u8> = active_chunks
+        .chunks
+        .keys()
+        .filter(|key| key.face == face)
+        .map(|key| key.lod)
+        .collect();
+    active_lods.sort_unstable();
+    active_lods.dedup();
+
+    active_lods
+        .into_iter()
+        .flat_map(|lod| {
+            er_world::streaming::chunks_intersecting_chart(
+                face,
+                chart_x,
+                chart_y,
+                charts_per_face_edge,
+                lod,
+                halo_cells,
+            )
+        })
+        .filter(|key| active_chunks.contains(key))
+        .collect()
+}
+
 /// Schedule bounded follow-up rebuilds for chunks whose blend transition is
 /// still in progress. This makes time-based blend visible in live meshes by
 /// re-meshing chunks at intervals until their blend weight reaches 1.0.
@@ -774,13 +818,7 @@ fn schedule_blend_follow_ups(
             // Check if this chunk is still transitioning by sampling its
             // center direction's blend weight.
             let dir = cell_to_dir(key);
-            if let Some(blended) = terrain_state
-                .field
-                .as_ref()
-                .as_any()
-                .downcast_ref::<BlendedHybridTerrainField>()
-            {
-                let weight = blended.current_blend_weight(dir);
+            if let Some(weight) = terrain_state.field.current_blend_weight(dir) {
                 if weight > 0.0 && weight < 1.0 {
                     refresh
                         .blend_follow_ups
@@ -840,6 +878,7 @@ const FOCUS_DETAIL_ALTITUDE_M: f64 = 25.0;
 fn update_lod(
     camera_query: Query<(&GlobalTransform, &Projection), With<Camera3d>>,
     camera_world: Res<CameraWorldPosition>,
+    mut view_focus: ResMut<TerrainViewFocus>,
     mut active_chunks: ResMut<ActiveChunks>,
     terrain_state: Res<TerrainState>,
     origin: Res<RenderOrigin>,
@@ -857,22 +896,20 @@ fn update_lod(
 
     let keys: Vec<CellKey> = active_chunks.chunks.keys().copied().collect();
     active_chunks.clear_pending();
-    let split_frustum = camera_query
-        .single()
-        .ok()
-        .and_then(|(transform, projection)| {
-            let Projection::Perspective(perspective) = projection else {
-                return None;
-            };
-            Some((
-                transform.translation(),
-                *transform.forward(),
-                *transform.right(),
-                *transform.up(),
-                (perspective.fov / 2.0).cos(),
-                perspective.aspect_ratio,
-            ))
-        });
+    let camera_view = camera_query.single().ok();
+    let split_frustum = camera_view.and_then(|(transform, projection)| {
+        let Projection::Perspective(perspective) = projection else {
+            return None;
+        };
+        Some((
+            transform.translation(),
+            *transform.forward(),
+            *transform.right(),
+            *transform.up(),
+            (perspective.fov / 2.0).cos(),
+            perspective.aspect_ratio,
+        ))
+    });
 
     let planet_radius = terrain_state.planet_radius;
     let elevation_scale = terrain_state.elevation_scale;
@@ -880,6 +917,12 @@ fn update_lod(
     let screen_error_threshold = terrain_state.screen_error_threshold;
     let origin_world = origin.world;
     let camera_dir = camera_pos.normalize_or(DVec3::Y);
+    view_focus.0 = camera_view
+        .map(|(transform, _)| {
+            terrain_view_focus_direction(camera_pos, transform.forward().as_dvec3(), planet_radius)
+        })
+        .unwrap_or(camera_dir);
+    let focus_dir = view_focus.0;
     let camera_terrain_elevation =
         terrain_state.field.sample_elevation(camera_dir) * elevation_scale as f64;
     let force_focus_detail =
@@ -917,7 +960,7 @@ fn update_lod(
 
             let requires_focus_detail = force_focus_detail
                 && key.lod < max_depth
-                && cell_contains_direction(key, camera_dir);
+                && cell_contains_direction(key, focus_dir);
             if requires_focus_detail
                 || should_split(
                     key,
@@ -1001,6 +1044,7 @@ fn process_lod_queue(
     mut retained_merges: ResMut<RetainedMerges>,
     terrain_state: Res<TerrainState>,
     camera_world: Res<CameraWorldPosition>,
+    view_focus: Res<TerrainViewFocus>,
     origin: Res<RenderOrigin>,
     mesh_query: Query<(), With<Mesh3d>>,
     transition_query: Query<(), With<LodTransition>>,
@@ -1013,7 +1057,7 @@ fn process_lod_queue(
     let t0 = Instant::now();
     let camera_pos = camera_world.0;
     let budget = terrain_state.lod_split_budget_per_frame;
-    let camera_dir = camera_pos.normalize_or(DVec3::Y);
+    let focus_dir = view_focus.0;
 
     let mut splits_done = 0usize;
     let pending_splits: Vec<CellKey> = std::mem::take(&mut active_chunks.pending_splits);
@@ -1023,7 +1067,7 @@ fn process_lod_queue(
             break;
         }
         let key = balancing_split_for(requested_key, &active_chunks).unwrap_or(requested_key);
-        let required_for_focus = cell_contains_direction(requested_key, camera_dir);
+        let required_for_focus = cell_contains_direction(requested_key, focus_dir);
         let outstanding_meshes = pending_meshes.0.len() + queued_meshes.len();
         if !can_admit_split_meshes(
             required_for_focus,
@@ -1070,6 +1114,13 @@ fn process_lod_queue(
         }
 
         let children = children_of(key);
+        let animate_handoff = split_handoff_should_transition(
+            key,
+            camera_pos,
+            terrain_state.planet_radius,
+            terrain_state.max_quadtree_depth,
+            terrain_state.screen_error_threshold,
+        );
         let child_entities: [Entity; 4] = core::array::from_fn(|idx| {
             let child = children[idx];
             let child_stitch_neighbors = stitch_neighbors(child, &active_chunks);
@@ -1086,6 +1137,11 @@ fn process_lod_queue(
                 &origin,
                 child_stitch_neighbors,
             );
+            if required_for_focus {
+                if let Some(request) = queued_meshes.0.get_mut(&entity) {
+                    request.critical = true;
+                }
+            }
             // Hold hidden until all four siblings are meshed (atomic reveal).
             if let Ok(mut e) = commands.get_entity(entity) {
                 e.insert(HoldHidden);
@@ -1098,6 +1154,7 @@ fn process_lod_queue(
             RetainedSplit {
                 parent_entity,
                 children: child_entities,
+                animate_handoff,
             },
         );
         mark_stitch_neighborhood(key, &active_chunks, &mut dirty_stitches.0);
@@ -1348,6 +1405,7 @@ fn update_debug_info(
     queued_meshes: Res<QueuedChunkMeshes>,
     mesh_query: Query<(), (With<ChunkComponent>, With<Mesh3d>)>,
     camera_world: Res<CameraWorldPosition>,
+    view_focus: Res<TerrainViewFocus>,
     terrain_state: Res<TerrainState>,
     origin: Res<RenderOrigin>,
     mut debug: ResMut<TerrainDebugInfo>,
@@ -1382,7 +1440,7 @@ fn update_debug_info(
     debug.source_mode = terrain_state.source_mode;
 
     let container = containing_ancestor_key(
-        cam_dir,
+        view_focus.0,
         terrain_state.max_quadtree_depth,
         &active_chunks,
         &retained_splits,
@@ -1518,6 +1576,7 @@ fn queue_chunk_mesh(
         ChunkMeshRequest {
             entity,
             key,
+            critical: false,
             radius,
             elevation_scale,
             sea_level,
@@ -1535,13 +1594,14 @@ fn dispatch_chunk_meshes(
     mut pending: ResMut<PendingChunkMeshes>,
     terrain_state: Res<TerrainState>,
     camera_world: Res<CameraWorldPosition>,
+    view_focus: Res<TerrainViewFocus>,
     chunk_query: Query<&ChunkComponent>,
     mut profiler: ResMut<crate::profiler::FrameProfiler>,
 ) {
     let t0 = Instant::now();
-    let available_slots =
-        mesh_dispatch_slots(terrain_state.max_inflight_terrain_meshes, pending.0.len());
-    if available_slots == 0 || queued_meshes.is_empty() {
+    if mesh_dispatch_slots(terrain_state.max_inflight_terrain_meshes, pending.0.len()) == 0
+        || queued_meshes.is_empty()
+    {
         profiler.record("dispatch_meshes", t0.elapsed());
         return;
     }
@@ -1554,10 +1614,20 @@ fn dispatch_chunk_meshes(
                 .is_ok_and(|chunk| pending_mesh_matches_chunk(chunk.key, request.key))
         })
         .collect();
-    sort_chunk_mesh_requests(&mut requests, camera_world.0, terrain_state.planet_radius);
+    sort_chunk_mesh_requests(
+        &mut requests,
+        camera_world.0,
+        view_focus.0,
+        terrain_state.planet_radius,
+    );
 
-    for (index, request) in requests.into_iter().enumerate() {
-        if index >= available_slots {
+    let mut inflight = pending.0.len();
+    for request in requests {
+        let dispatch_limit = mesh_dispatch_limit(
+            request.critical || mesh_request_is_critical(request.key, view_focus.0),
+            terrain_state.max_inflight_terrain_meshes,
+        );
+        if inflight >= dispatch_limit {
             queued_meshes.0.insert(request.entity, request);
             continue;
         }
@@ -1565,6 +1635,7 @@ fn dispatch_chunk_meshes(
         let ChunkMeshRequest {
             entity,
             key,
+            critical: _,
             radius,
             elevation_scale,
             sea_level,
@@ -1585,15 +1656,7 @@ fn dispatch_chunk_meshes(
                 // after the blend, not just halo eligibility. If the blend
                 // weight is > 0, the chunk uses some learned data.
                 let blend_weight = if halo_resident {
-                    if let Some(blended) = field
-                        .as_ref()
-                        .as_any()
-                        .downcast_ref::<BlendedHybridTerrainField>()
-                    {
-                        blended.current_blend_weight(cell_to_dir(key))
-                    } else {
-                        1.0
-                    }
+                    field.current_blend_weight(cell_to_dir(key)).unwrap_or(1.0)
                 } else {
                     0.0
                 };
@@ -1626,6 +1689,7 @@ fn dispatch_chunk_meshes(
             }
         });
         pending.0.insert(entity, task);
+        inflight += 1;
     }
 
     profiler.record("dispatch_meshes", t0.elapsed());
@@ -1633,6 +1697,14 @@ fn dispatch_chunk_meshes(
 
 fn mesh_dispatch_slots(max_inflight: usize, inflight: usize) -> usize {
     max_inflight.saturating_sub(inflight)
+}
+
+fn mesh_dispatch_limit(critical: bool, max_inflight: usize) -> usize {
+    if critical {
+        max_inflight
+    } else {
+        max_inflight.min(MAX_BREADTH_INFLIGHT_TERRAIN_MESHES)
+    }
 }
 
 fn can_admit_split_meshes(
@@ -1643,18 +1715,34 @@ fn can_admit_split_meshes(
     required_for_focus || outstanding_meshes.saturating_add(4) <= max_inflight.saturating_mul(2)
 }
 
+fn split_handoff_should_transition(
+    parent: CellKey,
+    camera_pos: DVec3,
+    planet_radius: f64,
+    max_depth: u8,
+    screen_error_threshold: f32,
+) -> bool {
+    children_of(parent).iter().all(|&child| {
+        !should_split(
+            child,
+            camera_pos,
+            planet_radius,
+            max_depth,
+            screen_error_threshold,
+        )
+    })
+}
+
 /// The four siblings replacing the camera-containing parent are one critical
 /// handoff: prioritize all of them so the visible parent can retire promptly.
 fn sort_chunk_mesh_requests(
     requests: &mut [ChunkMeshRequest],
     camera_pos: DVec3,
+    focus_dir: DVec3,
     planet_radius: f64,
 ) {
-    let camera_dir = camera_pos.normalize_or(DVec3::Y);
     requests.sort_by_cached_key(|request| {
-        let critical = cell_contains_direction(request.key, camera_dir)
-            || parent_of(request.key)
-                .is_some_and(|parent| cell_contains_direction(parent, camera_dir));
+        let critical = request.critical || mesh_request_is_critical(request.key, focus_dir);
         let error = screen_error(request.key, camera_pos, planet_radius);
         (
             !critical,
@@ -1665,6 +1753,34 @@ fn sort_chunk_mesh_requests(
             request.key.j,
         )
     });
+}
+
+fn mesh_request_is_critical(key: CellKey, camera_dir: DVec3) -> bool {
+    cell_contains_direction(key, camera_dir)
+        || parent_of(key).is_some_and(|parent| cell_contains_direction(parent, camera_dir))
+}
+
+fn terrain_view_focus_direction(camera_pos: DVec3, forward: DVec3, planet_radius: f64) -> DVec3 {
+    let fallback = camera_pos.normalize_or(DVec3::Y);
+    let ray = forward.normalize_or(-fallback);
+    let projected = camera_pos.dot(ray);
+    let discriminant =
+        projected * projected - (camera_pos.length_squared() - planet_radius * planet_radius);
+    if discriminant < 0.0 {
+        return fallback;
+    }
+
+    let root = discriminant.sqrt();
+    let near = -projected - root;
+    let far = -projected + root;
+    let distance = if near >= 0.0 {
+        near
+    } else if far >= 0.0 {
+        far
+    } else {
+        return fallback;
+    };
+    (camera_pos + ray * distance).normalize_or(fallback)
 }
 
 fn stitch_neighbors(key: CellKey, active_chunks: &ActiveChunks) -> StitchNeighbors {
@@ -1888,7 +2004,8 @@ fn finalize_retirements(
 
     for &key in &done {
         let entry = retained.map.get(&key).unwrap();
-        let can_transition = despawn_parents.contains(&entry.parent_entity)
+        let can_transition = entry.animate_handoff
+            && despawn_parents.contains(&entry.parent_entity)
             && !entry
                 .children
                 .iter()
@@ -2168,12 +2285,14 @@ mod tests {
     use super::{
         anchor_render_translation, balancing_split_for, camera_clip_planes, can_admit_split_meshes,
         chunk_render_translation, containing_ancestor_key, has_conflicting_merge,
-        has_merged_ancestor, hide_far_coverage_root, is_child_of_retained_split,
-        lod_transition_has_capacity, lod_transition_tag, mesh_dispatch_slots,
-        pending_mesh_matches_chunk, queue_chunk_mesh, sort_chunk_mesh_requests,
-        sort_pending_splits_by_screen_error, stitch_neighbors, ChunkMeshRequest, QueuedChunkMeshes,
-        RenderOrigin, TerrainPlugin, TerrainState, LOD_TRANSITION_ACTIVE_BIT,
-        LOD_TRANSITION_INCOMING_BIT, LOD_TRANSITION_PROGRESS_MASK,
+        has_merged_ancestor, hide_far_coverage_root, intersecting_active_chunk_keys,
+        is_child_of_retained_split, lod_transition_has_capacity, lod_transition_tag,
+        mesh_dispatch_limit, mesh_dispatch_slots, pending_mesh_matches_chunk, queue_chunk_mesh,
+        sort_chunk_mesh_requests, sort_pending_splits_by_screen_error,
+        split_handoff_should_transition, stitch_neighbors, terrain_view_focus_direction,
+        ChunkMeshRequest, QueuedChunkMeshes, RenderOrigin, TerrainPlugin, TerrainState,
+        LOD_TRANSITION_ACTIVE_BIT, LOD_TRANSITION_INCOMING_BIT, LOD_TRANSITION_PROGRESS_MASK,
+        MAX_BREADTH_INFLIGHT_TERRAIN_MESHES,
     };
     use crate::chunk::LodTransitionRole;
     use crate::culling::frustum_cull_sphere;
@@ -2193,6 +2312,7 @@ mod tests {
         ChunkMeshRequest {
             entity,
             key,
+            critical: false,
             radius: state.planet_radius,
             elevation_scale: state.elevation_scale,
             sea_level: state.planet_params.sea_level,
@@ -2210,6 +2330,19 @@ mod tests {
         assert_eq!(mesh_dispatch_slots(MAX_INFLIGHT_TERRAIN_MESHES, 127), 1);
         assert_eq!(mesh_dispatch_slots(MAX_INFLIGHT_TERRAIN_MESHES, 128), 0);
         assert_eq!(mesh_dispatch_slots(MAX_INFLIGHT_TERRAIN_MESHES, 160), 0);
+    }
+
+    #[test]
+    fn breadth_dispatch_reserves_capacity_for_camera_critical_meshes() {
+        assert_eq!(
+            mesh_dispatch_limit(false, MAX_INFLIGHT_TERRAIN_MESHES),
+            MAX_BREADTH_INFLIGHT_TERRAIN_MESHES,
+        );
+        assert_eq!(
+            mesh_dispatch_limit(true, MAX_INFLIGHT_TERRAIN_MESHES),
+            MAX_INFLIGHT_TERRAIN_MESHES,
+        );
+        assert_eq!(mesh_dispatch_limit(false, 8), 8);
     }
 
     #[test]
@@ -2248,6 +2381,29 @@ mod tests {
         assert!(lod_transition_has_capacity(60, 4));
         assert!(!lod_transition_has_capacity(64, 1));
         assert!(!lod_transition_has_capacity(usize::MAX, 1));
+    }
+
+    #[test]
+    fn intermediate_close_range_splits_skip_transition_throttling() {
+        let radius = EARTH_RADIUS_M;
+        let camera = DVec3::X * (radius + 1_000.0);
+        let coarse = er_core::math::dir_to_cell(DVec3::X, 6);
+        let terminal_parent = er_core::math::dir_to_cell(DVec3::X, 16);
+
+        assert!(!split_handoff_should_transition(
+            coarse,
+            camera,
+            radius,
+            17,
+            er_core::config::SCREEN_ERROR_THRESHOLD,
+        ));
+        assert!(split_handoff_should_transition(
+            terminal_parent,
+            camera,
+            radius,
+            17,
+            er_core::config::SCREEN_ERROR_THRESHOLD,
+        ));
     }
 
     #[test]
@@ -2307,7 +2463,29 @@ mod tests {
     }
 
     #[test]
-    fn mesh_dispatch_prioritizes_all_camera_handoff_siblings() {
+    fn arrived_chart_probes_only_intersecting_active_chunks() {
+        let mut active = ActiveChunks::default();
+        let coarse = er_world::streaming::chunks_intersecting_chart(2, 7, 9, 32, 4, 1)[0];
+        let fine = er_world::streaming::chunks_intersecting_chart(2, 7, 9, 32, 7, 1)[0];
+        let distant = CellKey {
+            face: 2,
+            i: (1 << 7) - 1,
+            j: (1 << 7) - 1,
+            lod: 7,
+        };
+        let other_face = CellKey { face: 3, ..fine };
+        active.insert(coarse, Entity::PLACEHOLDER);
+        active.insert(fine, Entity::PLACEHOLDER);
+        active.insert(distant, Entity::PLACEHOLDER);
+        active.insert(other_face, Entity::PLACEHOLDER);
+
+        let intersecting = intersecting_active_chunk_keys(&active, 2, 7, 9, 32, 1);
+
+        assert_eq!(intersecting, vec![coarse, fine]);
+    }
+
+    #[test]
+    fn mesh_dispatch_prioritizes_all_view_focus_handoff_siblings() {
         let state = TerrainState::for_preset(
             PlanetPreset::EarthScale,
             1000.0,
@@ -2330,12 +2508,35 @@ mod tests {
             mesh_request(entity, key, &state)
         }));
 
-        sort_chunk_mesh_requests(&mut requests, camera_pos, EARTH_RADIUS_M);
+        sort_chunk_mesh_requests(
+            &mut requests,
+            camera_pos,
+            camera_pos.normalize(),
+            EARTH_RADIUS_M,
+        );
 
         assert!(requests[..4]
             .iter()
             .all(|request| parent_of(request.key) == Some(focused_parent)));
         assert_eq!(requests[4].key, breadth);
+    }
+
+    #[test]
+    fn terrain_view_focus_tracks_the_forward_surface_intersection() {
+        let camera = DVec3::X * (EARTH_RADIUS_M + 42_000.0);
+        let expected = (DVec3::X + DVec3::Y * 0.05).normalize();
+        let target = expected * EARTH_RADIUS_M;
+        let focus = terrain_view_focus_direction(camera, target - camera, EARTH_RADIUS_M);
+
+        assert!(focus.angle_between(expected) < 1e-10);
+    }
+
+    #[test]
+    fn terrain_view_focus_falls_back_beneath_camera_when_ray_misses() {
+        let camera = DVec3::X * (EARTH_RADIUS_M + 42_000.0);
+        let focus = terrain_view_focus_direction(camera, DVec3::Y, EARTH_RADIUS_M);
+
+        assert!(focus.angle_between(DVec3::X) < 1e-10);
     }
 
     #[test]
@@ -2393,6 +2594,7 @@ mod tests {
             RetainedSplit {
                 parent_entity: Entity::PLACEHOLDER,
                 children: [Entity::PLACEHOLDER; 4],
+                animate_handoff: false,
             },
         );
 
@@ -2693,6 +2895,7 @@ mod tests {
                     Entity::PLACEHOLDER,
                     Entity::PLACEHOLDER,
                 ],
+                animate_handoff: false,
             },
         );
         let active = ActiveChunks::default();

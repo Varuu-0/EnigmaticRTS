@@ -166,10 +166,10 @@ fn compute_surface_shape(
     let d2_plus = (dir + t2 * eps).normalize();
     let d2_minus = (dir - t2 * eps).normalize();
 
-    let e1_plus = field.sample_elevation(d1_plus);
-    let e1_minus = field.sample_elevation(d1_minus);
-    let e2_plus = field.sample_elevation(d2_plus);
-    let e2_minus = field.sample_elevation(d2_minus);
+    let e1_plus = field.sample_elevation_transient(d1_plus);
+    let e1_minus = field.sample_elevation_transient(d1_minus);
+    let e2_plus = field.sample_elevation_transient(d2_plus);
+    let e2_minus = field.sample_elevation_transient(d2_minus);
 
     let sr1_plus = radius + e1_plus * elevation_scale as f64;
     let sr1_minus = radius + e1_minus * elevation_scale as f64;

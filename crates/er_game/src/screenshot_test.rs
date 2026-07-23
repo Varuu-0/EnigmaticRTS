@@ -369,10 +369,7 @@ pub fn parse_test_args(planet_radius: f64) -> Option<ScreenshotTestConfig> {
             "--seed" => {
                 i += 1;
                 if i < args.len() {
-                    fixed_seed = u64::from_str_radix(args[i].trim_start_matches("0x"), 16)
-                        .ok()
-                        .or_else(|| args[i].parse().ok())
-                        .unwrap_or(fixed_seed);
+                    fixed_seed = crate::cli::parse_seed_value(&args[i]).unwrap_or(fixed_seed);
                 }
             }
             "--fixed-seed-coverage" => fixed_coverage = true,

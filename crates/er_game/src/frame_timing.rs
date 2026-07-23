@@ -15,11 +15,15 @@ pub struct MainWorldFrameTimings {
     pub stages: Vec<(&'static str, Duration)>,
     /// Wall time for the completed frame represented by `stages`.
     pub frame_duration: Option<Duration>,
+    /// Increments when a complete, internally consistent timing sample is published.
+    pub sample_revision: u64,
     stage_names: [&'static str; 7],
     boundaries: Vec<Instant>,
+    pending_stages: Vec<(&'static str, Duration)>,
     frame_start: Option<Instant>,
     frames_until_capture: u8,
     capture_frame: bool,
+    completed_capture: bool,
 }
 
 #[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
@@ -41,6 +45,7 @@ impl Plugin for FrameTimingPlugin {
             ],
             stages: Vec::with_capacity(7),
             boundaries: Vec::with_capacity(8),
+            pending_stages: Vec::with_capacity(7),
             ..default()
         });
 
@@ -78,7 +83,12 @@ impl MainWorldFrameTimings {
     fn record_boundary(&mut self, index: usize) {
         if index == 0 {
             let now = Instant::now();
-            self.frame_duration = self.frame_start.map(|start| now - start);
+            if self.completed_capture {
+                self.frame_duration = self.frame_start.map(|start| now - start);
+                std::mem::swap(&mut self.stages, &mut self.pending_stages);
+                self.sample_revision = self.sample_revision.wrapping_add(1);
+                self.completed_capture = false;
+            }
             self.frame_start = Some(now);
             if self.frames_until_capture > 0 {
                 self.frames_until_capture -= 1;
@@ -100,10 +110,11 @@ impl MainWorldFrameTimings {
             return;
         }
 
-        self.stages.clear();
+        self.pending_stages.clear();
         for (name, bounds) in self.stage_names.iter().zip(self.boundaries.windows(2)) {
-            self.stages.push((*name, bounds[1] - bounds[0]));
+            self.pending_stages.push((*name, bounds[1] - bounds[0]));
         }
+        self.completed_capture = true;
     }
 
     /// Number of non-capture frames between each captured frame. Exposed for
@@ -161,17 +172,22 @@ mod tests {
         let mut timings = fresh_timings();
         // Frame 0: capture starts.
         record_full_frame(&mut timings, 7);
-        assert!(timings.stages.len() == 7);
+        assert!(timings.stages.is_empty());
 
-        // Frame 1-7: non-capture frames must not record stages.
-        for _ in 0..timings.capture_period_frames() {
+        // Frame 1 publishes frame 0, then frames 2-7 skip stage recording.
+        timings.record_boundary(0);
+        assert_eq!(timings.stages.len(), 7);
+        let published_revision = timings.sample_revision;
+        assert!(!timings.is_capturing());
+        for _ in 1..timings.capture_period_frames() {
             timings.record_boundary(0);
             assert!(!timings.is_capturing());
             // Record a stray stage boundary mid-non-capture; it must be ignored.
             timings.record_boundary(1);
         }
-        // Stages from the first captured frame remain untouched.
+        // The published sample remains untouched between captures.
         assert_eq!(timings.stages.len(), 7);
+        assert_eq!(timings.sample_revision, published_revision);
     }
 
     #[test]
@@ -179,10 +195,11 @@ mod tests {
         let mut timings = fresh_timings();
         let stage_count = 7;
         record_full_frame(&mut timings, stage_count);
+        timings.record_boundary(0);
         let first_capture_stages = timings.stages.len();
 
-        // Skip the non-capture gap.
-        for _ in 0..timings.capture_period_frames() {
+        // Skip the remainder of the non-capture gap.
+        for _ in 1..timings.capture_period_frames() {
             timings.record_boundary(0);
             for index in 1..=stage_count {
                 timings.record_boundary(index);
@@ -192,8 +209,12 @@ mod tests {
         // Next frame should capture again.
         timings.record_boundary(0);
         assert!(timings.is_capturing());
-        record_full_frame(&mut timings, stage_count);
+        for index in 1..=stage_count {
+            timings.record_boundary(index);
+        }
+        timings.record_boundary(0);
         assert_eq!(timings.stages.len(), first_capture_stages);
+        assert_eq!(timings.sample_revision, 2);
     }
 
     #[test]
@@ -205,10 +226,11 @@ mod tests {
     #[test]
     fn frame_duration_becomes_some_after_second_frame_starts() {
         let mut timings = fresh_timings();
-        timings.record_boundary(0); // first frame start
+        record_full_frame(&mut timings, 7); // first captured frame
         assert!(timings.frame_duration.is_none());
         timings.record_boundary(0); // second frame start computes first duration
         assert!(timings.frame_duration.is_some());
+        assert_eq!(timings.sample_revision, 1);
     }
 
     #[test]

@@ -29,12 +29,12 @@ struct VertexOutput {
 
 @vertex
 fn vertex(in: Vertex) -> VertexOutput {
-    var out: VertexOutput
-    let model = get_world_from_local(in.instance_index)
-    let wp = mesh_position_local_to_world(model, vec4<f32>(in.position, 1.0))
-    out.world_position = wp.xyz
-    out.clip_position = mesh_position_local_to_clip(model, vec4<f32>(in.position, 1.0))
-    return out
+    var out: VertexOutput;
+    let model = get_world_from_local(in.instance_index);
+    let wp = mesh_position_local_to_world(model, vec4<f32>(in.position, 1.0));
+    out.world_position = wp.xyz;
+    out.clip_position = mesh_position_local_to_clip(model, vec4<f32>(in.position, 1.0));
+    return out;
 }
 
 struct FragmentInput {
@@ -42,45 +42,45 @@ struct FragmentInput {
 }
 
 fn hash3(p: vec3<f32>) -> f32 {
-    return fract(sin(dot(p, vec3<f32>(127.1, 311.7, 74.7))) * 43758.5453)
+    return fract(sin(dot(p, vec3<f32>(127.1, 311.7, 74.7))) * 43758.5453);
 }
 
 fn vnoise(p: vec3<f32>) -> f32 {
-    let i = floor(p)
-    let f = fract(p)
-    let u = f * f * (3.0 - 2.0 * f)
-    let n000 = hash3(i + vec3<f32>(0.0, 0.0, 0.0))
-    let n100 = hash3(i + vec3<f32>(1.0, 0.0, 0.0))
-    let n010 = hash3(i + vec3<f32>(0.0, 1.0, 0.0))
-    let n110 = hash3(i + vec3<f32>(1.0, 1.0, 0.0))
-    let n001 = hash3(i + vec3<f32>(0.0, 0.0, 1.0))
-    let n101 = hash3(i + vec3<f32>(1.0, 0.0, 1.0))
-    let n011 = hash3(i + vec3<f32>(0.0, 1.0, 1.0))
-    let n111 = hash3(i + vec3<f32>(1.0, 1.0, 1.0))
-    let nx00 = mix(n000, n100, u.x)
-    let nx10 = mix(n010, n110, u.x)
-    let nx01 = mix(n001, n101, u.x)
-    let nx11 = mix(n011, n111, u.x)
-    let nxy0 = mix(nx00, nx10, u.y)
-    let nxy1 = mix(nx01, nx11, u.y)
-    return mix(nxy0, nxy1, u.z)
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let n000 = hash3(i + vec3<f32>(0.0, 0.0, 0.0));
+    let n100 = hash3(i + vec3<f32>(1.0, 0.0, 0.0));
+    let n010 = hash3(i + vec3<f32>(0.0, 1.0, 0.0));
+    let n110 = hash3(i + vec3<f32>(1.0, 1.0, 0.0));
+    let n001 = hash3(i + vec3<f32>(0.0, 0.0, 1.0));
+    let n101 = hash3(i + vec3<f32>(1.0, 0.0, 1.0));
+    let n011 = hash3(i + vec3<f32>(0.0, 1.0, 1.0));
+    let n111 = hash3(i + vec3<f32>(1.0, 1.0, 1.0));
+    let nx00 = mix(n000, n100, u.x);
+    let nx10 = mix(n010, n110, u.x);
+    let nx01 = mix(n001, n101, u.x);
+    let nx11 = mix(n011, n111, u.x);
+    let nxy0 = mix(nx00, nx10, u.y);
+    let nxy1 = mix(nx01, nx11, u.y);
+    return mix(nxy0, nxy1, u.z);
 }
 
 fn fbm(p: vec3<f32>) -> f32 {
-    var sum = 0.0
-    var amp = 0.5
-    var freq = 1.0
+    var sum = 0.0;
+    var amp = 0.5;
+    var freq = 1.0;
     for (var i = 0; i < 6; i = i + 1) {
-        sum = sum + vnoise(p * freq) * amp
-        freq = freq * 2.1
-        amp = amp * 0.5
+        sum = sum + vnoise(p * freq) * amp;
+        freq = freq * 2.1;
+        amp = amp * 0.5;
     }
-    return sum
+    return sum;
 }
 
 fn smoothstep_f(edge0: f32, edge1: f32, x: f32) -> f32 {
-    let t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
+    let t = clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
 }
 
 @fragment

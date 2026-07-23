@@ -3,7 +3,7 @@ use er_core::config::{DEFAULT_DAY_LENGTH_SEC, MAX_QUADTREE_DEPTH};
 use er_core::math::{cells_per_edge, dir_to_surface, uv_to_dir, world_to_render, OriginOffset};
 use er_terrain::{ChunkComponent, FrameProfiler, RenderOrigin, TerrainDebugInfo, TerrainState};
 
-use crate::diagnostics::PerformanceSnapshot;
+use crate::diagnostics::{PerformanceSnapshot, PerformanceSnapshotUpdate};
 use crate::frame_timing::MainWorldFrameTimings;
 use crate::space::{SimTime, TimeScale};
 use er_terrain::SunDirection;
@@ -22,7 +22,10 @@ impl Plugin for DebugOverlayPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(LodDebugDraw::default())
             .add_systems(Startup, setup_debug_text)
-            .add_systems(PostUpdate, update_debug_text)
+            .add_systems(
+                PostUpdate,
+                update_debug_text.after(PerformanceSnapshotUpdate),
+            )
             .add_systems(
                 Update,
                 (toggle_lod_debug, draw_lod_gizmos).after(er_terrain::TerrainUpdate),
@@ -53,31 +56,26 @@ fn update_debug_text(
     debug: Res<TerrainDebugInfo>,
     profiler: Res<FrameProfiler>,
     main_world_timings: Res<MainWorldFrameTimings>,
-    time: Res<Time>,
     sun_direction: Res<SunDirection>,
     sim_time: Res<SimTime>,
     time_scale: Res<TimeScale>,
     performance: Res<PerformanceSnapshot>,
     mut query: Query<&mut Text, With<DebugText>>,
-    mut frames_until_refresh: Local<u8>,
+    mut displayed_revision: Local<u64>,
 ) {
-    if *frames_until_refresh > 0 {
-        *frames_until_refresh -= 1;
+    if performance.sample_revision == 0 || performance.sample_revision == *displayed_revision {
         return;
     }
-    *frames_until_refresh = 7;
+    *displayed_revision = performance.sample_revision;
 
     if let Ok(mut text) = query.single_mut() {
-        let fps = 1.0 / time.delta_secs().max(0.0001);
-        let frame_ms = time.delta_secs() * 1000.0;
-
         let mut sorted: Vec<(&'static str, std::time::Duration)> = profiler.timings.clone();
         sorted.sort_by_key(|&(_, d)| std::cmp::Reverse(d));
 
         let total_profiled: std::time::Duration = sorted.iter().map(|(_, d)| *d).sum();
         let frame_duration = main_world_timings
             .frame_duration
-            .unwrap_or_else(|| std::time::Duration::from_secs_f32(time.delta_secs()));
+            .unwrap_or_else(|| std::time::Duration::from_secs_f32(performance.frame_ms / 1000.0));
         let attribution_ms = frame_duration.as_secs_f32() * 1000.0;
         let total_main_world: std::time::Duration = main_world_timings
             .stages
@@ -102,24 +100,25 @@ fn update_debug_text(
         let mut lines = String::new();
         lines.push_str(&format!(
             "FPS: {:.0} | Frame: {:.1}ms | P95/P99: {:.1}/{:.1}ms | 1%: {:.0}\n",
-            fps,
-            frame_ms,
+            performance.rolling_fps,
+            performance.frame_ms,
             performance.frame_p95_ms,
             performance.frame_p99_ms,
             performance.one_percent_low_fps,
         ));
         lines.push_str(&format!(
-            "Chunks: {} | LOD: {} | S/M: {}/{} | Terrain mesh: {:.1} MiB | Built: {} | Draw work: {}\n",
+            "Chunks: {} | LOD: {} | Split/Merge/Mesh: {}/{}/{} | Terrain mesh: {:.1} MiB | Built: {} | Draw work: {}\n",
             debug.active_chunks,
             debug.max_depth,
             debug.pending_splits,
             debug.pending_merges,
+            debug.pending_meshes,
             debug.estimated_mesh_bytes as f64 / (1024.0 * 1024.0),
             debug.meshes_built,
             performance.visible_mesh_draw_estimate,
         ));
         lines.push_str(&format!(
-            "Alt: {:.2} km | Origin: ({:.1},{:.1},{:.1}) gen {} | Near-LOD {} width {:.0}m | Vtx/Nsp {:.2}/{:.2}m span {:.2}m eps {:.3e}rad | {:?} p:{:.0}% l:{:.0}%\n",
+            "Alt: {:.2} km | Origin: ({:.1},{:.1},{:.1}) gen {} | View-LOD {} width {:.0}m | Vtx/Nsp {:.2}/{:.2}m span {:.2}m eps {:.3e}rad | {:?} p:{:.0}% l:{:.0}%\n",
             debug.camera_altitude_m / 1000.0,
             debug.render_origin_world.x, debug.render_origin_world.y, debug.render_origin_world.z,
             debug.render_origin_generation,

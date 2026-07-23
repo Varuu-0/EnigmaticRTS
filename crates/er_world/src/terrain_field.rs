@@ -120,10 +120,27 @@ impl From<CachedWorldData> for TerrainSample {
     }
 }
 
-pub trait TerrainField: Send + Sync + std::any::Any {
+pub trait TerrainField: Send + Sync {
     fn sample(&self, dir: DVec3) -> TerrainSample;
     fn sample_elevation(&self, dir: DVec3) -> f64 {
         self.sample(dir).elevation
+    }
+    /// Elevation for one-shot differential probes that should not displace
+    /// reusable vertex samples from a field cache.
+    fn sample_elevation_transient(&self, dir: DVec3) -> f64 {
+        self.sample_elevation(dir)
+    }
+    /// Sample with a mesh-wide learned-macro blend weight. Fields without a
+    /// learned provenance layer ignore the override.
+    fn sample_with_blend_weight(&self, dir: DVec3, _blend_weight: f64) -> TerrainSample {
+        self.sample(dir)
+    }
+    /// Elevation-only counterpart to `sample_with_blend_weight`.
+    fn sample_elevation_with_blend_weight(&self, dir: DVec3, blend_weight: f64) -> f64 {
+        self.sample_with_blend_weight(dir, blend_weight).elevation
+    }
+    fn sample_elevation_transient_with_blend_weight(&self, dir: DVec3, _blend_weight: f64) -> f64 {
+        self.sample_elevation_transient(dir)
     }
     /// Maximum safe spacing for interpolated CPU mesh samples. Fields with
     /// learned or unknown high-frequency content keep exact per-vertex sampling.
@@ -133,9 +150,11 @@ pub trait TerrainField: Send + Sync + std::any::Any {
     fn revision(&self) -> u64 {
         0
     }
-    /// Downcast support for runtime type inspection (e.g. blend checking).
-    fn as_any(&self) -> &dyn std::any::Any {
-        unimplemented!("as_any not implemented for this field type")
+    /// Current learned-macro blend weight, when this field supports blending.
+    /// Other field implementations return `None` without requiring concrete
+    /// type inspection from terrain scheduling code.
+    fn current_blend_weight(&self, _dir: DVec3) -> Option<f64> {
+        None
     }
 }
 
@@ -329,6 +348,15 @@ impl ProceduralTerrainField {
             }
         }
     }
+
+    fn compute_elevation(&self, dir: DVec3) -> f64 {
+        if let Some(radius) = self.metric_radius_m {
+            let pos = crate::terrain_space::metric_surface_point(dir, radius);
+            metric_landform_sample(pos, &self.noise).full_elevation
+        } else {
+            elevation(dir, &self.noise, &self.elevation_params)
+        }
+    }
 }
 
 impl TerrainField for ProceduralTerrainField {
@@ -354,18 +382,15 @@ impl TerrainField for ProceduralTerrainField {
     }
 
     fn sample_elevation(&self, dir: DVec3) -> f64 {
-        let compute = || {
-            if let Some(radius) = self.metric_radius_m {
-                let pos = crate::terrain_space::metric_surface_point(dir, radius);
-                metric_landform_sample(pos, &self.noise).full_elevation
-            } else {
-                elevation(dir, &self.noise, &self.elevation_params)
-            }
-        };
+        let compute = || self.compute_elevation(dir);
         match &self.cache {
             Some(cache) => cache.get_or_insert_elevation(dir, compute),
             None => compute(),
         }
+    }
+
+    fn sample_elevation_transient(&self, dir: DVec3) -> f64 {
+        self.compute_elevation(dir)
     }
 
     fn mesh_sample_spacing_m(&self) -> Option<f64> {
@@ -664,24 +689,27 @@ impl BlendedHybridTerrainField {
         }
         false
     }
-}
 
-impl BlendTransitionChecker for BlendedHybridTerrainField {
-    fn has_transitioning_chunks(&self) -> bool {
-        BlendedHybridTerrainField::has_transitioning_chunks(self)
+    fn sample_at_blend_weight(&self, dir: DVec3, weight: f64) -> TerrainSample {
+        let macro_sample = if weight > 0.0 {
+            self.macro_field.sample_resident(dir)
+        } else {
+            None
+        };
+        self.sample_at_blend_weight_with_macro(dir, weight, macro_sample)
     }
-}
 
-impl TerrainField for BlendedHybridTerrainField {
-    fn sample(&self, dir: DVec3) -> TerrainSample {
+    fn sample_at_blend_weight_with_macro(
+        &self,
+        dir: DVec3,
+        weight: f64,
+        macro_sample: Option<MacroTerrainSample>,
+    ) -> TerrainSample {
         let fallback = self.fallback.sample(dir);
-        let macro_sample = self.macro_field.sample_resident(dir);
-        let learned_resident = macro_sample.is_some();
-        let weight = self.blend_weight(dir, learned_resident);
-
         if weight <= 0.0 {
             return fallback;
         }
+
         let Some(macro_sample) = macro_sample else {
             return fallback;
         };
@@ -691,10 +719,7 @@ impl TerrainField for BlendedHybridTerrainField {
 
         let procedural_macro = fallback.low_freq_elev as f64;
         let procedural_residual = fallback.elevation - procedural_macro;
-
         if weight >= 1.0 {
-            // Fully learned: learned macro + procedural residual. Use the
-            // learned visual climate for material shading (5.2.5).
             return TerrainSample {
                 elevation: macro_sample.elevation + procedural_residual,
                 low_freq_elev: fallback.low_freq_elev,
@@ -704,11 +729,7 @@ impl TerrainField for BlendedHybridTerrainField {
             };
         }
 
-        // Blended provenance: interpolate between procedural macro and
-        // learned macro, then add the procedural residual. This blends the
-        // *macro provenance weight*, not world coordinates.
         let blended_macro = procedural_macro * (1.0 - weight) + macro_sample.elevation * weight;
-        // Blend the visual climate proportionally to the learned weight.
         let blended_climate = VisualClimate {
             temp_c: fallback.visual_climate.temp_c * (1.0 - weight as f32)
                 + macro_sample.visual_climate.temp_c * weight as f32,
@@ -729,12 +750,100 @@ impl TerrainField for BlendedHybridTerrainField {
         }
     }
 
+    fn elevation_at_blend_weight(&self, dir: DVec3, weight: f64) -> f64 {
+        if weight <= 0.0 {
+            return self.fallback.sample_elevation(dir);
+        }
+
+        let macro_sample = self.macro_field.sample_resident(dir);
+        self.elevation_at_blend_weight_with_macro(dir, weight, macro_sample)
+    }
+
+    fn elevation_at_blend_weight_with_macro(
+        &self,
+        dir: DVec3,
+        weight: f64,
+        macro_sample: Option<MacroTerrainSample>,
+    ) -> f64 {
+        let fallback = self.fallback.sample(dir);
+        let Some(macro_sample) = macro_sample else {
+            return fallback.elevation;
+        };
+        if !macro_sample.elevation.is_finite() {
+            return fallback.elevation;
+        }
+
+        let procedural_macro = fallback.low_freq_elev as f64;
+        let procedural_residual = fallback.elevation - procedural_macro;
+        if weight >= 1.0 {
+            macro_sample.elevation + procedural_residual
+        } else {
+            procedural_macro * (1.0 - weight)
+                + macro_sample.elevation * weight
+                + procedural_residual
+        }
+    }
+}
+
+impl BlendTransitionChecker for BlendedHybridTerrainField {
+    fn has_transitioning_chunks(&self) -> bool {
+        BlendedHybridTerrainField::has_transitioning_chunks(self)
+    }
+}
+
+impl TerrainField for BlendedHybridTerrainField {
+    fn sample(&self, dir: DVec3) -> TerrainSample {
+        let macro_sample = self.macro_field.sample_resident(dir);
+        let learned_resident = macro_sample.is_some();
+        let weight = self.blend_weight(dir, learned_resident);
+        self.sample_at_blend_weight_with_macro(dir, weight, macro_sample)
+    }
+
+    fn sample_elevation(&self, dir: DVec3) -> f64 {
+        let macro_sample = self.macro_field.sample_resident(dir);
+        let learned_resident = macro_sample.is_some();
+        let weight = self.blend_weight(dir, learned_resident);
+        if weight <= 0.0 {
+            self.fallback.sample_elevation(dir)
+        } else {
+            self.elevation_at_blend_weight_with_macro(dir, weight, macro_sample)
+        }
+    }
+
+    fn sample_elevation_transient(&self, dir: DVec3) -> f64 {
+        let macro_sample = self.macro_field.sample_resident(dir);
+        let learned_resident = macro_sample.is_some();
+        let weight = self.blend_weight(dir, learned_resident);
+        if weight <= 0.0 {
+            self.fallback.sample_elevation_transient(dir)
+        } else {
+            self.elevation_at_blend_weight_with_macro(dir, weight, macro_sample)
+        }
+    }
+
+    fn sample_with_blend_weight(&self, dir: DVec3, blend_weight: f64) -> TerrainSample {
+        self.sample_at_blend_weight(dir, blend_weight.clamp(0.0, 1.0))
+    }
+
+    fn sample_elevation_with_blend_weight(&self, dir: DVec3, blend_weight: f64) -> f64 {
+        self.elevation_at_blend_weight(dir, blend_weight.clamp(0.0, 1.0))
+    }
+
+    fn sample_elevation_transient_with_blend_weight(&self, dir: DVec3, blend_weight: f64) -> f64 {
+        let weight = blend_weight.clamp(0.0, 1.0);
+        if weight <= 0.0 {
+            self.fallback.sample_elevation_transient(dir)
+        } else {
+            self.elevation_at_blend_weight(dir, weight)
+        }
+    }
+
     fn revision(&self) -> u64 {
         self.fallback.revision().max(self.macro_field.revision())
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn current_blend_weight(&self, dir: DVec3) -> Option<f64> {
+        Some(BlendedHybridTerrainField::current_blend_weight(self, dir))
     }
 }
 
@@ -809,22 +918,21 @@ impl ChunkFieldSnapshot {
 
 impl TerrainField for ChunkFieldSnapshot {
     fn sample(&self, dir: DVec3) -> TerrainSample {
-        // If the chunk is not learned-eligible, return the procedural
-        // fallback directly — no per-vertex learned/procedural mixing.
+        let mut sample = self.field.sample_with_blend_weight(dir, self.blend_weight);
         if !self.learned_eligible || self.blend_weight <= 0.0 {
-            let mut s = self.field.sample(dir);
-            // Force the source to Procedural so telemetry records it.
-            s.source = TerrainSampleSource::Procedural;
-            return s;
+            sample.source = TerrainSampleSource::Procedural;
         }
-        // Learned-eligible: sample the underlying field (which may be a
-        // blended hybrid). The source will be LearnedMacro if the macro
-        // field has resident data.
-        self.field.sample(dir)
+        sample
     }
 
     fn sample_elevation(&self, dir: DVec3) -> f64 {
-        self.field.sample_elevation(dir)
+        self.field
+            .sample_elevation_with_blend_weight(dir, self.blend_weight)
+    }
+
+    fn sample_elevation_transient(&self, dir: DVec3) -> f64 {
+        self.field
+            .sample_elevation_transient_with_blend_weight(dir, self.blend_weight)
     }
 
     fn mesh_sample_spacing_m(&self) -> Option<f64> {
@@ -891,6 +999,10 @@ mod tests {
         );
         assert_eq!(
             field.sample_elevation(dir).to_bits(),
+            sample.elevation.to_bits()
+        );
+        assert_eq!(
+            field.sample_elevation_transient(dir).to_bits(),
             sample.elevation.to_bits()
         );
     }
@@ -1258,6 +1370,60 @@ mod tests {
         let sample = blended.sample(dir);
         assert_eq!(sample.source, TerrainSampleSource::Procedural);
         assert_eq!(sample.elevation.to_bits(), pro.elevation.to_bits());
+    }
+
+    #[test]
+    fn chunk_snapshot_uses_its_captured_blend_weight_for_every_sample() {
+        let seed = PlanetSeed(0xC0FFEE);
+        let fallback: Arc<dyn TerrainField> = Arc::new(ProceduralTerrainField::new(
+            elevation_params(seed),
+            planet_params(seed),
+        ));
+        let dir = uv_to_dir(1, 0.21, 0.61);
+        let procedural = fallback.sample(dir);
+        let learned_macro = 1.25;
+        let blended: Arc<dyn TerrainField> = Arc::new(BlendedHybridTerrainField::new(
+            fallback,
+            Arc::new(ConstantMacro(learned_macro)),
+            0.0,
+        ));
+        let chunk = er_core::math::dir_to_cell(dir, 8);
+
+        let procedural_snapshot = ChunkFieldSnapshot::new(blended.clone(), chunk, false, 1.0);
+        let procedural_sample = procedural_snapshot.sample(dir);
+        assert_eq!(procedural_sample.source, TerrainSampleSource::Procedural);
+        assert_eq!(
+            procedural_sample.elevation.to_bits(),
+            procedural.elevation.to_bits()
+        );
+        assert_eq!(
+            procedural_snapshot.sample_elevation(dir).to_bits(),
+            procedural.elevation.to_bits()
+        );
+        assert_eq!(
+            procedural_snapshot
+                .sample_elevation_transient(dir)
+                .to_bits(),
+            procedural.elevation.to_bits()
+        );
+
+        let weight = 0.25;
+        let blended_snapshot = ChunkFieldSnapshot::new(blended, chunk, true, weight);
+        let blended_sample = blended_snapshot.sample(dir);
+        let procedural_macro = procedural.low_freq_elev as f64;
+        let expected =
+            procedural_macro * (1.0 - weight) + learned_macro * weight + procedural.elevation
+                - procedural_macro;
+        assert_eq!(blended_sample.source, TerrainSampleSource::LearnedMacro);
+        assert_eq!(blended_sample.elevation.to_bits(), expected.to_bits());
+        assert_eq!(
+            blended_snapshot.sample_elevation(dir).to_bits(),
+            expected.to_bits()
+        );
+        assert_eq!(
+            blended_snapshot.sample_elevation_transient(dir).to_bits(),
+            expected.to_bits()
+        );
     }
 
     #[test]

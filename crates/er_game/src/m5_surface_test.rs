@@ -932,12 +932,7 @@ fn is_monotonic(samples: &[f64]) -> bool {
 }
 
 fn current_blend_weight(terrain_state: &er_terrain::TerrainState, dir: glam::DVec3) -> f64 {
-    terrain_state
-        .field
-        .as_any()
-        .downcast_ref::<er_world::terrain_field::BlendedHybridTerrainField>()
-        .map(|blended| blended.current_blend_weight(dir))
-        .unwrap_or(0.0)
+    terrain_state.field.current_blend_weight(dir).unwrap_or(0.0)
 }
 
 fn scenario_direction(config: &M5TestConfig) -> Option<glam::DVec3> {
