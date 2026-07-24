@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bevy::asset::RenderAssetUsages;
 use bevy::render::mesh::{Indices, Mesh, MeshVertexAttribute};
 use bevy::render::render_resource::{PrimitiveTopology, VertexFormat};
@@ -6,6 +8,10 @@ use er_core::math::{
     cell_size, cell_to_dir, cells_per_edge, uv_to_dir, CellKey, NeighborSide, FACE_CORNER, FACE_U,
     FACE_V,
 };
+use er_world::climate::ClimateSample;
+use er_world::geology::SubstrateSample;
+use er_world::landform::LandformSampleV2;
+use er_world::soil::SoilFunctionalSample;
 use er_world::terrain_field::{TerrainField, TerrainSample};
 use glam::DVec3;
 
@@ -33,11 +39,142 @@ pub const ATTRIBUTE_DRAINAGE: MeshVertexAttribute =
 pub const ATTRIBUTE_CURVATURE: MeshVertexAttribute =
     MeshVertexAttribute::new("Curvature", 988540927, VertexFormat::Float32);
 
+pub const ATTRIBUTE_CLIMATE_A: MeshVertexAttribute =
+    MeshVertexAttribute::new("ClimateA", 988540928, VertexFormat::Float32x4);
+
+pub const ATTRIBUTE_CLIMATE_B: MeshVertexAttribute =
+    MeshVertexAttribute::new("ClimateB", 988540929, VertexFormat::Float32x4);
+
+pub const ATTRIBUTE_ENVIRONMENT_A: MeshVertexAttribute =
+    MeshVertexAttribute::new("EnvironmentA", 988540930, VertexFormat::Float32x4);
+
+pub const ATTRIBUTE_ENVIRONMENT_B: MeshVertexAttribute =
+    MeshVertexAttribute::new("EnvironmentB", 988540931, VertexFormat::Float32x4);
+
 // Skirts only conceal sub-pixel LOD cracks. Scaling them directly with a root
 // chunk makes their radial walls visible beyond the planet silhouette.
 const SKIRT_CELL_DEPTH_FRACTION: f64 = 0.02;
 const EARTH_MATERIAL_SAMPLE_SPACING_M: f64 = 100.0;
 pub type StitchNeighbors = [Option<CellKey>; 4];
+
+/// Optional immutable climate sampler passed to mesh generation.
+///
+/// The sampler is intentionally a narrow trait object so `er_terrain` does not
+/// need to know whether the climate source is a baked atlas, a live procedural
+/// field, or a future hybrid.  If `None`, the mesh emits zeroed climate
+/// attributes — the fragment shader will render them as a checkerboard when a
+/// climate debug view is active, which is the honest "data not available" cue.
+pub type ClimateSampler = Option<Arc<dyn Fn(DVec3, f64) -> ClimateSample + Send + Sync>>;
+
+/// Optional immutable M6.3 environmental sampler passed to mesh generation.
+///
+/// The packed transport carries only the canonical diagnostics exposed by the
+/// currently available M6.3 debug views. It deliberately does not affect the
+/// normal material path until the M6.7 renderer consumes these fields.
+pub type EnvironmentSampler =
+    Option<Arc<dyn Fn(DVec3, f64) -> PackedEnvironmentVertex + Send + Sync>>;
+
+/// Packed per-vertex climate transport consumed by the terrain shader.
+///
+/// Layout matches the WGSL `terrain_vertex.wgsl` interpolants:
+///   `climate_a = (annual_temp_c, temp_range_c, annual_precip_mm, moisture_index)`
+///   `climate_b = (pet_mm, aridity_index, wind_direction_rad, continentality_c)`
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PackedClimateVertex {
+    pub climate_a: [f32; 4],
+    pub climate_b: [f32; 4],
+}
+
+impl PackedClimateVertex {
+    /// Pack a physical `ClimateSample` into the two `vec4<f32>` vertex
+    /// attributes expected by the M6.2 diagnostic shader.
+    ///
+    /// Ranges are chosen to match the debug ramps in `debug_view.wgsl`:
+    ///   * annual_temp_c:       raw °C  (ramp spans [-30, +35])
+    ///   * temp_range_c:        warmest - coldest (ramp spans [0, 50])
+    ///   * annual_precip_mm:    raw mm  (ramp spans [0, 4000])
+    ///   * moisture_index:      raw [-1, 1]
+    ///   * pet_mm:              raw mm
+    ///   * aridity_index:       raw [-1, 10]
+    ///   * wind_direction_rad:  raw radians
+    ///   * continentality_c:    raw °C seasonal range (ramp spans [0, 100])
+    pub fn from_sample(sample: &ClimateSample) -> Self {
+        let temp_range =
+            sample.warmest_month_temperature_c() - sample.coldest_month_temperature_c();
+        Self {
+            climate_a: [
+                sample.annual_mean_temperature_c(),
+                temp_range,
+                sample.annual_precipitation_mm(),
+                sample.moisture_index(),
+            ],
+            climate_b: [
+                sample.pet_mm(),
+                sample.aridity_index(),
+                sample.prevailing_wind_direction_radians,
+                sample.continentality_c,
+            ],
+        }
+    }
+
+    /// Pack with explicit values; useful for tests and for emitting a
+    /// deterministic fallback when no climate sampler is available.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_components(
+        annual_temp_c: f32,
+        temp_range_c: f32,
+        annual_precip_mm: f32,
+        moisture_index: f32,
+        pet_mm: f32,
+        aridity_index: f32,
+        wind_direction_rad: f32,
+        continentality_c: f32,
+    ) -> Self {
+        Self {
+            climate_a: [
+                annual_temp_c,
+                temp_range_c,
+                annual_precip_mm,
+                moisture_index,
+            ],
+            climate_b: [pet_mm, aridity_index, wind_direction_rad, continentality_c],
+        }
+    }
+}
+
+/// Packed per-vertex M6.3 landform, substrate, and soil diagnostics.
+///
+/// Layout matches the WGSL `terrain_vertex.wgsl` interpolants:
+///   `environment_a = (local_relief_m, slope_degrees, substrate_class, soil_depth_m)`
+///   `environment_b = (soil_fertility, organic_fraction, salinity_ds_m, permafrost_fraction)`
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PackedEnvironmentVertex {
+    pub environment_a: [f32; 4],
+    pub environment_b: [f32; 4],
+}
+
+impl PackedEnvironmentVertex {
+    pub fn from_samples(
+        landform: &LandformSampleV2,
+        substrate: &SubstrateSample,
+        soil: &SoilFunctionalSample,
+    ) -> Self {
+        Self {
+            environment_a: [
+                landform.local_relief_m,
+                landform.slope_degrees,
+                substrate.class as u8 as f32,
+                soil.depth_m,
+            ],
+            environment_b: [
+                soil.fertility,
+                soil.organic_fraction,
+                soil.salinity_ds_m,
+                soil.permafrost_fraction,
+            ],
+        }
+    }
+}
 
 const NEIGHBOR_SIDES: [NeighborSide; 4] = [
     NeighborSide::NegU,
@@ -339,9 +476,25 @@ pub fn generate_chunk_mesh(
     sea_level: f64,
     field: &dyn TerrainField,
 ) -> Mesh {
-    generate_chunk_mesh_stitched(key, radius, elevation_scale, sea_level, field, [None; 4])
+    generate_chunk_mesh_stitched(
+        key,
+        radius,
+        elevation_scale,
+        sea_level,
+        field,
+        [None; 4],
+        None,
+        None,
+    )
 }
 
+/// Generate a stitched terrain chunk mesh with optional M6.2/M6.3 sampling.
+///
+/// `climate` is an optional immutable sampler. When `None`, the two packed
+/// climate vertex attributes are emitted as zeroes. Existing callers that do not
+/// supply a climate sampler continue to compile because the public
+/// `generate_chunk_mesh` wrapper keeps the old 5-argument signature.
+#[allow(clippy::too_many_arguments)]
 pub fn generate_chunk_mesh_stitched(
     key: CellKey,
     radius: f64,
@@ -349,6 +502,8 @@ pub fn generate_chunk_mesh_stitched(
     sea_level: f64,
     field: &dyn TerrainField,
     stitch_neighbors: StitchNeighbors,
+    climate: ClimateSampler,
+    environment: EnvironmentSampler,
 ) -> Mesh {
     let n = CHUNK_VERT_RES as usize;
     let quads = CHUNK_QUADS_PER_EDGE as usize;
@@ -374,6 +529,10 @@ pub fn generate_chunk_mesh_stitched(
     let mut temperatures: Vec<f32> = Vec::with_capacity(total);
     let mut drainages: Vec<f32> = Vec::with_capacity(total);
     let mut curvatures: Vec<f32> = Vec::with_capacity(total);
+    let mut climate_a: Vec<[f32; 4]> = Vec::with_capacity(total);
+    let mut climate_b: Vec<[f32; 4]> = Vec::with_capacity(total);
+    let mut environment_a: Vec<[f32; 4]> = Vec::with_capacity(total);
+    let mut environment_b: Vec<[f32; 4]> = Vec::with_capacity(total);
 
     let mut surf_low_freq: Vec<f32> = vec![0.0; n * n];
     let mut surf_moisture: Vec<f32> = vec![0.0; n * n];
@@ -384,6 +543,8 @@ pub fn generate_chunk_mesh_stitched(
     let mut surf_curvature: Vec<f32> = vec![0.0; n * n];
     let mut sample_directions: Vec<DVec3> = vec![DVec3::ZERO; n * n];
     let mut surf_data: Vec<VertexData> = vec![VertexData::default(); n * n];
+    // Climate is sampled on demand rather than stored per-surface-vertex to
+    // keep working-set memory small; the sampler closure is cheap to call.
 
     for gj in 0..n {
         for gi in 0..n {
@@ -422,6 +583,23 @@ pub fn generate_chunk_mesh_stitched(
             elevations.push(vd.elevation as f32);
             temperatures.push(vd.temperature);
             drainages.push(vd.drainage);
+            let pc = climate
+                .as_ref()
+                .map(|sampler| {
+                    PackedClimateVertex::from_sample(&sampler(
+                        dir,
+                        vd.elevation * elevation_scale as f64,
+                    ))
+                })
+                .unwrap_or_default();
+            climate_a.push(pc.climate_a);
+            climate_b.push(pc.climate_b);
+            let pe = environment
+                .as_ref()
+                .map(|sampler| sampler(dir, vd.elevation * elevation_scale as f64))
+                .unwrap_or_default();
+            environment_a.push(pe.environment_a);
+            environment_b.push(pe.environment_b);
         }
     }
 
@@ -464,6 +642,7 @@ pub fn generate_chunk_mesh_stitched(
     for gi in 0..n {
         let surf_idx = gi;
         let se = surf_elev[surf_idx];
+        let dir = sample_directions[surf_idx];
         let surface = anchor + DVec3::from_array(positions[surf_idx].map(f64::from));
         let pos = surface - surface.normalize() * skirt_depth;
         let local = pos - anchor;
@@ -476,12 +655,27 @@ pub fn generate_chunk_mesh_stitched(
         temperatures.push(surf_temp[surf_idx]);
         drainages.push(surf_drainage[surf_idx]);
         curvatures.push(surf_curvature[surf_idx]);
+        let pc = climate
+            .as_ref()
+            .map(|sampler| {
+                PackedClimateVertex::from_sample(&sampler(dir, se * elevation_scale as f64))
+            })
+            .unwrap_or_default();
+        climate_a.push(pc.climate_a);
+        climate_b.push(pc.climate_b);
+        let pe = environment
+            .as_ref()
+            .map(|sampler| sampler(dir, se * elevation_scale as f64))
+            .unwrap_or_default();
+        environment_a.push(pe.environment_a);
+        environment_b.push(pe.environment_b);
     }
 
     let bot_skirt = top_skirt + n;
     for gi in 0..n {
         let surf_idx = (n - 1) * n + gi;
         let se = surf_elev[surf_idx];
+        let dir = sample_directions[surf_idx];
         let surface = anchor + DVec3::from_array(positions[surf_idx].map(f64::from));
         let pos = surface - surface.normalize() * skirt_depth;
         let local = pos - anchor;
@@ -494,12 +688,27 @@ pub fn generate_chunk_mesh_stitched(
         temperatures.push(surf_temp[surf_idx]);
         drainages.push(surf_drainage[surf_idx]);
         curvatures.push(surf_curvature[surf_idx]);
+        let pc = climate
+            .as_ref()
+            .map(|sampler| {
+                PackedClimateVertex::from_sample(&sampler(dir, se * elevation_scale as f64))
+            })
+            .unwrap_or_default();
+        climate_a.push(pc.climate_a);
+        climate_b.push(pc.climate_b);
+        let pe = environment
+            .as_ref()
+            .map(|sampler| sampler(dir, se * elevation_scale as f64))
+            .unwrap_or_default();
+        environment_a.push(pe.environment_a);
+        environment_b.push(pe.environment_b);
     }
 
     let left_skirt = bot_skirt + n;
     for gj in 0..n {
         let surf_idx = gj * n;
         let se = surf_elev[surf_idx];
+        let dir = sample_directions[surf_idx];
         let surface = anchor + DVec3::from_array(positions[surf_idx].map(f64::from));
         let pos = surface - surface.normalize() * skirt_depth;
         let local = pos - anchor;
@@ -512,12 +721,27 @@ pub fn generate_chunk_mesh_stitched(
         temperatures.push(surf_temp[surf_idx]);
         drainages.push(surf_drainage[surf_idx]);
         curvatures.push(surf_curvature[surf_idx]);
+        let pc = climate
+            .as_ref()
+            .map(|sampler| {
+                PackedClimateVertex::from_sample(&sampler(dir, se * elevation_scale as f64))
+            })
+            .unwrap_or_default();
+        climate_a.push(pc.climate_a);
+        climate_b.push(pc.climate_b);
+        let pe = environment
+            .as_ref()
+            .map(|sampler| sampler(dir, se * elevation_scale as f64))
+            .unwrap_or_default();
+        environment_a.push(pe.environment_a);
+        environment_b.push(pe.environment_b);
     }
 
     let right_skirt = left_skirt + n;
     for gj in 0..n {
         let surf_idx = gj * n + (n - 1);
         let se = surf_elev[surf_idx];
+        let dir = sample_directions[surf_idx];
         let surface = anchor + DVec3::from_array(positions[surf_idx].map(f64::from));
         let pos = surface - surface.normalize() * skirt_depth;
         let local = pos - anchor;
@@ -530,6 +754,20 @@ pub fn generate_chunk_mesh_stitched(
         temperatures.push(surf_temp[surf_idx]);
         drainages.push(surf_drainage[surf_idx]);
         curvatures.push(surf_curvature[surf_idx]);
+        let pc = climate
+            .as_ref()
+            .map(|sampler| {
+                PackedClimateVertex::from_sample(&sampler(dir, se * elevation_scale as f64))
+            })
+            .unwrap_or_default();
+        climate_a.push(pc.climate_a);
+        climate_b.push(pc.climate_b);
+        let pe = environment
+            .as_ref()
+            .map(|sampler| sampler(dir, se * elevation_scale as f64))
+            .unwrap_or_default();
+        environment_a.push(pe.environment_a);
+        environment_b.push(pe.environment_b);
     }
 
     let mut indices: Vec<u32> = Vec::with_capacity(quads * quads * 6 + 4 * quads * 6);
@@ -603,6 +841,10 @@ pub fn generate_chunk_mesh_stitched(
     mesh.insert_attribute(ATTRIBUTE_TEMPERATURE, temperatures);
     mesh.insert_attribute(ATTRIBUTE_DRAINAGE, drainages);
     mesh.insert_attribute(ATTRIBUTE_CURVATURE, curvatures);
+    mesh.insert_attribute(ATTRIBUTE_CLIMATE_A, climate_a);
+    mesh.insert_attribute(ATTRIBUTE_CLIMATE_B, climate_b);
+    mesh.insert_attribute(ATTRIBUTE_ENVIRONMENT_A, environment_a);
+    mesh.insert_attribute(ATTRIBUTE_ENVIRONMENT_B, environment_b);
     let indices = indices
         .into_iter()
         .map(|index| u16::try_from(index).expect("terrain chunk index exceeds u16"))
@@ -750,6 +992,179 @@ fn surface_position(
         radius + sample.elevation * elevation_scale as f64
     };
     dir * surface_radius
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod climate_pack_tests {
+    use super::*;
+    use er_world::climate::ClimateSample;
+    use er_world::environment::ClimateNormals;
+    use er_world::geology::{SubstrateClass, SubstrateSample, SubstrateSampleValidity};
+    use er_world::landform::{LandformClass, LandformSampleV2};
+    use er_world::soil::SoilFunctionalSample;
+
+    #[allow(clippy::too_many_arguments)]
+    fn sample(
+        annual_mean: f32,
+        temp_range: f32,
+        annual_precip: f32,
+        moisture_index: f32,
+        pet: f32,
+        aridity: f32,
+        wind_dir: f32,
+        continentality: f32,
+    ) -> ClimateSample {
+        ClimateSample {
+            normals: ClimateNormals {
+                annual_mean_temperature_c: annual_mean,
+                warmest_month_temperature_c: annual_mean + temp_range * 0.5,
+                coldest_month_temperature_c: annual_mean - temp_range * 0.5,
+                growing_season_days: 180,
+                growing_degree_days_c: 1000.0,
+                annual_precipitation_mm: annual_precip,
+                driest_month_precipitation_mm: annual_precip / 12.0,
+                wettest_month_precipitation_mm: annual_precip / 12.0,
+                precipitation_seasonality: 0.0,
+                snow_fraction: 0.0,
+                pet_mm: pet,
+                water_balance_mm: annual_precip - pet,
+                aridity_index: aridity,
+                moisture_index,
+                monthly_temperature_c: [annual_mean; 12],
+                monthly_precipitation_mm: [annual_precip / 12.0; 12],
+            },
+            prevailing_wind_speed_m_s: 5.0,
+            prevailing_wind_direction_radians: wind_dir,
+            continentality_c: continentality,
+            monthly_temperature_c: [annual_mean; 12],
+            monthly_precipitation_mm: [annual_precip / 12.0; 12],
+            validity: er_world::climate::ClimateSampleValidity::all_valid(),
+        }
+    }
+
+    #[test]
+    fn packed_climate_maps_annual_temp_to_climate_a_x() {
+        let s = sample(12.0, 10.0, 800.0, 0.25, 600.0, 0.75, 1.0, 20.0);
+        let pc = PackedClimateVertex::from_sample(&s);
+        assert_eq!(pc.climate_a[0], 12.0);
+    }
+
+    #[test]
+    fn packed_climate_maps_temp_range_to_climate_a_y() {
+        let s = sample(12.0, 10.0, 800.0, 0.25, 600.0, 0.75, 1.0, 20.0);
+        let pc = PackedClimateVertex::from_sample(&s);
+        assert_eq!(pc.climate_a[1], 10.0);
+    }
+
+    #[test]
+    fn packed_climate_maps_annual_precip_to_climate_a_z() {
+        let s = sample(12.0, 10.0, 800.0, 0.25, 600.0, 0.75, 1.0, 20.0);
+        let pc = PackedClimateVertex::from_sample(&s);
+        assert_eq!(pc.climate_a[2], 800.0);
+    }
+
+    #[test]
+    fn packed_climate_maps_moisture_index_to_climate_a_w() {
+        let s = sample(12.0, 10.0, 800.0, 0.25, 600.0, 0.75, 1.0, 20.0);
+        let pc = PackedClimateVertex::from_sample(&s);
+        assert_eq!(pc.climate_a[3], 0.25);
+    }
+
+    #[test]
+    fn packed_climate_maps_pet_to_climate_b_x() {
+        let s = sample(12.0, 10.0, 800.0, 0.25, 600.0, 0.75, 1.0, 20.0);
+        let pc = PackedClimateVertex::from_sample(&s);
+        assert_eq!(pc.climate_b[0], 600.0);
+    }
+
+    #[test]
+    fn packed_climate_maps_aridity_to_climate_b_y() {
+        let s = sample(12.0, 10.0, 800.0, 0.25, 600.0, 0.75, 1.0, 20.0);
+        let pc = PackedClimateVertex::from_sample(&s);
+        assert_eq!(pc.climate_b[1], 0.75);
+    }
+
+    #[test]
+    fn packed_climate_maps_wind_direction_to_climate_b_z() {
+        let s = sample(12.0, 10.0, 800.0, 0.25, 600.0, 0.75, 1.57, 20.0);
+        let pc = PackedClimateVertex::from_sample(&s);
+        assert_eq!(pc.climate_b[2], 1.57);
+    }
+
+    #[test]
+    fn packed_climate_maps_continentality_to_climate_b_w() {
+        let s = sample(12.0, 10.0, 800.0, 0.25, 600.0, 0.75, 1.0, 20.0);
+        let pc = PackedClimateVertex::from_sample(&s);
+        assert_eq!(pc.climate_b[3], 20.0);
+    }
+
+    #[test]
+    fn default_packed_climate_is_all_zeroes() {
+        let pc = PackedClimateVertex::default();
+        assert_eq!(pc.climate_a, [0.0; 4]);
+        assert_eq!(pc.climate_b, [0.0; 4]);
+    }
+
+    #[test]
+    fn packed_environment_maps_canonical_m6_3_fields() {
+        let landform = LandformSampleV2 {
+            elevation_above_sea_m: 250.0,
+            slope_degrees: 17.0,
+            aspect_radians: 0.5,
+            profile_curvature_per_m: 0.0,
+            plan_curvature_per_m: 0.0,
+            local_relief_m: 480.0,
+            ruggedness: 0.3,
+            exposure: 0.1,
+            valley_position: -0.2,
+            plateau_likelihood: 0.0,
+            coastal_proximity_m: 10_000.0,
+            primary_class: LandformClass::RollingHill,
+            confidence: 0.8,
+        };
+        let substrate = SubstrateSample {
+            province_id: 7,
+            class: SubstrateClass::Sandstone,
+            grain_size_mm: 0.5,
+            permeability: 0.4,
+            erodibility: 0.3,
+            carbonate_fraction: 0.1,
+            silicate_fraction: 0.9,
+            mineral_color_rgb: [0.4, 0.3, 0.2],
+            volcanic_age_normalized: 1.0,
+            validity: SubstrateSampleValidity::all_valid(),
+        };
+        let soil = SoilFunctionalSample {
+            depth_m: 1.5,
+            fertility: 0.7,
+            organic_fraction: 0.2,
+            salinity_ds_m: 3.0,
+            permafrost_fraction: 0.1,
+            ..SoilFunctionalSample::default()
+        };
+
+        let packed = PackedEnvironmentVertex::from_samples(&landform, &substrate, &soil);
+
+        assert_eq!(packed.environment_a, [480.0, 17.0, 9.0, 1.5]);
+        assert_eq!(packed.environment_b, [0.7, 0.2, 3.0, 0.1]);
+    }
+
+    #[test]
+    fn from_components_round_trips() {
+        let pc = PackedClimateVertex::from_components(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0);
+        assert_eq!(pc.climate_a, [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(pc.climate_b, [5.0, 6.0, 7.0, 8.0]);
+    }
+
+    #[test]
+    fn temp_range_computed_from_warmest_minus_coldest() {
+        let mut s = sample(10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        s.normals.warmest_month_temperature_c = 25.0;
+        s.normals.coldest_month_temperature_c = 5.0;
+        let pc = PackedClimateVertex::from_sample(&s);
+        assert_eq!(pc.climate_a[1], 20.0);
+    }
 }
 
 fn edge_direction(

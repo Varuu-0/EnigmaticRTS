@@ -1,7 +1,9 @@
 use bevy::prelude::*;
 use er_core::config::{DEFAULT_DAY_LENGTH_SEC, MAX_QUADTREE_DEPTH};
 use er_core::math::{cells_per_edge, dir_to_surface, uv_to_dir, world_to_render, OriginOffset};
-use er_terrain::{ChunkComponent, FrameProfiler, RenderOrigin, TerrainDebugInfo, TerrainState};
+use er_terrain::{
+    ChunkComponent, DebugViewMode, FrameProfiler, RenderOrigin, TerrainDebugInfo, TerrainState,
+};
 
 use crate::diagnostics::{PerformanceSnapshot, PerformanceSnapshotUpdate};
 use crate::frame_timing::MainWorldFrameTimings;
@@ -16,16 +18,35 @@ struct DebugText;
 #[derive(Resource, Default)]
 pub struct LodDebugDraw(pub bool);
 
+/// Current debug-view selection, cycled by F4. Writes to the shared terrain
+/// material uniform only when changed — never per frame when unchanged.
+#[derive(Resource, Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DebugViewSelection(pub DebugViewMode);
+
+impl DebugViewSelection {
+    /// Advance to the next mode in the cycle.
+    pub fn cycle(&mut self) {
+        self.0 = self.0.next();
+    }
+
+    /// Short label for the overlay text.
+    fn label(&self) -> &'static str {
+        self.0.name()
+    }
+}
+
 pub struct DebugOverlayPlugin;
 
 impl Plugin for DebugOverlayPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(LodDebugDraw::default())
+            .init_resource::<DebugViewSelection>()
             .add_systems(Startup, setup_debug_text)
             .add_systems(
                 PostUpdate,
                 update_debug_text.after(PerformanceSnapshotUpdate),
             )
+            .add_systems(Update, toggle_debug_view.before(crate::space::SpaceUpdate))
             .add_systems(
                 Update,
                 (toggle_lod_debug, draw_lod_gizmos).after(er_terrain::TerrainUpdate),
@@ -60,10 +81,13 @@ fn update_debug_text(
     sim_time: Res<SimTime>,
     time_scale: Res<TimeScale>,
     performance: Res<PerformanceSnapshot>,
+    debug_view: Res<DebugViewSelection>,
     mut query: Query<&mut Text, With<DebugText>>,
     mut displayed_revision: Local<u64>,
 ) {
-    if performance.sample_revision == 0 || performance.sample_revision == *displayed_revision {
+    if performance.sample_revision == 0
+        || (performance.sample_revision == *displayed_revision && !debug_view.is_changed())
+    {
         return;
     }
     *displayed_revision = performance.sample_revision;
@@ -107,7 +131,7 @@ fn update_debug_text(
             performance.one_percent_low_fps,
         ));
         lines.push_str(&format!(
-            "Chunks: {} | LOD: {} | Split/Merge/Mesh: {}/{}/{} | Terrain mesh: {:.1} MiB | Built: {} | Draw work: {}\n",
+            "Chunks: {} | LOD: {} | Split/Merge/Mesh: {}/{}/{} | Terrain mesh: {:.1} MiB | Built: {} | Draw work: {} | Debug view: {} (F4)\n",
             debug.active_chunks,
             debug.max_depth,
             debug.pending_splits,
@@ -116,6 +140,7 @@ fn update_debug_text(
             debug.estimated_mesh_bytes as f64 / (1024.0 * 1024.0),
             debug.meshes_built,
             performance.visible_mesh_draw_estimate,
+            debug_view.label(),
         ));
         lines.push_str(&format!(
             "Alt: {:.2} km | Origin: ({:.1},{:.1},{:.1}) gen {} | View-LOD {} width {:.0}m | Vtx/Nsp {:.2}/{:.2}m span {:.2}m eps {:.3e}rad | {:?} p:{:.0}% l:{:.0}%\n",
@@ -250,6 +275,13 @@ fn toggle_lod_debug(keys: Res<ButtonInput<KeyCode>>, mut draw: ResMut<LodDebugDr
     }
 }
 
+fn toggle_debug_view(keys: Res<ButtonInput<KeyCode>>, mut selection: ResMut<DebugViewSelection>) {
+    if keys.just_pressed(KeyCode::F4) {
+        selection.cycle();
+        info!("Debug view: {}", selection.label());
+    }
+}
+
 fn draw_lod_gizmos(
     draw: Res<LodDebugDraw>,
     terrain_state: Res<TerrainState>,
@@ -352,5 +384,36 @@ mod tests {
         };
         let origin_offset = OriginOffset(origin_render.world);
         assert_eq!(origin_offset.0, glam::DVec3::new(1_000.0, 2_000.0, 3_000.0));
+    }
+
+    #[test]
+    fn debug_view_defaults_to_off() {
+        let selection = DebugViewSelection::default();
+        assert_eq!(selection.0, DebugViewMode::Off);
+        assert_eq!(selection.label(), "off");
+    }
+
+    #[test]
+    fn debug_view_cycles_through_all_modes() {
+        let mut selection = DebugViewSelection::default();
+        let mut seen = vec![selection.0];
+        for _ in 0..er_terrain::debug_view::DEBUG_VIEW_MODE_COUNT {
+            selection.cycle();
+            seen.push(selection.0);
+        }
+        // After a full cycle we return to the start.
+        assert_eq!(selection.0, DebugViewMode::Off);
+        // Every mode is visited exactly once in a full cycle.
+        let unique: std::collections::HashSet<_> = seen.into_iter().collect();
+        assert_eq!(unique.len(), er_terrain::debug_view::DEBUG_VIEW_MODE_COUNT);
+    }
+
+    #[test]
+    fn debug_view_labels_are_distinct() {
+        let mut labels = std::collections::HashSet::new();
+        for mode in DebugViewMode::ALL {
+            labels.insert(DebugViewSelection(mode).label());
+        }
+        assert_eq!(labels.len(), DebugViewMode::ALL.len());
     }
 }

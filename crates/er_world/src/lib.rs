@@ -5,8 +5,13 @@
 pub mod biome;
 pub mod brushes;
 pub mod cache;
+pub mod climate;
 pub mod elevation;
+pub mod environment;
+pub mod geology;
+pub mod landform;
 pub mod params;
+pub mod soil;
 pub mod streaming;
 pub mod surface_cache;
 pub mod surface_charts;
@@ -14,6 +19,29 @@ pub mod surface_tiles;
 pub mod terrain_field;
 pub mod terrain_space;
 pub mod water;
+
+pub use climate::{
+    ClimateAtlas, ClimateAtlasBuildStats, ClimateAtlasIdentity, ClimateSample,
+    ClimateSampleValidity, CLIMATE_ATLAS_LEN, CLIMATE_ATLAS_LOD, CLIMATE_CELLS_PER_EDGE,
+};
+pub use environment::{
+    collect_legacy_environment_baseline, field_metadata, planet_params_with_preset, BiomeMixture,
+    ClimateNormals, DisturbanceSample, EnvironmentModelVersion, EnvironmentPreset,
+    EnvironmentSample, FieldMetadata, HydrologySample, LandformSample, LegacyEnvironmentBaseline,
+    SoilSample, WorldEnvironmentIdentity, WorldEnvironmentSnapshot, ENVIRONMENT_MODEL_VERSION,
+    HYBRID_CLIMATE_MODEL, LEGACY_ENVIRONMENT_PIPELINE_GAPS,
+};
+pub use geology::{
+    GeologyAtlas, GeologyAtlasBuildStats, GeologyAtlasIdentity, SubstrateClass, SubstrateSample,
+    SubstrateSampleValidity, GEOLOGY_ATLAS_LEN, GEOLOGY_ATLAS_LOD, GEOLOGY_CELLS_PER_EDGE,
+};
+pub use landform::{
+    LandformAtlas, LandformAtlasBuildStats, LandformAtlasIdentity, LandformClass, LandformSampleV2,
+    LANDFORM_ATLAS_LEN, LANDFORM_ATLAS_LOD, LANDFORM_ATLAS_VERSION,
+};
+pub use soil::{
+    classify_drainage, sample_soil, SoilDrainageClass, SoilFunctionalSample, SoilFunctionalValidity,
+};
 
 pub use biome::{
     biome, classify_biome, elevation_low_freq, elevation_split, moisture, temperature, Biome,

@@ -4,6 +4,7 @@
 pub mod chunk;
 pub mod culling;
 pub mod debug;
+pub mod debug_view;
 pub mod lod;
 pub mod material;
 pub mod mesh_gen;
@@ -14,6 +15,7 @@ pub mod systems;
 
 pub use chunk::{ChunkComponent, HoldForMerge, HoldHidden};
 pub use debug::{TerrainDebugInfo, ESTIMATED_BYTES_PER_CHUNK_MESH};
+pub use debug_view::DebugViewMode;
 pub use er_world::terrain_field::BlendTransitionChecker;
 pub use material::{TerrainMaterial, TerrainMaterialUniform};
 pub use mesh_gen::{

@@ -10,7 +10,8 @@ use er_world::elevation::ElevationParams;
 use std::sync::OnceLock;
 
 use crate::mesh_gen::{
-    ATTRIBUTE_CURVATURE, ATTRIBUTE_DRAINAGE, ATTRIBUTE_ELEVATION, ATTRIBUTE_LOW_FREQ_ELEV,
+    ATTRIBUTE_CLIMATE_A, ATTRIBUTE_CLIMATE_B, ATTRIBUTE_CURVATURE, ATTRIBUTE_DRAINAGE,
+    ATTRIBUTE_ELEVATION, ATTRIBUTE_ENVIRONMENT_A, ATTRIBUTE_ENVIRONMENT_B, ATTRIBUTE_LOW_FREQ_ELEV,
     ATTRIBUTE_MOISTURE_LOW, ATTRIBUTE_MORPH, ATTRIBUTE_NORMAL, ATTRIBUTE_TEMPERATURE,
 };
 
@@ -64,6 +65,7 @@ pub struct TerrainMaterialUniform {
     pub render_origin_y: f32,
     pub render_origin_z: f32,
     pub debug_skirt_highlight: f32,
+    pub debug_view_mode: u32,
 }
 
 impl TerrainMaterialUniform {
@@ -119,6 +121,7 @@ impl TerrainMaterialUniform {
             render_origin_y: 0.0,
             render_origin_z: 0.0,
             debug_skirt_highlight: 0.0,
+            debug_view_mode: crate::debug_view::DebugViewMode::Off as u32,
         }
     }
 }
@@ -164,6 +167,10 @@ impl Material for TerrainMaterial {
             ATTRIBUTE_TEMPERATURE.at_shader_location(6),
             ATTRIBUTE_DRAINAGE.at_shader_location(7),
             ATTRIBUTE_CURVATURE.at_shader_location(8),
+            ATTRIBUTE_CLIMATE_A.at_shader_location(9),
+            ATTRIBUTE_CLIMATE_B.at_shader_location(10),
+            ATTRIBUTE_ENVIRONMENT_A.at_shader_location(11),
+            ATTRIBUTE_ENVIRONMENT_B.at_shader_location(12),
         ])?;
         descriptor.vertex.buffers = vec![vertex_layout];
         descriptor.primitive.cull_mode = Some(Face::Back);

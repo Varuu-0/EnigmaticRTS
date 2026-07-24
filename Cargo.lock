@@ -2303,6 +2303,7 @@ dependencies = [
  "er_terrain",
  "er_world",
  "glam",
+ "rand 0.9.4",
  "serde",
  "serde_json",
 ]

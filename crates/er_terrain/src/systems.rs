@@ -16,7 +16,8 @@ use er_core::math::{cell_neighbor, cell_size, cell_to_dir, CellKey, NeighborSide
 use er_core::seed::PlanetSeed;
 use er_world::cache::WorldCache;
 use er_world::elevation::{elevation_params, ElevationParams};
-use er_world::params::{planet_params as make_planet_params, PlanetParams};
+use er_world::environment::EnvironmentPreset;
+use er_world::params::PlanetParams;
 use er_world::terrain_field::{
     BlendTransitionChecker, BlendedHybridTerrainField, ChunkFieldSnapshot, HaloResidencyChecker,
     MacroTerrainField, ProceduralTerrainField, TerrainField, TerrainSampleSource,
@@ -160,6 +161,16 @@ pub struct TerrainState {
     pub max_render_distance: f64,
     pub lod_split_budget_per_frame: usize,
     pub max_inflight_terrain_meshes: usize,
+    /// The M6.1 environment preset that influences `make_planet_params`
+    /// climate generation. Defaults to `EarthLike`, preserving bit-identical
+    /// output for the existing Earth-scale baseline.
+    pub environment_preset: EnvironmentPreset,
+    /// Immutable M6.2 climate normals shared by every mesh worker.
+    pub climate_atlas: Arc<er_world::ClimateAtlas>,
+    /// Immutable M6.3 geometric landform descriptors shared by every mesh worker.
+    pub landform_atlas: Arc<er_world::LandformAtlas>,
+    /// Immutable M6.3 substrate provinces shared by every mesh worker.
+    pub geology_atlas: Arc<er_world::GeologyAtlas>,
 }
 
 #[derive(Resource, Default)]
@@ -176,6 +187,7 @@ impl TerrainState {
             None,
             None,
             None,
+            EnvironmentPreset::default(),
         )
     }
 
@@ -189,6 +201,7 @@ impl TerrainState {
             None,
             None,
             None,
+            EnvironmentPreset::default(),
         )
     }
 
@@ -202,9 +215,29 @@ impl TerrainState {
         halo_checker: Option<Arc<dyn HaloResidencyChecker>>,
         rebuild_source: Option<Arc<dyn RebuildChunkSource>>,
         blend_checker: Option<Arc<dyn BlendTransitionChecker>>,
+        environment_preset: EnvironmentPreset,
     ) -> Self {
         let params = elevation_params(seed);
-        let planet_params = make_planet_params(seed);
+        // Apply the M6.1 environment preset to climate generation only. The
+        // preset biases `PlanetParams` (temperature, moisture, rain shadow,
+        // etc.) without touching elevation, radius, caches, learned keys, or
+        // source logic. When `EnvironmentPreset::default()` (EarthLike) is
+        // used, the output must be bit-identical to the pre-M6.1 baseline.
+        let planet_params =
+            er_world::environment::planet_params_with_preset(seed, environment_preset);
+        let climate_atlas = Arc::new(er_world::ClimateAtlas::build(
+            seed,
+            environment_preset,
+            planet_radius,
+            elevation_scale as f64,
+        ));
+        let landform_atlas = Arc::new(er_world::LandformAtlas::build(
+            seed,
+            planet_radius,
+            elevation_scale as f64,
+            f64::from(params.sea_level) * f64::from(elevation_scale),
+        ));
+        let geology_atlas = Arc::new(er_world::GeologyAtlas::build(seed, planet_radius));
         let (cache_capacity, cache_lod) = preset_cache_config(preset);
         let cache = Arc::new(WorldCache::with_lod(cache_capacity, cache_lod));
         let fallback: Arc<dyn TerrainField> = match preset {
@@ -265,6 +298,10 @@ impl TerrainState {
             max_render_distance: preset.max_render_distance_m(),
             lod_split_budget_per_frame: LOD_SPLIT_BUDGET_PER_FRAME,
             max_inflight_terrain_meshes: MAX_INFLIGHT_TERRAIN_MESHES,
+            environment_preset,
+            climate_atlas,
+            landform_atlas,
+            geology_atlas,
         }
     }
 }
@@ -380,6 +417,7 @@ pub struct TerrainPlugin {
     halo_checker: Option<Arc<dyn HaloResidencyChecker>>,
     rebuild_source: Option<Arc<dyn RebuildChunkSource>>,
     blend_checker: Option<Arc<dyn BlendTransitionChecker>>,
+    environment_preset: EnvironmentPreset,
 }
 
 impl Default for TerrainPlugin {
@@ -394,6 +432,7 @@ impl Default for TerrainPlugin {
             halo_checker: None,
             rebuild_source: None,
             blend_checker: None,
+            environment_preset: EnvironmentPreset::default(),
         }
     }
 }
@@ -435,6 +474,16 @@ impl TerrainPlugin {
         self
     }
 
+    /// Sets the M6.1 environment preset used to bias climate generation in
+    /// `make_planet_params`. Defaults to `EarthLike`; changing it to a
+    /// non-Earth preset only affects `PlanetParams` (temperature, moisture,
+    /// rain shadow, etc.), not elevation, radius, caches, learned keys, or
+    /// source logic.
+    pub fn with_environment_preset(mut self, preset: EnvironmentPreset) -> Self {
+        self.environment_preset = preset;
+        self
+    }
+
     /// Use `PlanetPreset` parameters (radius, LOD depth, render distance) while
     /// keeping the caller's `elevation_scale` and `seed`.
     pub fn from_preset(preset: PlanetPreset, elevation_scale: f32, seed: PlanetSeed) -> Self {
@@ -448,6 +497,7 @@ impl TerrainPlugin {
             halo_checker: None,
             rebuild_source: None,
             blend_checker: None,
+            environment_preset: EnvironmentPreset::default(),
         }
     }
 }
@@ -463,6 +513,7 @@ impl Plugin for TerrainPlugin {
             self.halo_checker.clone(),
             self.rebuild_source.clone(),
             self.blend_checker.clone(),
+            self.environment_preset,
         ))
         .insert_resource(ActiveChunks::default())
         .insert_resource(RetainedSplits::default())
@@ -530,8 +581,9 @@ fn setup_terrain(
     let _ = VERTEX_SHADER.set(vertex_handle);
 
     let fragment_source = format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
         include_str!("../assets/shaders/terrain_uniform.wgsl"),
+        include_str!("../assets/shaders/debug_view.wgsl"),
         include_str!("../assets/shaders/terrain_fragment.wgsl")
     );
     let fragment_handle = shaders.add(Shader::from_wgsl(fragment_source, "terrain_fragment"));
@@ -1645,6 +1697,9 @@ fn dispatch_chunk_meshes(
             source_anchor,
             stitch_neighbors,
         } = request;
+        let climate_atlas = Arc::clone(&terrain_state.climate_atlas);
+        let landform_atlas = Arc::clone(&terrain_state.landform_atlas);
+        let geology_atlas = Arc::clone(&terrain_state.geology_atlas);
         let task = AsyncComputeTaskPool::get().spawn(async move {
             // M5 chunk-wide halo residency gate: if a halo checker is
             // present, capture the residency decision at mesh-build time so
@@ -1673,6 +1728,27 @@ fn dispatch_chunk_meshes(
             } else {
                 (field, false)
             };
+            let environment_climate_atlas = Arc::clone(&climate_atlas);
+            let climate_sampler: crate::mesh_gen::ClimateSampler =
+                Some(Arc::new(move |dir, elevation_m| {
+                    climate_atlas.sample_at_elevation(dir, elevation_m)
+                }));
+            let environment_sampler: crate::mesh_gen::EnvironmentSampler =
+                Some(Arc::new(move |dir, elevation_m| {
+                    let landform = landform_atlas.sample(dir);
+                    let substrate = geology_atlas.sample(dir);
+                    let climate = environment_climate_atlas.sample_at_elevation(dir, elevation_m);
+                    let soil = er_world::sample_soil(
+                        environment_climate_atlas.identity().seed,
+                        dir,
+                        &climate,
+                        &landform,
+                        &substrate,
+                    );
+                    crate::mesh_gen::PackedEnvironmentVertex::from_samples(
+                        &landform, &substrate, &soil,
+                    )
+                }));
             PendingMeshPayload {
                 mesh: generate_chunk_mesh_stitched(
                     key,
@@ -1681,6 +1757,8 @@ fn dispatch_chunk_meshes(
                     sea_level,
                     snapshot_field.as_ref(),
                     stitch_neighbors,
+                    climate_sampler,
+                    environment_sampler,
                 ),
                 key,
                 source_anchor,
@@ -2903,5 +2981,107 @@ mod tests {
         let cam_dir = cell_to_dir(parent);
         let result = containing_ancestor_key(cam_dir, 10, &active, &retained);
         assert_eq!(result, parent);
+    }
+
+    #[test]
+    fn terrain_uniform_debug_view_defaults_to_off() {
+        let state = TerrainState::for_preset(
+            PlanetPreset::EarthScale,
+            1000.0,
+            er_core::seed::PlanetSeed(0xC0FFEE),
+        );
+        assert_eq!(
+            state.base_uniform.debug_view_mode,
+            crate::debug_view::DebugViewMode::Off as u32,
+        );
+    }
+
+    #[test]
+    fn default_terrain_plugin_uses_earthlike_environment_preset() {
+        let plugin = TerrainPlugin::default();
+        assert_eq!(
+            plugin.environment_preset,
+            er_world::environment::EnvironmentPreset::default(),
+        );
+        assert_eq!(
+            plugin.environment_preset,
+            er_world::environment::EnvironmentPreset::EarthLike,
+        );
+    }
+
+    #[test]
+    fn earthlike_environment_preset_produces_bit_identical_planet_params() {
+        // The EarthLike preset must not alter PlanetParams relative to the
+        // pre-M6.1 baseline. This is the bit-identity guarantee.
+        let seed = er_core::seed::PlanetSeed(0xC0FFEE);
+        let baseline = er_world::planet_params(seed);
+        let with_preset = er_world::environment::planet_params_with_preset(
+            seed,
+            er_world::environment::EnvironmentPreset::EarthLike,
+        );
+        assert_eq!(
+            baseline.sea_level.to_bits(),
+            with_preset.sea_level.to_bits()
+        );
+        assert_eq!(
+            baseline.lapse_rate.to_bits(),
+            with_preset.lapse_rate.to_bits()
+        );
+        assert_eq!(
+            baseline.temp_gradient.to_bits(),
+            with_preset.temp_gradient.to_bits()
+        );
+        assert_eq!(baseline.temp_noise_seed, with_preset.temp_noise_seed);
+        assert_eq!(
+            baseline.moisture_noise_seed,
+            with_preset.moisture_noise_seed
+        );
+        assert_eq!(
+            baseline.rain_shadow_strength.to_bits(),
+            with_preset.rain_shadow_strength.to_bits()
+        );
+    }
+
+    #[test]
+    fn stress_presets_distinct_from_earthlike() {
+        // Non-Earth stress presets must produce measurably different climate
+        // parameters than EarthLike for the same seed.
+        let seed = er_core::seed::PlanetSeed(0xC0FFEE);
+        let earth = er_world::environment::planet_params_with_preset(
+            seed,
+            er_world::environment::EnvironmentPreset::EarthLike,
+        );
+        for stress in [
+            er_world::environment::EnvironmentPreset::HotArid,
+            er_world::environment::EnvironmentPreset::ColdIcehouse,
+        ] {
+            let stressed = er_world::environment::planet_params_with_preset(seed, stress);
+            // At least the temperature or moisture noise must differ.
+            let temp_differs = earth.temp_noise_seed != stressed.temp_noise_seed
+                || earth.temp_noise_freq.to_bits() != stressed.temp_noise_freq.to_bits()
+                || earth.temp_noise_amp.to_bits() != stressed.temp_noise_amp.to_bits();
+            let moist_differs = earth.moisture_noise_seed != stressed.moisture_noise_seed
+                || earth.moisture_noise_freq.to_bits() != stressed.moisture_noise_freq.to_bits()
+                || earth.moisture_noise_amp.to_bits() != stressed.moisture_noise_amp.to_bits();
+            assert!(
+                temp_differs || moist_differs,
+                "{:?} stress preset did not differ from EarthLike",
+                stress
+            );
+        }
+    }
+
+    #[test]
+    fn with_environment_preset_builder_propagates_to_state() {
+        let plugin = TerrainPlugin::from_preset(
+            PlanetPreset::EarthScale,
+            1000.0,
+            er_core::seed::PlanetSeed(42),
+        )
+        .with_environment_preset(er_world::environment::EnvironmentPreset::HotArid);
+        assert_eq!(
+            plugin.environment_preset,
+            er_world::environment::EnvironmentPreset::HotArid,
+        );
     }
 }

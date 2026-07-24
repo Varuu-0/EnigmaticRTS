@@ -44,6 +44,7 @@ struct TerrainMaterialUniform {
     render_origin_y: f32,
     render_origin_z: f32,
     debug_skirt_highlight: f32,
+    debug_view_mode: u32,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> material: TerrainMaterialUniform;

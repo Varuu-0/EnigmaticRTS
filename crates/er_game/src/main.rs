@@ -52,7 +52,7 @@ use frame_timing::FrameTimingPlugin;
 use menu::SettingsMenuPlugin;
 use screenshot_test::{parse_test_args, ScreenshotTestPlugin};
 use settings::GraphicsSettings;
-use space::{SpacePlugin, SpaceUpdate};
+use space::{CloudRuntimeConfig, SpacePlugin, SpaceUpdate};
 
 fn main() {
     crash::install_crash_hook();
@@ -60,6 +60,7 @@ fn main() {
 
     let planet_preset = detect_planet_preset();
     let planet_seed = detect_planet_seed();
+    let environment_preset = detect_environment_preset();
     let test_config = parse_test_args(planet_preset.radius_m());
     let bench_config = bench::parse_bench_args(planet_preset.radius_m());
     let is_test_mode = test_config.is_some();
@@ -83,6 +84,7 @@ fn main() {
     #[cfg(not(feature = "terrain_diffusion"))]
     let is_m5_test_mode = false;
     let gpu_diagnostics = has_gpu_diagnostics_flag();
+    let cloud_test_mode = std::env::args().any(|arg| arg == "--cloud-test");
     let dump_manifest_path = baseline_manifest::parse_dump_path();
     let exit_after_manifest_dump = dump_manifest_path.is_some();
     let headless = is_bench_mode || is_stress_mode || is_learned_stress_mode || is_m5_test_mode;
@@ -113,6 +115,7 @@ fn main() {
             });
     #[cfg(not(feature = "terrain_diffusion"))]
     let terrain_diffusion_manifest = None;
+
     #[cfg(feature = "terrain_diffusion")]
     let terrain_plugin = terrain_diffusion
         .as_ref()
@@ -121,13 +124,18 @@ fn main() {
                 Arc::clone(&startup.streaming_queue),
             ));
             TerrainPlugin::from_preset(planet_preset, 1000.0, planet_seed)
+                .with_environment_preset(environment_preset)
                 .with_hybrid_macro_field(startup.chart_field.clone())
                 .with_halo_checker(startup.chart_field.clone())
                 .with_rebuild_source(rebuild_source)
         })
-        .unwrap_or_else(|| TerrainPlugin::from_preset(planet_preset, 1000.0, planet_seed));
+        .unwrap_or_else(|| {
+            TerrainPlugin::from_preset(planet_preset, 1000.0, planet_seed)
+                .with_environment_preset(environment_preset)
+        });
     #[cfg(not(feature = "terrain_diffusion"))]
-    let terrain_plugin = TerrainPlugin::from_preset(planet_preset, 1000.0, planet_seed);
+    let terrain_plugin = TerrainPlugin::from_preset(planet_preset, 1000.0, planet_seed)
+        .with_environment_preset(environment_preset);
     #[cfg(not(feature = "terrain_diffusion"))]
     if std::env::args().any(|arg| arg == "--terrain-diffusion") {
         eprintln!(
@@ -209,6 +217,22 @@ fn main() {
         .add_plugins(PerformanceDiagnosticsPlugin)
         .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.05)))
         .insert_resource(settings)
+        .insert_resource(CloudRuntimeConfig {
+            spawning_enabled: cloud_test_mode
+                || (!is_test_mode
+                    && !is_bench_mode
+                    && !is_stress_mode
+                    && !is_learned_stress_mode
+                    && !is_m5_test_mode),
+            // Normal gameplay starts with one mature, visible cluster. Later
+            // clusters still use the sparse stochastic scheduler.
+            force_initial_cluster: cloud_test_mode
+                || (!is_test_mode
+                    && !is_bench_mode
+                    && !is_stress_mode
+                    && !is_learned_stress_mode
+                    && !is_m5_test_mode),
+        })
         .add_plugins(CameraPlugin)
         .add_plugins(terrain_plugin)
         .add_plugins(SpacePlugin)
@@ -252,6 +276,7 @@ fn main() {
         app.add_plugins(bench::BenchPlugin);
     } else if is_test_mode {
         let config = test_config.unwrap();
+        app.insert_resource(debug_overlay::DebugViewSelection(config.debug_view_mode));
         app.insert_resource(config);
         app.add_plugins(ScreenshotTestPlugin);
     } else {
@@ -325,6 +350,40 @@ fn detect_planet_seed() -> er_core::seed::PlanetSeed {
     er_core::seed::PlanetSeed(seed)
 }
 
+/// Parse `--environment-preset <name>` from the command line.
+///
+/// Accepts `earth-like` (default), `hot-arid`, and `cold-icehouse`. Unknown
+/// values log a warning and conservatively fall back to `EarthLike` so the
+/// game still runs — consistent with how other optional CLI flags degrade.
+fn detect_environment_preset() -> er_world::environment::EnvironmentPreset {
+    parse_environment_preset_from_args(&std::env::args().collect::<Vec<_>>())
+}
+
+/// Pure helper for CLI environment-preset parsing (testable without process
+/// argv). Returns the resolved preset, emitting a warning to stderr for
+/// unrecognized values.
+pub(crate) fn parse_environment_preset_from_args(
+    args: &[String],
+) -> er_world::environment::EnvironmentPreset {
+    let Some(value) = args
+        .windows(2)
+        .find(|pair| pair[0] == "--environment-preset")
+        .map(|pair| pair[1].as_str())
+    else {
+        return er_world::environment::EnvironmentPreset::EarthLike;
+    };
+    match er_world::environment::EnvironmentPreset::parse(value) {
+        Some(preset) => preset,
+        None => {
+            eprintln!(
+                "Unrecognized --environment-preset '{value}'; falling back to EarthLike. \
+                 Valid values: earth-like, hot-arid, cold-icehouse."
+            );
+            er_world::environment::EnvironmentPreset::EarthLike
+        }
+    }
+}
+
 fn log_plugin() -> LogPlugin {
     LogPlugin {
         filter: "info,wgpu=warn,naga=warn".to_owned(),
@@ -370,5 +429,68 @@ fn apply_startup_window_mode(settings: Res<GraphicsSettings>, mut windows: Query
             info!("Applying window mode: {:?}", settings.window_mode());
             window.mode = settings.window_mode();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(parts: &[&str]) -> Vec<String> {
+        std::iter::once("er_game".to_owned())
+            .chain(parts.iter().map(|s| (*s).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn environment_preset_defaults_to_earth_like() {
+        assert_eq!(
+            parse_environment_preset_from_args(&args(&[])),
+            er_world::environment::EnvironmentPreset::EarthLike
+        );
+    }
+
+    #[test]
+    fn environment_preset_parses_known_values() {
+        assert_eq!(
+            parse_environment_preset_from_args(&args(&["--environment-preset", "earth-like"])),
+            er_world::environment::EnvironmentPreset::EarthLike
+        );
+        assert_eq!(
+            parse_environment_preset_from_args(&args(&["--environment-preset", "hot-arid"])),
+            er_world::environment::EnvironmentPreset::HotArid
+        );
+        assert_eq!(
+            parse_environment_preset_from_args(&args(&["--environment-preset", "cold-icehouse"])),
+            er_world::environment::EnvironmentPreset::ColdIcehouse
+        );
+    }
+
+    #[test]
+    fn environment_preset_accepts_compact_forms() {
+        assert_eq!(
+            parse_environment_preset_from_args(&args(&["--environment-preset", "hotarid"])),
+            er_world::environment::EnvironmentPreset::HotArid
+        );
+        assert_eq!(
+            parse_environment_preset_from_args(&args(&["--environment-preset", "coldicehouse"])),
+            er_world::environment::EnvironmentPreset::ColdIcehouse
+        );
+    }
+
+    #[test]
+    fn environment_preset_is_case_insensitive() {
+        assert_eq!(
+            parse_environment_preset_from_args(&args(&["--environment-preset", "EARTH-LIKE"])),
+            er_world::environment::EnvironmentPreset::EarthLike
+        );
+    }
+
+    #[test]
+    fn environment_preset_falls_back_on_unknown() {
+        assert_eq!(
+            parse_environment_preset_from_args(&args(&["--environment-preset", "mars"])),
+            er_world::environment::EnvironmentPreset::EarthLike
+        );
     }
 }

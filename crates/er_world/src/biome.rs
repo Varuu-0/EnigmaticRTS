@@ -23,6 +23,56 @@ pub enum Biome {
     Volcanic = 13,
 }
 
+impl Biome {
+    pub const ALL: [Self; 14] = [
+        Self::OceanShallow,
+        Self::OceanMid,
+        Self::OceanDeep,
+        Self::OceanAbyss,
+        Self::Beach,
+        Self::Grassland,
+        Self::Forest,
+        Self::Jungle,
+        Self::Desert,
+        Self::Tundra,
+        Self::Snow,
+        Self::Mountains,
+        Self::ToxicBog,
+        Self::Volcanic,
+    ];
+    pub const COUNT: usize = Self::ALL.len();
+
+    pub const fn as_index(self) -> usize {
+        self as usize
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OceanShallow => "ocean_shallow",
+            Self::OceanMid => "ocean_mid",
+            Self::OceanDeep => "ocean_deep",
+            Self::OceanAbyss => "ocean_abyss",
+            Self::Beach => "beach",
+            Self::Grassland => "grassland",
+            Self::Forest => "forest",
+            Self::Jungle => "jungle",
+            Self::Desert => "desert",
+            Self::Tundra => "tundra",
+            Self::Snow => "snow",
+            Self::Mountains => "mountains",
+            Self::ToxicBog => "toxic_bog",
+            Self::Volcanic => "volcanic",
+        }
+    }
+
+    pub const fn is_ocean(self) -> bool {
+        matches!(
+            self,
+            Self::OceanShallow | Self::OceanMid | Self::OceanDeep | Self::OceanAbyss
+        )
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BiomeData {
     pub palette: [[f32; 3]; 4],
@@ -304,6 +354,17 @@ mod tests {
 
     fn u2f(u: u64) -> f64 {
         (u as f64 / u64::MAX as f64) * 2.0 - 1.0
+    }
+
+    #[test]
+    fn biome_catalog_has_stable_names_and_indices() {
+        assert_eq!(Biome::ALL.len(), Biome::COUNT);
+        for (index, biome) in Biome::ALL.into_iter().enumerate() {
+            assert_eq!(biome.as_index(), index);
+            assert!(!biome.as_str().is_empty());
+        }
+        assert!(Biome::OceanShallow.is_ocean());
+        assert!(!Biome::Beach.is_ocean());
     }
 
     #[test]

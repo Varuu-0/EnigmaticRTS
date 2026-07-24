@@ -16,6 +16,8 @@ pub struct ScenarioTelemetry {
     format: &'static str,
     scenario: String,
     seed: u64,
+    debug_view: String,
+    terrain_only: bool,
     camera: CameraTelemetry,
     camera_world: CameraWorldTelemetry,
     origin: OriginTelemetry,
@@ -114,9 +116,11 @@ impl ScenarioTelemetry {
             - terrain.field.sample(camera_world.0.normalize()).elevation
                 * terrain.elevation_scale as f64;
         Self {
-            format: "enigmatic-rts-scenario-telemetry/v2",
+            format: "enigmatic-rts-scenario-telemetry/v3",
             scenario: scenario.name.clone(),
             seed: config.fixed_seed,
+            debug_view: config.debug_view_mode.name().to_owned(),
+            terrain_only: config.terrain_only,
             camera: CameraTelemetry {
                 yaw: scenario.camera_yaw,
                 pitch: scenario.camera_pitch,

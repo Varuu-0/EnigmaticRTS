@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Capturing, Screenshot};
 use er_terrain::{
-    ocean::OceanComponent, CameraWorldPosition, FrameProfiler, PendingChunkMeshes,
+    ocean::OceanComponent, CameraWorldPosition, DebugViewMode, FrameProfiler, PendingChunkMeshes,
     QueuedChunkMeshes, RenderOrigin, TerrainDebugInfo, TerrainMaterial, TerrainState,
     TerrainUpdate,
 };
@@ -42,6 +42,8 @@ pub struct ScreenshotTestConfig {
     pub terrain_only: bool,
     /// Highlight skirts magenta in terrain material diagnostics.
     pub debug_skirts: bool,
+    /// Environmental field visualization captured by this run.
+    pub debug_view_mode: DebugViewMode,
     /// Freeze the solar simulation at this time for reproducible captures.
     pub fixed_sim_time: Option<f32>,
     /// Seed passed to the terrain generator and recorded in every sidecar.
@@ -313,6 +315,7 @@ fn run_screenshot_test(
             ),
         ) {
             error!(path = ?telemetry_path, %error, "Could not write scenario telemetry");
+            config.acceptance_failed = true;
         }
 
         config.current_index += 1;
@@ -333,6 +336,7 @@ pub fn parse_test_args(planet_radius: f64) -> Option<ScreenshotTestConfig> {
     let mut frames_to_wait = 5;
     let mut terrain_only = false;
     let mut debug_skirts = false;
+    let mut debug_view_mode = DebugViewMode::Off;
     let mut fixed_sim_time = None;
     let mut fixed_coverage = false;
     let mut fixed_seed = 0xC0FFEE;
@@ -360,6 +364,15 @@ pub fn parse_test_args(planet_radius: f64) -> Option<ScreenshotTestConfig> {
             }
             "--terrain-only" => terrain_only = true,
             "--debug-skirts" => debug_skirts = true,
+            "--debug-view" => {
+                i += 1;
+                if i < args.len() {
+                    debug_view_mode = parse_debug_view_name(&args[i]).unwrap_or_else(|| {
+                        eprintln!("Unrecognized --debug-view '{}'; using off.", args[i]);
+                        DebugViewMode::Off
+                    });
+                }
+            }
             "--sim-time" => {
                 i += 1;
                 if i < args.len() {
@@ -439,12 +452,20 @@ pub fn parse_test_args(planet_radius: f64) -> Option<ScreenshotTestConfig> {
         settled_frames: 0,
         terrain_only,
         debug_skirts,
+        debug_view_mode,
         fixed_sim_time,
         fixed_seed,
         exploratory,
         max_wait_seconds,
         scenario_started_at: None,
     })
+}
+
+pub(crate) fn parse_debug_view_name(value: &str) -> Option<DebugViewMode> {
+    let normalized = value.to_ascii_lowercase().replace('-', "_");
+    DebugViewMode::ALL
+        .into_iter()
+        .find(|mode| mode.name() == normalized)
 }
 
 /// Fixed-coverage scenarios for Earth-scale planets. Altitude targets are
@@ -847,6 +868,19 @@ mod tests {
     fn acceptance_timeout_fails_unless_exploratory() {
         assert!(acceptance_timeout_fails(false));
         assert!(!acceptance_timeout_fails(true));
+    }
+
+    #[test]
+    fn debug_view_names_parse_with_hyphens_or_underscores() {
+        assert_eq!(
+            parse_debug_view_name("annual-temperature"),
+            Some(DebugViewMode::AnnualTemperature)
+        );
+        assert_eq!(
+            parse_debug_view_name("flow_accumulation"),
+            Some(DebugViewMode::FlowAccumulation)
+        );
+        assert_eq!(parse_debug_view_name("unknown"), None);
     }
 
     #[test]

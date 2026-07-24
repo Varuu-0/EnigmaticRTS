@@ -11,6 +11,10 @@ struct Vertex {
     @location(6) temperature: f32,
     @location(7) drainage: f32,
     @location(8) curvature: f32,
+    @location(9) climate_a: vec4<f32>,
+    @location(10) climate_b: vec4<f32>,
+    @location(11) environment_a: vec4<f32>,
+    @location(12) environment_b: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -24,7 +28,11 @@ struct VertexOutput {
     @location(6) morph: f32,
     @location(7) drainage: f32,
     @location(8) curvature: f32,
-    @interpolate(flat) @location(9) transition_tag: u32,
+    @location(9) climate_a: vec4<f32>,
+    @location(10) climate_b: vec4<f32>,
+    @location(11) environment_a: vec4<f32>,
+    @location(12) environment_b: vec4<f32>,
+    @interpolate(flat) @location(13) transition_tag: u32,
 };
 
 @vertex
@@ -45,6 +53,10 @@ fn vertex(in: Vertex) -> VertexOutput {
     out.morph = in.morph;
     out.drainage = in.drainage;
     out.curvature = in.curvature;
+    out.climate_a = in.climate_a;
+    out.climate_b = in.climate_b;
+    out.environment_a = in.environment_a;
+    out.environment_b = in.environment_b;
     out.transition_tag = get_tag(in.instance_index);
     return out;
 }

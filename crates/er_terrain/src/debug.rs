@@ -7,8 +7,10 @@ use glam::DVec3;
 /// Bytes of vertex attribute data per terrain vertex:
 ///   Position(F32x3=12) + Morph(F32=4) + LowFreqElev(F32=4)
 ///   + MoistureLow(F32=4) + Elevation(F32=4) + Normal(F32x3=12)
-///   + Temperature(F32=4) + Drainage(F32=4) + Curvature(F32=4) = 52
-const BYTES_PER_VERTEX: usize = 52;
+///   + Temperature(F32=4) + Drainage(F32=4) + Curvature(F32=4)
+///   + ClimateA(F32x4=16) + ClimateB(F32x4=16)
+///   + EnvironmentA(F32x4=16) + EnvironmentB(F32x4=16) = 116
+const BYTES_PER_VERTEX: usize = 116;
 
 const VERTS_PER_CHUNK: usize =
     (CHUNK_VERT_RES as usize) * (CHUNK_VERT_RES as usize) + 4 * (CHUNK_VERT_RES as usize);

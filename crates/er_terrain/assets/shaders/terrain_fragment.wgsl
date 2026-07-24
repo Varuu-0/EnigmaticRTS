@@ -9,7 +9,11 @@ struct FragmentInput {
     @location(6) morph: f32,
     @location(7) drainage: f32,
     @location(8) curvature: f32,
-    @interpolate(flat) @location(9) transition_tag: u32,
+    @location(9) climate_a: vec4<f32>,
+    @location(10) climate_b: vec4<f32>,
+    @location(11) environment_a: vec4<f32>,
+    @location(12) environment_b: vec4<f32>,
+    @interpolate(flat) @location(13) transition_tag: u32,
 };
 
 // --- Simple value noise for detail/palette variation ---
@@ -193,6 +197,103 @@ fn biome_color_blended(
     return color;
 }
 
+// --- M6.1 debug view visualization ---
+
+fn debug_view_color(input: FragmentInput) -> vec3<f32> {
+    let mode = material.debug_view_mode;
+    let up = normalize(input.world_position + vec3<f32>(
+        material.render_origin_x,
+        material.render_origin_y,
+        material.render_origin_z,
+    ));
+    let pixel_footprint_m = max(length(dpdx(input.world_position)), length(dpdy(input.world_position)));
+    let terrain_shape_weight = 1.0 - smoothstep(50.0, 150.0, pixel_footprint_m);
+    let water_mask = 1.0 - smoothstep(
+        material.sea_level_climate - material.beach_threshold,
+        material.sea_level_climate + material.beach_threshold,
+        input.low_freq_elev,
+    );
+    let terrain_normal = normalize(mix(up, normalize(input.normal), terrain_shape_weight));
+    let n = normalize(mix(terrain_normal, up, water_mask));
+
+    // Available M6.2 climate views: packed climate_a / climate_b interpolants.
+    //   climate_a = (annual_temp_c, temp_range_c, annual_precip_mm, moisture_index)
+    //   climate_b = (pet_mm, aridity_index, wind_direction_rad, continentality_c)
+    switch mode {
+        case DEBUG_VIEW_ANNUAL_TEMPERATURE: {
+            return debug_temperature_ramp(input.climate_a.x);
+        }
+        case DEBUG_VIEW_SEASONAL_TEMPERATURE: {
+            return debug_temperature_range_ramp(input.climate_a.y);
+        }
+        case DEBUG_VIEW_PRECIPITATION: {
+            return debug_precipitation_ramp(input.climate_a.z);
+        }
+        case DEBUG_VIEW_PET_ARIDITY: {
+            return debug_aridity_ramp(input.climate_b.y);
+        }
+        case DEBUG_VIEW_PREVAILING_WIND: {
+            return debug_wind_direction_ramp(input.climate_b.z);
+        }
+        case DEBUG_VIEW_CONTINENTALITY: {
+            return debug_continentality_ramp(input.climate_b.w);
+        }
+        // Available M6.3 landform, substrate, and soil diagnostics:
+        //   environment_a = (local_relief_m, slope_degrees, substrate_class, soil_depth_m)
+        //   environment_b = (soil_fertility, organic_fraction, salinity_ds_m, permafrost_fraction)
+        case DEBUG_VIEW_RELIEF: {
+            return debug_relief_ramp(input.environment_a.x);
+        }
+        case DEBUG_VIEW_SUBSTRATE: {
+            return debug_substrate_ramp(input.environment_a.z);
+        }
+        case DEBUG_VIEW_SOIL_PROPERTIES: {
+            return debug_soil_ramp(
+                input.environment_a.w,
+                input.environment_b.x,
+                input.environment_b.y,
+                input.environment_b.z,
+                input.environment_b.w,
+            );
+        }
+        // Available M6.1 geometric views: derive from normal + elevation.
+        case DEBUG_VIEW_ELEVATION: {
+            return debug_elevation_ramp(input.elevation, material.sea_level_climate);
+        }
+        case DEBUG_VIEW_SLOPE: {
+            let slope = 1.0 - abs(dot(n, up));
+            return debug_heat_ramp(clamp(slope * 3.0, 0.0, 1.0));
+        }
+        case DEBUG_VIEW_ASPECT: {
+            let downslope_raw = up - n * dot(up, n);
+            let north_raw = vec3<f32>(0.0, 1.0, 0.0) - up * dot(vec3<f32>(0.0, 1.0, 0.0), up);
+            let north_len = length(north_raw);
+            let north = select(
+                normalize(cross(vec3<f32>(1.0, 0.0, 0.0), up)),
+                north_raw / max(north_len, 0.001),
+                north_len > 0.001,
+            );
+            let downslope_len = length(downslope_raw);
+            let downslope = select(
+                north,
+                downslope_raw / max(downslope_len, 0.001),
+                downslope_len > 0.001,
+            );
+            if (downslope_len <= 0.001) {
+                return vec3<f32>(0.2, 0.2, 0.2);
+            }
+            let east = normalize(cross(north, up));
+            return debug_aspect_ramp(dot(downslope, north), dot(downslope, east));
+        }
+        default: {
+            break;
+        }
+    }
+
+    // Unavailable future modes: unmistakable placeholder.
+    return debug_unavailable_checker(input.world_position);
+}
+
 @fragment
 fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
     if ((input.transition_tag & 0x80000000u) != 0u) {
@@ -202,6 +303,16 @@ fn fragment(input: FragmentInput) -> @location(0) vec4<f32> {
         if ((incoming && threshold >= progress) || (!incoming && threshold < progress)) {
             discard;
         }
+    }
+
+    // --- M6.1 debug view overlay ---
+    // When `debug_view_mode` is non-zero, return a visualization of the
+    // requested environmental driver using only existing vertex interpolants.
+    // Available modes produce honest heat-mapped fields; unavailable future
+    // modes return an unmistakable magenta/black checkerboard. When Off (0),
+    // this branch is dead and adds zero cost beyond the uniform read.
+    if (material.debug_view_mode != DEBUG_VIEW_OFF) {
+        return vec4<f32>(debug_view_color(input), 1.0);
     }
 
     if (material.debug_skirt_highlight > 0.5 && input.morph < 0.5) {

@@ -3,7 +3,7 @@ use er_core::seed::PlanetSeed;
 use fastnoise_lite::{FastNoiseLite, FractalType, NoiseType};
 use rand::RngCore;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlanetParams {
     pub axial_tilt: f64,
     pub sea_level: f64,

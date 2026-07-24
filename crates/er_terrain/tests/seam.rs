@@ -632,6 +632,8 @@ fn generated_mixed_lod_edge_matches_coarse_mesh_segments() {
         pp.sea_level,
         &field,
         [Some(coarse), None, None, None],
+        None,
+        None,
     );
     let coarse_mesh =
         generate_chunk_mesh_with_field(coarse, radius, ELEVATION_SCALE, pp.sea_level, &field);
@@ -836,6 +838,8 @@ fn metric_earth_scale_edge_stitch_snaps_to_coarse() {
         pp.sea_level,
         &field,
         [Some(coarse), None, None, None],
+        None,
+        None,
     );
     let coarse_mesh =
         generate_chunk_mesh_with_field(coarse, radius, ELEVATION_SCALE, pp.sea_level, &field);
@@ -1041,6 +1045,8 @@ fn macro_water_stitched_edge_clamped_to_sea_level() {
         sea_level,
         &field,
         [Some(coarse), None, None, None],
+        None,
+        None,
     );
     let fine_world = world_positions_f64(fine, radius, &positions(&fine_mesh));
 
