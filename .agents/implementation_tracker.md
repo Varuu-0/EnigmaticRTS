@@ -38,9 +38,9 @@ This tracker is the source-of-truth checklist for the planet visual, runtime, an
 - `cargo bench -p er_terrain --bench mesh_pipeline_bench`: passed; deterministic checksums matched. Timing samples are mixed and do not establish a general speedup.
 - `cargo build -p er_game --features terrain_diffusion`: passed in approximately 6m10s in the recorded environment.
 - Screenshot harness: known non-convergence; `origin_shift_after` timed out after 600 frames with 252 pending meshes. Exit code 0 was insufficient evidence; the telemetry timeout must remain a failure for acceptance runs.
-- Benchmark harness: currently lacks a pending-work convergence gate and does not yet cover true low-altitude Earth-scale views.
+- Benchmark harness: convergence failures now produce nonzero exit status; low-altitude scenarios and p99 reporting are implemented, but a runtime benchmark has not yet been executed.
 - Shader validation: not yet performed with matched runtime captures or GPU timings.
-- Compile timing provenance: prior clean/no-op/touch measurements exist, but the clean timing provenance is uncertain and must not be used as a claim.
+- Compile timing provenance: current `cargo build -p er_game --quiet` no-op wrapper measured 20.52s; touching `crates/er_game/src/bench.rs` without content changes measured 8.73s. These are cache/profile evidence only, not a claimed optimization. Default debug profile remains unchanged.
 
 ## Backup and Rollback Ledger
 
