@@ -1471,7 +1471,9 @@ fn update_debug_info(
         .map(|k| k.lod)
         .max()
         .unwrap_or(0);
-    debug.pending_meshes = pending.0.len() + queued_meshes.len();
+    debug.pending_async_meshes = pending.0.len();
+    debug.queued_meshes = queued_meshes.len();
+    debug.pending_meshes = debug.pending_async_meshes + debug.queued_meshes;
     debug.frame_time_ms = profiler.total().as_secs_f32() * 1000.0;
 
     let cam_pos = camera_world.0;

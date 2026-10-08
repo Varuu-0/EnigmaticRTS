@@ -79,6 +79,8 @@ pub struct BenchDebugSnapshot {
     pub pending_splits: usize,
     pub pending_merges: usize,
     pub pending_meshes: usize,
+    pub pending_async_meshes: usize,
+    pub queued_meshes: usize,
     pub visible_chunks: usize,
     pub frame_time_ms: f32,
     pub meshes_built: usize,
@@ -267,6 +269,8 @@ fn run_benchmark(
                         pending_splits: debug_info.pending_splits,
                         pending_merges: debug_info.pending_merges,
                         pending_meshes: debug_info.pending_meshes,
+                        pending_async_meshes: debug_info.pending_async_meshes,
+                        queued_meshes: debug_info.queued_meshes,
                         visible_chunks: debug_info.visible_chunks,
                         frame_time_ms: debug_info.frame_time_ms,
                         meshes_built: debug_info.meshes_built,
@@ -384,7 +388,7 @@ fn generate_report(config: &BenchConfig) -> String {
             .map(|value| format!("{value:.2}ms"))
             .unwrap_or_else(|| "none".to_owned());
         lines.push(format!(
-            "  {:<16} dist={} active={} depth={} visible={} pending(s/m/mesh)={}/{}/{} pending_peak/min={}/{} frame_time_ms={:.2} mesh={:.2}MiB built={} draw_work={} slabs={} allocs={} cpu={} ram={} vram={} opaque_cpu/gpu={}/{} input_to_cpu={}",
+            "  {:<16} dist={} active={} depth={} visible={} pending(s/m/mesh)={}/{}/{} async/queued={}/{} pending_peak/min={}/{} frame_time_ms={:.2} mesh={:.2}MiB built={} draw_work={} slabs={} allocs={} cpu={} ram={} vram={} opaque_cpu/gpu={}/{} input_to_cpu={}",
             result.name,
             result.distance,
             result.debug.active_chunks,
@@ -393,6 +397,8 @@ fn generate_report(config: &BenchConfig) -> String {
             result.debug.pending_splits,
             result.debug.pending_merges,
             result.debug.pending_meshes,
+            result.debug.pending_async_meshes,
+            result.debug.queued_meshes,
             result.pending_peak,
             result.pending_min,
             result.debug.frame_time_ms,
