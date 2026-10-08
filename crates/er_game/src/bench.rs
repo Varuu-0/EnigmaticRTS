@@ -29,6 +29,12 @@ const SCENARIO_RADIUS_MULTIPLIERS: &[(&str, f64)] = &[
     ("close", 1.25),
     ("very_close", 1.055_555_555_6),
     ("surface", 1.027_777_777_8),
+    // Earth-scale low-altitude views. These are radius-relative distances,
+    // retained outside the terrain surface to avoid camera collision.
+    ("altitude_10km", 1.001_569_612_3),
+    ("altitude_1km", 1.000_156_961_2),
+    ("altitude_100m", 1.000_015_696_1),
+    ("altitude_25m", 1.000_003_924_0),
 ];
 
 #[derive(Resource)]
@@ -281,10 +287,10 @@ fn generate_report(config: &BenchConfig) -> String {
     ));
     lines.push(String::new());
     lines.push(format!(
-        "{:<12} {:>8} {:>8} {:>8} {:>8} {:>6} {:>6} {:>6}",
-        "Scenario", "avg_ms", "min_ms", "max_ms", "p95_ms", "fps", "chunks", "depth"
+        "{:<16} {:>8} {:>8} {:>8} {:>8} {:>8} {:>6} {:>6} {:>6}",
+        "Scenario", "avg_ms", "min_ms", "max_ms", "p95_ms", "p99_ms", "fps", "chunks", "depth"
     ));
-    lines.push("-".repeat(74));
+    lines.push("-".repeat(94));
 
     for result in &config.results {
         let avg = result.durations.iter().sum::<f32>() / result.durations.len().max(1) as f32;
@@ -295,15 +301,17 @@ fn generate_report(config: &BenchConfig) -> String {
             .fold(f32::INFINITY, f32::min);
         let max = result.durations.iter().cloned().fold(0.0_f32, f32::max);
         let p95 = percentile(&result.durations, 95.0);
+        let p99 = percentile(&result.durations, 99.0);
         let fps = 1000.0 / avg.max(0.001);
 
         lines.push(format!(
-            "{:<12} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>6.1} {:>6} {:>6}",
+            "{:<16} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>6.1} {:>6} {:>6}",
             result.name,
             avg,
             min,
             max,
             p95,
+            p99,
             fps,
             result.debug.active_chunks,
             result.debug.max_depth,
@@ -419,6 +427,40 @@ mod tests {
         for (_, multiplier) in super::SCENARIO_RADIUS_MULTIPLIERS {
             assert!(radius * multiplier > radius);
         }
+    }
+
+    #[test]
+    fn earth_benchmark_scenarios_include_low_altitude_views() {
+        let radius = 6_371_000.0;
+        let config = parse_bench_args_with_scenarios(radius);
+        let names: Vec<&str> = config
+            .iter()
+            .map(|scenario| scenario.name.as_str())
+            .collect();
+        for required in [
+            "altitude_10km",
+            "altitude_1km",
+            "altitude_100m",
+            "altitude_25m",
+        ] {
+            assert!(
+                names.contains(&required),
+                "missing benchmark scenario {required}"
+            );
+        }
+        assert!(config
+            .iter()
+            .all(|scenario| scenario.distance > radius as f32));
+    }
+
+    fn parse_bench_args_with_scenarios(radius: f64) -> Vec<super::BenchScenario> {
+        super::SCENARIO_RADIUS_MULTIPLIERS
+            .iter()
+            .map(|(name, multiplier)| super::BenchScenario {
+                name: (*name).to_string(),
+                distance: (radius * multiplier) as f32,
+            })
+            .collect()
     }
 
     #[test]
