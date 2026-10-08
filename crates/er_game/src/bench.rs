@@ -184,11 +184,12 @@ fn run_benchmark(
         write_report(&config, &report);
         config.completed = true;
         info!("Benchmark completed.\n{}", report);
-        exit.write(if config.convergence_failed {
-            AppExit::error()
+        if config.convergence_failed {
+            eprintln!("BENCHMARK_FAILED: terrain did not converge before measurement");
+            exit.write(AppExit::error());
         } else {
-            AppExit::Success
-        });
+            exit.write(AppExit::Success);
+        }
         return;
     }
 

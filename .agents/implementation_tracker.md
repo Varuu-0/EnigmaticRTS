@@ -38,7 +38,8 @@ This tracker is the source-of-truth checklist for the planet visual, runtime, an
 - `cargo bench -p er_terrain --bench mesh_pipeline_bench`: passed; deterministic checksums matched. Timing samples are mixed and do not establish a general speedup.
 - `cargo build -p er_game --features terrain_diffusion`: passed in approximately 6m10s in the recorded environment.
 - Screenshot harness: known non-convergence; `origin_shift_after` timed out after 600 frames with 252 pending meshes. Exit code 0 was insufficient evidence; the telemetry timeout must remain a failure for acceptance runs.
-- Benchmark harness: convergence failures now produce nonzero exit status; low-altitude scenarios and p99 reporting are implemented, but a runtime benchmark has not yet been executed.
+- Benchmark harness: convergence failures now produce a machine-readable `BENCHMARK_FAILED` marker; low-altitude scenarios and p99 reporting are implemented. Runtime evidence at `.agents/evidence/bench_20261008_1722.txt` measured all scenarios before convergence, with roughly 250 pending meshes even at far orbit. The process returned code 0 despite `AppExit::error`, so callers must inspect the marker/report until shell exit propagation is separately fixed.
+- Streaming finding: `dispatch_chunk_meshes` uses a normal breadth cap of 16 inflight jobs while the global cap is 128; pending counts combine queued and inflight work. Do not raise this cap yet. First measure queue age/drain behavior over a longer settled traversal.
 - Shader validation: not yet performed with matched runtime captures or GPU timings.
 - Compile timing provenance: current `cargo build -p er_game --quiet` no-op wrapper measured 20.52s; touching `crates/er_game/src/bench.rs` without content changes measured 8.73s. These are cache/profile evidence only, not a claimed optimization. Default debug profile remains unchanged.
 
