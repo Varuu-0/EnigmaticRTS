@@ -1790,9 +1790,11 @@ fn mesh_dispatch_limit(critical: bool, max_inflight: usize) -> usize {
 fn can_admit_split_meshes(
     required_for_focus: bool,
     outstanding_meshes: usize,
-    max_inflight: usize,
+    _max_inflight: usize,
 ) -> bool {
-    required_for_focus || outstanding_meshes.saturating_add(4) <= max_inflight.saturating_mul(2)
+    // Focus work remains unrestricted; breadth work is capped to one small
+    // queue window so descriptors cannot accumulate behind the 16-job drain.
+    required_for_focus || outstanding_meshes.saturating_add(4) <= 64
 }
 
 fn split_handoff_should_transition(
@@ -2488,8 +2490,8 @@ mod tests {
 
     #[test]
     fn breadth_mesh_admission_applies_backpressure_but_never_blocks_focus() {
-        assert!(can_admit_split_meshes(false, 252, 128));
-        assert!(!can_admit_split_meshes(false, 253, 128));
+        assert!(can_admit_split_meshes(false, 60, 128));
+        assert!(!can_admit_split_meshes(false, 61, 128));
         assert!(can_admit_split_meshes(true, usize::MAX, 128));
     }
 

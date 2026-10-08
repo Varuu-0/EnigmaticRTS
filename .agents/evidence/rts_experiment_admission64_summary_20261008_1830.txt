@@ -1,0 +1,25 @@
+Strict breadth admission experiment
+Date: 2026-10-08
+Baseline: `.agents/evidence/rts_baseline_20261008_1814.txt`
+Experiment: `.agents/evidence/rts_experiment_admission64_20261008_1828.txt`
+Change: non-focus LOD split admission capped at 64 outstanding descriptors; focus-critical admission unchanged.
+
+25 m comparison:
+- Average frame time: 19.87 ms -> 18.59 ms (6.4% lower)
+- p99 frame time: 23.52 ms -> 23.26 ms (1.1% lower)
+- Active chunks: 11,793 -> 11,082 (6.0% lower)
+- Pending mesh total: 133 -> 54 (59.4% lower)
+- Queued descriptors: 125 -> 46 (63.2% lower)
+- Async mesh tasks: 8 -> 8 (unchanged)
+
+100 m comparison:
+- Average frame time: 14.67 ms -> 13.99 ms (4.6% lower)
+- Pending mesh total: 144 -> 54 (62.5% lower)
+
+Quality/correctness:
+- `cargo fmt --all -- --check`: passed
+- `cargo test -p er_terrain --lib`: 91 passed, 0 failed
+- Benchmark still emitted `BENCHMARK_FAILED`; all scenarios measured with bounded pending work rather than convergence.
+
+Conclusion: accept as an intermediate queue-pressure improvement, not a 2x claim. The remaining bottleneck is likely mesh production/worker throughput or stale/repeated requests, since the async task count remains about 8–13 while the queue ceiling falls. Next work must identify producer categories or mesh-generation cost.
+Rollback: `Copy-Item .agents/continuation_backups/20261008_182640/systems.rs crates/er_terrain/src/systems.rs -Force`

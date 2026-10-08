@@ -1,0 +1,26 @@
+EnigmaticRTS Benchmark Report
+============================
+Warmup: 600 frames | Measure: 120 frames per scenario
+
+Scenario           avg_ms   min_ms   max_ms   p95_ms   p99_ms    fps chunks  depth
+----------------------------------------------------------------------------------------------
+far                  4.36     3.08     5.56     5.14     5.39  229.3    717      4
+mid                  5.72     3.85     7.14     6.87     7.11  174.9   1554      6
+close                6.65     5.19     9.28     7.53     8.78  150.4   2412      8
+very_close           5.32     4.15     8.14     6.37     6.75  187.9   3216     10
+surface              5.98     4.61     7.86     7.13     7.37  167.3   4068     11
+altitude_10km        5.70     4.25     8.09     7.04     7.52  175.5   4956     15
+altitude_1km         9.13     6.61    12.09    11.20    11.52  109.5   6672     17
+altitude_100m       13.99    10.46    17.96    16.34    17.16   71.5   8838     17
+altitude_25m        18.59    14.05    23.64    21.99    23.26   53.8  11082     17
+
+TerrainDebugInfo at end of each scenario:
+  far              dist=26545834 active=717 depth=4 visible=596 pending(s/m/mesh)=0/0/57 async/queued=12/45 pending_peak/min=68/0 frame_time_ms=0.87 mesh=29.91MiB built=4 draw_work=594 slabs=52.39MiB allocs=684 cpu=30.3% ram=0.50GiB vram=0.52/5.10GiB opaque_cpu/gpu=0.01ms/0.67ms input_to_cpu=none
+  mid              dist=12388056 active=1554 depth=6 visible=1225 pending(s/m/mesh)=1/0/62 async/queued=13/49 pending_peak/min=69/57 frame_time_ms=1.79 mesh=66.33MiB built=3 draw_work=1212 slabs=98.10MiB allocs=1523 cpu=29.9% ram=0.51GiB vram=0.52/5.10GiB opaque_cpu/gpu=0.02ms/1.86ms input_to_cpu=none
+  close            dist=7963750 active=2412 depth=8 visible=1097 pending(s/m/mesh)=0/0/62 async/queued=13/49 pending_peak/min=68/53 frame_time_ms=2.51 mesh=103.06MiB built=3 draw_work=1085 slabs=206.14MiB allocs=2376 cpu=34.4% ram=0.51GiB vram=0.77/5.10GiB opaque_cpu/gpu=0.02ms/1.94ms input_to_cpu=none
+  very_close       dist=6724944.5 active=3216 depth=10 visible=755 pending(s/m/mesh)=1/0/65 async/queued=13/52 pending_peak/min=68/57 frame_time_ms=2.05 mesh=137.54MiB built=3 draw_work=743 slabs=215.58MiB allocs=3175 cpu=32.9% ram=0.52GiB vram=0.77/5.10GiB opaque_cpu/gpu=0.02ms/1.70ms input_to_cpu=none
+  surface          dist=6547972 active=4068 depth=11 visible=1017 pending(s/m/mesh)=0/0/61 async/queued=12/49 pending_peak/min=73/50 frame_time_ms=2.24 mesh=174.69MiB built=4 draw_work=1010 slabs=313.04MiB allocs=4034 cpu=36.0% ram=0.52GiB vram=1.05/5.10GiB opaque_cpu/gpu=0.02ms/1.99ms input_to_cpu=none
+  altitude_10km    dist=6381000 active=4956 depth=15 visible=712 pending(s/m/mesh)=1/0/61 async/queued=10/51 pending_peak/min=69/56 frame_time_ms=2.50 mesh=212.33MiB built=6 draw_work=701 slabs=321.58MiB allocs=4902 cpu=31.5% ram=0.52GiB vram=1.05/5.10GiB opaque_cpu/gpu=0.02ms/2.02ms input_to_cpu=none
+  altitude_1km     dist=6372000 active=6672 depth=17 visible=2016 pending(s/m/mesh)=1/0/61 async/queued=12/49 pending_peak/min=72/52 frame_time_ms=2.43 mesh=286.47MiB built=4 draw_work=2019 slabs=467.55MiB allocs=6617 cpu=23.3% ram=0.54GiB vram=1.20/5.10GiB opaque_cpu/gpu=0.02ms/2.59ms input_to_cpu=none
+  altitude_100m    dist=6371100 active=8838 depth=17 visible=3752 pending(s/m/mesh)=0/0/54 async/queued=9/45 pending_peak/min=71/51 frame_time_ms=3.34 mesh=380.94MiB built=7 draw_work=3718 slabs=554.44MiB allocs=8812 cpu=24.1% ram=0.56GiB vram=1.27/5.10GiB opaque_cpu/gpu=0.03ms/1.83ms input_to_cpu=none
+  altitude_25m     dist=6371025 active=11082 depth=17 visible=5722 pending(s/m/mesh)=0/0/54 async/queued=8/46 pending_peak/min=69/52 frame_time_ms=4.09 mesh=477.65MiB built=8 draw_work=5703 slabs=703.42MiB allocs=11060 cpu=20.6% ram=0.57GiB vram=1.27/5.10GiB opaque_cpu/gpu=0.02ms/2.38ms input_to_cpu=none
