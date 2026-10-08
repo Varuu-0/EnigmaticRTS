@@ -9,7 +9,7 @@ This tracker is the source-of-truth checklist for the planet visual, runtime, an
 | ID | Milestone | Status | Git checkpoint | Evidence / notes |
 |---|---|---|---|---|
 | M0 | Existing repository baseline and prior milestone history | complete | `2019d19` (`feat(environment): add versioned climate and soil atlases`) | Workspace history inspected; no task commit existed for the continuation work. |
-| M1 | Task bookkeeping and change inventory | in progress | tracker checkpoint pending | This file tracks all task-owned edits, backups, evidence, and rollback commands. Unrelated `.kilo/Rules.md` remains excluded. |
+| M1 | Task bookkeeping and change inventory | complete | `e6842a2` (`chore(process): add planet improvement tracker`) | Tracker committed alone; implementation and unrelated changes remain unstaged. Plan now requires narrow milestone commits and records the screenshot/benchmark oversight. |
 | M2 | Mesh generation allocation reduction | verified, not yet committed | pending validation checkpoint | Fixed 17x17 scratch arrays in `crates/er_terrain/src/mesh_gen.rs`. Tests, mesh benchmark checksums, formatting, and Clippy previously passed. This is an allocation reduction, not a proven FPS gain. |
 | M3 | Benchmark truthfulness and low-altitude coverage | queued | none | Add convergence failure state, explicit 10 km/1 km/100 m/near-surface coverage, and p95/p99 reporting without changing existing scenario comparability. |
 | M4 | Screenshot evidence separation and convergence | partial | none | Terrain-only fixed coverage exists; full-scene capture path still needs explicit command/scenario coverage. `origin_shift_after` timeout remains a required failure to diagnose, not hide. |
