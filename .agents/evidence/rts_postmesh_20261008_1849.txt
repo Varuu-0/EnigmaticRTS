@@ -1,0 +1,85 @@
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1.19s
+     Running `target\debug\er_game.exe --bench --bench-warmup 600 --bench-measure 120 --bench-output .agents/evidence/rts_postmesh_20261008_1849.txt`
+2026-10-08T22:49:31.176065Z  INFO bevy_diagnostic::system_information_diagnostics_plugin::internal: SystemInfo { os: "Windows 11 Home", kernel: "26300", cpu: "12th Gen Intel(R) Core(TM) i7-12700H", core_count: "14", memory: "23.7 GiB" }
+2026-10-08T22:49:31.318492Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_read_data_files_in_registry: Registry lookup failed to get layer manifest files.
+2026-10-08T22:49:31.318522Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x18e16253ee0, name: ?)
+2026-10-08T22:49:31.318531Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Removing layer VK_LAYER_OW_OVERLAY (C:\Program Files (x86)\Overwolf\0.309.0.14\ow-vulkan-overlay64.json) because it is a duplicate of VK_LAYER_OW_OVERLAY (C:\Program Files (x86)\Overwolf\0.305.0.9\ow-vulkan-overlay64.json)
+2026-10-08T22:49:31.318534Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x18e16253ee0, name: ?)
+2026-10-08T22:49:31.318538Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Removing layer VK_LAYER_OW_OBS_HOOK (C:\Program Files (x86)\Overwolf\0.309.0.14\ow-graphics-vulkan64.json) because it is a duplicate of VK_LAYER_OW_OBS_HOOK (C:\Program Files (x86)\Overwolf\0.305.0.9\ow-graphics-vulkan64.json)
+2026-10-08T22:49:31.318541Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x18e16253ee0, name: ?)
+2026-10-08T22:49:31.318544Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Removing layer VK_LAYER_OBS_HOOK (C:\ProgramData\obs-studio-hook\obs-vulkan64.json) because it is a duplicate of VK_LAYER_OBS_HOOK (C:\ProgramData\obs-studio-hook\obs-vulkan64.json)
+2026-10-08T22:49:31.318546Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x18e16253ee0, name: ?)
+2026-10-08T22:49:31.318549Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Removing layer VK_LAYER_WEOBS_HOOK (C:\ProgramData\obs-studio-hook\we-obs-vulkan32.json) because it is a duplicate of VK_LAYER_WEOBS_HOOK (C:\ProgramData\obs-studio-hook\we-obs-vulkan64.json)
+2026-10-08T22:49:31.318552Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x18e16253ee0, name: ?)
+2026-10-08T22:49:31.319106Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Layer VK_LAYER_OW_OVERLAY uses API version 1.2 which is older than the application specified API version of 1.3. May cause issues.
+2026-10-08T22:49:31.319113Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x18e16253ee0, name: ?)
+2026-10-08T22:49:31.319116Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Layer VK_LAYER_OW_OBS_HOOK uses API version 1.2 which is older than the application specified API version of 1.3. May cause issues.
+2026-10-08T22:49:31.319119Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x18e16253ee0, name: ?)
+2026-10-08T22:49:31.721351Z  INFO bevy_render::renderer: AdapterInfo { name: "NVIDIA GeForce RTX 3060 Laptop GPU", vendor: 4318, device: 9504, device_type: DiscreteGpu, device_pci_bus_id: "0000:01:00.0", driver: "NVIDIA", driver_info: "617.14", backend: Vulkan, subgroup_min_size: 32, subgroup_max_size: 32, transient_saves_memory: false }
+2026-10-08T22:49:32.901213Z  INFO bevy_pbr::cluster: GPU clustering is supported on this device.
+2026-10-08T22:49:32.901289Z  INFO bevy_render::batching::gpu_preprocessing: GPU preprocessing is fully supported on this device.
+2026-10-08T22:49:32.902972Z  INFO bevy_winit::system: Creating new window Planet Solar Sim (Bench) (65v0)
+2026-10-08T22:49:32.959188Z  INFO er_game::bench: Benchmark scenario: far (distance=26545834)
+2026-10-08T22:49:36.533579Z  INFO er_game::bench: Scenario far measured: 120 frames, avg 4.51ms
+2026-10-08T22:49:36.533606Z  WARN er_game::bench: Scenario far measured before terrain converged: pending meshes=67, splits=0, merges=0
+2026-10-08T22:49:36.537734Z  INFO er_game::bench: Benchmark scenario: mid (distance=12388056)
+2026-10-08T22:49:40.208084Z  INFO er_game::bench: Scenario mid measured: 120 frames, avg 6.05ms
+2026-10-08T22:49:40.208108Z  WARN er_game::bench: Scenario mid measured before terrain converged: pending meshes=63, splits=0, merges=0
+2026-10-08T22:49:40.213723Z  INFO er_game::bench: Benchmark scenario: close (distance=7963750)
+2026-10-08T22:49:43.973518Z  INFO er_game::bench: Scenario close measured: 120 frames, avg 5.88ms
+2026-10-08T22:49:43.973549Z  WARN er_game::bench: Scenario close measured before terrain converged: pending meshes=59, splits=0, merges=0
+2026-10-08T22:49:43.980457Z  INFO er_game::bench: Benchmark scenario: very_close (distance=6724944.5)
+2026-10-08T22:49:47.486333Z  INFO er_game::bench: Scenario very_close measured: 120 frames, avg 5.41ms
+2026-10-08T22:49:47.486361Z  WARN er_game::bench: Scenario very_close measured before terrain converged: pending meshes=58, splits=0, merges=0
+2026-10-08T22:49:47.491480Z  INFO er_game::bench: Benchmark scenario: surface (distance=6547972)
+2026-10-08T22:49:51.940981Z  INFO er_game::bench: Scenario surface measured: 120 frames, avg 6.28ms
+2026-10-08T22:49:51.941000Z  WARN er_game::bench: Scenario surface measured before terrain converged: pending meshes=57, splits=0, merges=0
+2026-10-08T22:49:51.947893Z  INFO er_game::bench: Benchmark scenario: altitude_10km (distance=6381000)
+2026-10-08T22:49:55.695166Z  INFO er_game::bench: Scenario altitude_10km measured: 120 frames, avg 5.91ms
+2026-10-08T22:49:55.695189Z  WARN er_game::bench: Scenario altitude_10km measured before terrain converged: pending meshes=58, splits=0, merges=0
+2026-10-08T22:49:55.701944Z  INFO er_game::bench: Benchmark scenario: altitude_1km (distance=6372000)
+2026-10-08T22:50:01.205203Z  INFO er_game::bench: Scenario altitude_1km measured: 120 frames, avg 9.47ms
+2026-10-08T22:50:01.205228Z  WARN er_game::bench: Scenario altitude_1km measured before terrain converged: pending meshes=68, splits=2, merges=0
+2026-10-08T22:50:01.214758Z  INFO er_game::bench: Benchmark scenario: altitude_100m (distance=6371100)
+2026-10-08T22:50:10.154717Z  INFO er_game::bench: Scenario altitude_100m measured: 120 frames, avg 13.96ms
+2026-10-08T22:50:10.154747Z  WARN er_game::bench: Scenario altitude_100m measured before terrain converged: pending meshes=59, splits=1, merges=0
+2026-10-08T22:50:10.168446Z  INFO er_game::bench: Benchmark scenario: altitude_25m (distance=6371025)
+2026-10-08T22:50:22.862648Z  INFO er_game::bench: Scenario altitude_25m measured: 120 frames, avg 21.36ms
+2026-10-08T22:50:22.862670Z  WARN er_game::bench: Scenario altitude_25m measured before terrain converged: pending meshes=58, splits=1, merges=0
+2026-10-08T22:50:22.887298Z  INFO er_game::bench: Benchmark completed.
+EnigmaticRTS Benchmark Report
+============================
+Warmup: 600 frames | Measure: 120 frames per scenario
+
+Scenario           avg_ms   min_ms   max_ms   p95_ms   p99_ms    fps chunks  depth
+----------------------------------------------------------------------------------------------
+far                  4.51     3.61     5.62     5.33     5.61  221.9    699      4
+mid                  6.05     4.51    12.42     7.19    10.14  165.4   1521      6
+close                5.88     4.75     7.87     6.87     7.12  170.1   2349      8
+very_close           5.41     4.10     7.73     6.29     6.54  184.8   3138     10
+surface              6.28     5.04     8.14     7.53     8.04  159.2   4056     11
+altitude_10km        5.91     4.61     7.16     6.90     7.13  169.1   4968     15
+altitude_1km         9.47     7.05    12.38    11.32    12.37  105.6   6690     17
+altitude_100m       13.96    10.18    17.05    16.01    16.78   71.6   8865     17
+altitude_25m        21.36    14.67    28.01    24.70    26.02   46.8  11109     17
+
+TerrainDebugInfo at end of each scenario:
+  far              dist=26545834 active=699 depth=4 visible=591 pending(s/m/mesh)=0/0/67 async/queued=15/52 pending_peak/min=68/0 frame_time_ms=0.64 mesh=29.04MiB built=1 draw_work=568 slabs=45.78MiB allocs=663 cpu=36.0% ram=0.50GiB vram=0.52/5.10GiB opaque_cpu/gpu=0.02ms/0.66ms input_to_cpu=none
+  mid              dist=12388056 active=1521 depth=6 visible=1213 pending(s/m/mesh)=0/0/63 async/queued=12/51 pending_peak/min=68/56 frame_time_ms=1.31 mesh=64.86MiB built=4 draw_work=1207 slabs=98.09MiB allocs=1487 cpu=32.1% ram=0.50GiB vram=0.52/5.10GiB opaque_cpu/gpu=0.02ms/1.83ms input_to_cpu=none
+  close            dist=7963750 active=2349 depth=8 visible=1073 pending(s/m/mesh)=0/0/59 async/queued=12/47 pending_peak/min=68/55 frame_time_ms=1.38 mesh=100.38MiB built=4 draw_work=1061 slabs=166.42MiB allocs=2315 cpu=41.5% ram=0.51GiB vram=0.77/5.10GiB opaque_cpu/gpu=0.02ms/1.88ms input_to_cpu=none
+  very_close       dist=6724944.5 active=3138 depth=10 visible=737 pending(s/m/mesh)=0/0/58 async/queued=12/46 pending_peak/min=69/57 frame_time_ms=1.48 mesh=134.26MiB built=4 draw_work=736 slabs=210.40MiB allocs=3099 cpu=33.8% ram=0.52GiB vram=0.77/5.10GiB opaque_cpu/gpu=0.02ms/1.67ms input_to_cpu=none
+  surface          dist=6547972 active=4056 depth=11 visible=1051 pending(s/m/mesh)=0/0/57 async/queued=11/46 pending_peak/min=72/51 frame_time_ms=2.36 mesh=174.13MiB built=5 draw_work=1041 slabs=313.04MiB allocs=4022 cpu=38.5% ram=0.52GiB vram=1.05/5.10GiB opaque_cpu/gpu=0.02ms/2.04ms input_to_cpu=none
+  altitude_10km    dist=6381000 active=4968 depth=15 visible=730 pending(s/m/mesh)=0/0/58 async/queued=11/47 pending_peak/min=70/55 frame_time_ms=1.71 mesh=213.06MiB built=5 draw_work=721 slabs=321.58MiB allocs=4918 cpu=32.2% ram=0.52GiB vram=1.05/5.10GiB opaque_cpu/gpu=0.02ms/2.08ms input_to_cpu=none
+  altitude_1km     dist=6372000 active=6690 depth=17 visible=2036 pending(s/m/mesh)=2/0/68 async/queued=12/56 pending_peak/min=72/51 frame_time_ms=2.96 mesh=287.07MiB built=4 draw_work=2019 slabs=467.55MiB allocs=6635 cpu=28.1% ram=0.54GiB vram=1.20/5.10GiB opaque_cpu/gpu=0.02ms/2.46ms input_to_cpu=none
+  altitude_100m    dist=6371100 active=8865 depth=17 visible=3788 pending(s/m/mesh)=1/0/59 async/queued=7/52 pending_peak/min=72/50 frame_time_ms=4.83 mesh=381.88MiB built=9 draw_work=3758 slabs=554.44MiB allocs=8837 cpu=17.8% ram=0.56GiB vram=1.27/5.10GiB opaque_cpu/gpu=0.03ms/1.78ms input_to_cpu=none
+  altitude_25m     dist=6371025 active=11109 depth=17 visible=5747 pending(s/m/mesh)=1/0/58 async/queued=8/50 pending_peak/min=70/51 frame_time_ms=4.97 mesh=478.81MiB built=8 draw_work=5730 slabs=703.42MiB allocs=11086 cpu=16.5% ram=0.57GiB vram=1.52/5.10GiB opaque_cpu/gpu=0.03ms/2.48ms input_to_cpu=none
+
+BENCHMARK_FAILED: terrain did not converge before measurement
+EXIT=0
