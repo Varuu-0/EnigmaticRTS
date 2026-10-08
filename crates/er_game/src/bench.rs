@@ -43,6 +43,8 @@ pub struct BenchConfig {
     pub frame_durations: Vec<f32>,
     pub results: Vec<BenchResult>,
     pub completed: bool,
+    /// True when a scenario finishes with terrain work still pending.
+    pub convergence_failed: bool,
 }
 
 #[derive(Clone)]
@@ -155,6 +157,7 @@ pub fn parse_bench_args(planet_radius_m: f64) -> Option<BenchConfig> {
         frame_durations: Vec::new(),
         results: Vec::new(),
         completed: false,
+        convergence_failed: false,
     })
 }
 
@@ -175,7 +178,11 @@ fn run_benchmark(
         write_report(&config, &report);
         config.completed = true;
         info!("Benchmark completed.\n{}", report);
-        exit.write(AppExit::Success);
+        exit.write(if config.convergence_failed {
+            AppExit::error()
+        } else {
+            AppExit::Success
+        });
         return;
     }
 
@@ -217,6 +224,19 @@ fn run_benchmark(
                     durations.len(),
                     avg,
                 );
+                let convergence_ok = debug_info.pending_meshes == 0
+                    && debug_info.pending_splits == 0
+                    && debug_info.pending_merges == 0;
+                if !convergence_ok {
+                    config.convergence_failed = true;
+                    warn!(
+                        "Scenario {} measured before terrain converged: pending meshes={}, splits={}, merges={}",
+                        scenario_name,
+                        debug_info.pending_meshes,
+                        debug_info.pending_splits,
+                        debug_info.pending_merges,
+                    );
+                }
                 config.results.push(BenchResult {
                     name: scenario_name,
                     distance: scenario_dist,
