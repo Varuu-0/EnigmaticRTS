@@ -1,0 +1,25 @@
+Compile iteration evidence
+Date: 2026-10-08
+Host: Windows MSVC x86_64-pc-windows-msvc
+Rust: 1.96.0
+Cargo: 1.96.0
+Linker: rust-lld.exe
+Compiler wrapper: repository-local sccache
+Profile: default dev profile; no profile changes made
+
+Commands and results (sequential, normal target cache retained):
+- cargo build -p er_game --quiet: exit 0, 0.73 s (no-op)
+- cargo build -p er_game --quiet after touching crates/er_game/src/bench.rs mtime only: exit 0, 6.76 s
+- cargo build -p er_game --quiet after touching crates/er_terrain/assets/shaders/terrain_fragment.wgsl mtime only: exit 0, 6.90 s
+- cargo build -p er_game --quiet after touching crates/er_world/src/lib.rs mtime only: exit 0, 7.17 s
+- cargo build -p er_game --features terrain_diffusion --quiet: exit 0, 15.31 s
+
+sccache stats after matrix:
+- Rust cache hit rate: 74.29%
+- Cache errors: 0
+- Cache timeouts: 0
+- Cache read errors: 0
+- Cache write errors: 0
+- Cache location: C:\Users\varun\AppData\Local\Mozilla\sccache\cache
+
+Interpretation: repository-local sccache materially reduces repeat and invalidation builds. These are machine-specific cached iteration measurements, not clean-build timings or a universal performance guarantee.

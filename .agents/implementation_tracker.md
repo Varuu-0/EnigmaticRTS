@@ -15,7 +15,7 @@ This tracker is the source-of-truth checklist for the planet visual, runtime, an
 | M4 | Screenshot evidence separation and convergence | partial | none | Terrain-only fixed coverage exists; full-scene capture path still needs explicit command/scenario coverage. `origin_shift_after` timeout remains a required failure to diagnose, not hide. |
 | M5 | Shader visual refinement | provisional/unverified | none | Terrain/ocean shader edits are present but have no matched live capture, active-path proof, or GPU timing evidence. Treat as provisional. |
 | M6 | Streaming/origin-shift convergence | queue diagnostics committed, diagnosis pending | `d1b1c3d` (`perf(telemetry): split terrain mesh backlog`) | Terrain debug state and benchmark reports now separate async mesh tasks from queued descriptors. Focused benchmark tests pass. Next runtime run will identify whether close-range backlog is worker saturation or requeue admission pressure. |
-| M7 | Compile iteration measurement | queued | none | Measure no-op, game-only, shared-crate, shader-only, isolated clean, and feature builds with cache/profile provenance. Preserve default debug info. |
+| M7 | Compile iteration measurement | implemented, cache-backed iteration verified | pending milestone commit | Repository-local `sccache` wrapper is enabled in `.cargo/config.toml`; a no-op `cargo build -p er_game --quiet` completed in 0.69 s with 70.96% Rust cache-hit rate and no cache errors. Prior uncached-wrapper evidence was 20.52 s. Clean-build and shared-crate timing evidence remain pending. |
 | M8 | Integrated acceptance and user visual review | not started | none | Requires workspace tests, feature build, mesh checksums, corrected benchmark, full-scene captures, soak, and matched before/after pixel review. |
 
 ## Current Worktree Inventory
@@ -25,6 +25,7 @@ This tracker is the source-of-truth checklist for the planet visual, runtime, an
 - `crates/er_terrain/src/mesh_gen.rs`: fixed-size stack scratch arrays; backed up at `backups/terrain-perf-20261008/mesh_gen.rs` and `.agents/continuation_backups/20261008_171158/` for relevant harness files.
 - `crates/er_terrain/assets/shaders/terrain_fragment.wgsl`: provisional macro/strata/snow/atmospheric additions; visual and active-path validation pending.
 - `crates/er_terrain/assets/shaders/ocean_fragment.wgsl`: provisional ocean depth/wave/Fresnel additions; active-path validation pending.
+- `.cargo/config.toml`: repository-local `sccache` compiler wrapper plus existing `rust-lld.exe` linker; backed up at `.agents/continuation_backups/20261008_180504/config.toml`.
 - `.agents/`: evidence, backups, and this tracker. Do not delete prior evidence.
 - `.perf-backup/` and `backups/`: preserved rollback material.
 
@@ -45,7 +46,7 @@ This tracker is the source-of-truth checklist for the planet visual, runtime, an
 - Streaming experiment: a reversible breadth-cap increase from 16 to 64 was attempted after backup `.agents/continuation_backups/20261008_173554/systems.rs`, but its dependency rebuild stalled before tests completed. The cap was restored; no runtime improvement is claimed and no cap change remains in the worktree.
 - Workspace regression gate: passed before the cap experiment; the cap experiment itself was not accepted.
 - Shader validation: not yet performed with matched runtime captures or GPU timings.
-- Compile timing provenance: current `cargo build -p er_game --quiet` no-op wrapper measured 20.52s; touching `crates/er_game/src/bench.rs` without content changes measured 8.73s. These are cache/profile evidence only, not a claimed optimization. Default debug profile remains unchanged.
+- Compile timing provenance: prior `cargo build -p er_game --quiet` no-op wrapper measured 20.52s; repository-local sccache now records no-op 0.73s, game-only touch 6.76s, shader-only touch 6.90s, shared-world touch 7.17s, and `terrain_diffusion` feature build 15.31s. Full evidence is `.agents/evidence/compile_20261008_1808.txt`; these are cached iteration measurements, not clean-build timings.
 
 ## Backup and Rollback Ledger
 
@@ -53,6 +54,7 @@ This tracker is the source-of-truth checklist for the planet visual, runtime, an
 - Harness backup: `.agents/continuation_backups/20261008_171158/bench.rs` and `screenshot_test.rs`.
 - Before any additional source edit, create a new timestamped backup and record it here.
 - Never use `git reset --hard` or overwrite unrelated worktree changes.
+- Compiler-cache rollback: `Copy-Item .agents/continuation_backups/20261008_180504/config.toml .cargo/config.toml -Force`.
 
 ## Next Steps
 
@@ -61,7 +63,7 @@ This tracker is the source-of-truth checklist for the planet visual, runtime, an
 3. Run focused `cargo test -p er_game`, then workspace tests sequentially after any streaming change.
 4. Run the corrected low-altitude benchmark and compare queued/async backlog, p95/p99 frame time, active chunks, RAM, and VRAM against `.agents/evidence/bench_20261008_1734_queue_categories.txt`.
 5. Validate shader active paths and matched pixels; retain or revise only evidence-supported edits.
-6. Measure compile iteration with cache/profile provenance and investigate an opt-in shader-only workflow.
+6. Complete compile evidence for game-only, shared-crate, shader-only, isolated clean, and feature builds with cache/profile provenance.
 7. Create a milestone commit per accepted implementation slice, staging only task-owned files and updating this tracker with the commit hash.
 8. Finish with integrated gates and a walkthrough report; do not claim visual/FPS completion from compilation alone.
 
@@ -74,3 +76,6 @@ Milestone commits are narrow and auditable. Each accepted implementation commit 
 - include verification results in this tracker before or immediately after the commit;
 - record rollback instructions;
 - avoid claiming unmeasured visual or FPS improvements.
+
+- Source backup before admission-bound edit: `.agents/continuation_backups/20261008_175334/systems.rs`.
+- Admission-bound rollback: `Copy-Item .agents/continuation_backups/20261008_175334/systems.rs crates/er_terrain/src/systems.rs -Force`.
