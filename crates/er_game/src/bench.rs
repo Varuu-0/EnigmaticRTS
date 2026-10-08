@@ -51,6 +51,9 @@ pub struct BenchConfig {
     pub completed: bool,
     /// True when a scenario finishes with terrain work still pending.
     pub convergence_failed: bool,
+    /// Pending-work extrema observed during the current scenario.
+    pub scenario_pending_peak: usize,
+    pub scenario_pending_min: usize,
 }
 
 #[derive(Clone)]
@@ -65,6 +68,8 @@ pub struct BenchResult {
     pub distance: f32,
     pub durations: Vec<f32>,
     pub debug: BenchDebugSnapshot,
+    pub pending_peak: usize,
+    pub pending_min: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -164,6 +169,8 @@ pub fn parse_bench_args(planet_radius_m: f64) -> Option<BenchConfig> {
         results: Vec::new(),
         completed: false,
         convergence_failed: false,
+        scenario_pending_peak: 0,
+        scenario_pending_min: usize::MAX,
     })
 }
 
@@ -200,6 +207,8 @@ fn run_benchmark(
     // Set camera position at the start of each scenario (frame 0 of warmup).
     if config.frames_in_phase == 0 && config.phase == BenchPhase::Warmup {
         info!("Benchmark scenario: {} (distance={})", scenario_name, dist);
+        config.scenario_pending_peak = 0;
+        config.scenario_pending_min = usize::MAX;
         if let Ok((mut orbit, _transform)) = camera_query.single_mut() {
             orbit.distance = dist as f64;
             orbit.smoothed_distance = dist as f64;
@@ -209,6 +218,8 @@ fn run_benchmark(
     }
 
     let dt_ms = time.delta_secs() * 1000.0;
+    config.scenario_pending_peak = config.scenario_pending_peak.max(debug_info.pending_meshes);
+    config.scenario_pending_min = config.scenario_pending_min.min(debug_info.pending_meshes);
 
     match config.phase {
         BenchPhase::Warmup => {
@@ -244,6 +255,8 @@ fn run_benchmark(
                         debug_info.pending_merges,
                     );
                 }
+                let pending_peak = config.scenario_pending_peak;
+                let pending_min = config.scenario_pending_min;
                 config.results.push(BenchResult {
                     name: scenario_name,
                     distance: scenario_dist,
@@ -269,6 +282,8 @@ fn run_benchmark(
                         input_to_cpu_frame_end_ms: performance.input_to_cpu_frame_end_ms,
                         visible_mesh_draw_estimate: performance.visible_mesh_draw_estimate,
                     },
+                    pending_peak,
+                    pending_min,
                 });
                 config.current_index += 1;
                 config.phase = BenchPhase::Warmup;
@@ -369,7 +384,7 @@ fn generate_report(config: &BenchConfig) -> String {
             .map(|value| format!("{value:.2}ms"))
             .unwrap_or_else(|| "none".to_owned());
         lines.push(format!(
-            "  {:<12} dist={} active={} depth={} visible={} pending(s/m/mesh)={}/{}/{} frame_time_ms={:.2} mesh={:.2}MiB built={} draw_work={} slabs={} allocs={} cpu={} ram={} vram={} opaque_cpu/gpu={}/{} input_to_cpu={}",
+            "  {:<16} dist={} active={} depth={} visible={} pending(s/m/mesh)={}/{}/{} pending_peak/min={}/{} frame_time_ms={:.2} mesh={:.2}MiB built={} draw_work={} slabs={} allocs={} cpu={} ram={} vram={} opaque_cpu/gpu={}/{} input_to_cpu={}",
             result.name,
             result.distance,
             result.debug.active_chunks,
@@ -378,6 +393,8 @@ fn generate_report(config: &BenchConfig) -> String {
             result.debug.pending_splits,
             result.debug.pending_merges,
             result.debug.pending_meshes,
+            result.pending_peak,
+            result.pending_min,
             result.debug.frame_time_ms,
             result.debug.estimated_mesh_bytes as f64 / (1024.0 * 1024.0),
             result.debug.meshes_built,
