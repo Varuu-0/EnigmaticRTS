@@ -1,0 +1,55 @@
+   Compiling er_world v0.0.1 (E:\Projects\EnigmaticRTS\crates\er_world)
+   Compiling er_terrain v0.0.1 (E:\Projects\EnigmaticRTS\crates\er_terrain)
+    Finished `bench` profile [optimized] target(s) in 2m 34s
+     Running benches\chunk_gen_bench.rs (target\release\deps\chunk_gen_bench-ab15694216236f8f.exe)
+Gnuplot not found, using plotters backend
+Benchmarking generate_chunk_mesh depth=0
+Benchmarking generate_chunk_mesh depth=0: Warming up for 3.0000 s
+Benchmarking generate_chunk_mesh depth=0: Collecting 100 samples in estimated 7.8018 s (10k iterations)
+Benchmarking generate_chunk_mesh depth=0: Analyzing
+generate_chunk_mesh depth=0
+                        time:   [932.51 µs 957.82 µs 983.64 µs]
+                        change: [-4.6577% -0.6083% +3.1173%] (p = 0.76 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+
+Benchmarking generate_chunk_mesh depth=6
+Benchmarking generate_chunk_mesh depth=6: Warming up for 3.0000 s
+Benchmarking generate_chunk_mesh depth=6: Collecting 100 samples in estimated 7.8332 s (10k iterations)
+Benchmarking generate_chunk_mesh depth=6: Analyzing
+generate_chunk_mesh depth=6
+                        time:   [770.49 µs 786.86 µs 803.44 µs]
+                        change: [-13.920% -9.1564% -4.1233%] (p = 0.00 < 0.05)
+                        Performance has improved.
+
+Benchmarking generate_chunk_mesh depth=12
+Benchmarking generate_chunk_mesh depth=12: Warming up for 3.0000 s
+Benchmarking generate_chunk_mesh depth=12: Collecting 100 samples in estimated 8.4057 s (10k iterations)
+Benchmarking generate_chunk_mesh depth=12: Analyzing
+generate_chunk_mesh depth=12
+                        time:   [762.92 µs 781.12 µs 799.26 µs]
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+
+Benchmarking screen_error depth=0
+Benchmarking screen_error depth=0: Warming up for 3.0000 s
+Benchmarking screen_error depth=0: Collecting 100 samples in estimated 5.0001 s (97M iterations)
+Benchmarking screen_error depth=0: Analyzing
+screen_error depth=0    time:   [50.727 ns 52.139 ns 53.491 ns]
+
+Benchmarking screen_error depth=6
+Benchmarking screen_error depth=6: Warming up for 3.0000 s
+Benchmarking screen_error depth=6: Collecting 100 samples in estimated 5.0001 s (94M iterations)
+Benchmarking screen_error depth=6: Analyzing
+screen_error depth=6    time:   [53.356 ns 54.607 ns 56.035 ns]
+Found 5 outliers among 100 measurements (5.00%)
+  2 (2.00%) low mild
+  3 (3.00%) high severe
+
+Benchmarking screen_error depth=12
+Benchmarking screen_error depth=12: Warming up for 3.0000 s
+Benchmarking screen_error depth=12: Collecting 100 samples in estimated 5.0002 s (92M iterations)
+Benchmarking screen_error depth=12: Analyzing
+screen_error depth=12   time:   [51.195 ns 52.898 ns 54.754 ns]
+

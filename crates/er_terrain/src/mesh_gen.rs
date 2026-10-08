@@ -534,15 +534,19 @@ pub fn generate_chunk_mesh_stitched(
     let mut environment_a: Vec<[f32; 4]> = Vec::with_capacity(total);
     let mut environment_b: Vec<[f32; 4]> = Vec::with_capacity(total);
 
-    let mut surf_low_freq: Vec<f32> = vec![0.0; n * n];
-    let mut surf_moisture: Vec<f32> = vec![0.0; n * n];
-    let mut surf_elev: Vec<f64> = vec![0.0; n * n];
-    let mut surf_temp: Vec<f32> = vec![0.0; n * n];
-    let mut surf_normals: Vec<[f32; 3]> = vec![[0.0; 3]; n * n];
-    let mut surf_drainage: Vec<f32> = vec![0.0; n * n];
-    let mut surf_curvature: Vec<f32> = vec![0.0; n * n];
-    let mut sample_directions: Vec<DVec3> = vec![DVec3::ZERO; n * n];
-    let mut surf_data: Vec<VertexData> = vec![VertexData::default(); n * n];
+    // Scratch has a fixed 17x17 extent and never escapes this worker call.
+    // Keep it on the stack to avoid nine allocations per chunk; the output
+    // attribute vectors still own their heap storage as required by Mesh.
+    const SURFACE_VERTICES: usize = CHUNK_VERT_RES as usize * CHUNK_VERT_RES as usize;
+    let mut surf_low_freq = [0.0f32; SURFACE_VERTICES];
+    let mut surf_moisture = [0.0f32; SURFACE_VERTICES];
+    let mut surf_elev = [0.0f64; SURFACE_VERTICES];
+    let mut surf_temp = [0.0f32; SURFACE_VERTICES];
+    let mut surf_normals = [[0.0f32; 3]; SURFACE_VERTICES];
+    let mut surf_drainage = [0.0f32; SURFACE_VERTICES];
+    let mut surf_curvature = [0.0f32; SURFACE_VERTICES];
+    let mut sample_directions = [DVec3::ZERO; SURFACE_VERTICES];
+    let mut surf_data = [VertexData::default(); SURFACE_VERTICES];
     // Climate is sampled on demand rather than stored per-surface-vertex to
     // keep working-set memory small; the sampler closure is cheap to call.
 
