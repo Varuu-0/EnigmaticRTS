@@ -1,0 +1,15 @@
+Breadth dispatch experiment rejection
+Date: 2026-10-08
+Baseline: `.agents/evidence/rts_baseline_20261008_1814.txt` with MAX_BREADTH_INFLIGHT_TERRAIN_MESHES=16
+Experiment raw evidence: `.agents/evidence/rts_experiment_breadth32_20261008_1818.txt`
+
+Results:
+- 25 m average frame time: 19.87 ms baseline -> 24.00 ms experiment (+20.8%, regression)
+- 100 m average frame time: 14.67 ms baseline -> 21.06 ms experiment (+43.6%, regression)
+- 25 m active chunks: 11,793 -> 14,931 (+26.6%)
+- Close-range pending totals remained approximately 151–159 in the experiment.
+- The experiment still emitted BENCHMARK_FAILED; it did not converge before measurement.
+- 16-slot breadth dispatch was restored after the run.
+
+Conclusion: reject the broad dispatch increase. The existing bounded admission policy remains; the next optimization must target request production/coalescing or stale work rather than dispatch width.
+Rollback: `Copy-Item .agents/continuation_backups/20261008_181755/systems.rs crates/er_terrain/src/systems.rs -Force`
