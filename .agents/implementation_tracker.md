@@ -56,10 +56,10 @@ This tracker is the source-of-truth checklist for the planet visual, runtime, an
 
 ## Next Steps
 
-1. Add benchmark queue-age/drain telemetry and a longer settled traversal mode; keep the current convergence failure gate.
-2. Run focused `cargo test -p er_game`, then workspace tests sequentially after any queue instrumentation.
-3. Run the corrected benchmark and record raw output under a new `.agents/evidence` directory.
-4. Diagnose whether persistent pending work is queue saturation, stale requests, LOD churn, origin rebasing, or mesh-generation latency before changing admission policy.
+1. Inspect request producers and refresh queues to identify repeated descriptor requeueing or stale work.
+2. Add the smallest bounded coalescing or stale-request suppression change, with a fresh backup and focused tests.
+3. Run focused `cargo test -p er_game`, then workspace tests sequentially after any streaming change.
+4. Run the corrected low-altitude benchmark and compare queued/async backlog, p95/p99 frame time, active chunks, RAM, and VRAM against `.agents/evidence/bench_20261008_1734_queue_categories.txt`.
 5. Validate shader active paths and matched pixels; retain or revise only evidence-supported edits.
 6. Measure compile iteration with cache/profile provenance and investigate an opt-in shader-only workflow.
 7. Create a milestone commit per accepted implementation slice, staging only task-owned files and updating this tracker with the commit hash.
