@@ -1,0 +1,96 @@
+   Compiling er_terrain v0.0.1 (E:\Projects\EnigmaticRTS\crates\er_terrain)
+   Compiling er_game v0.0.1 (E:\Projects\EnigmaticRTS\crates\er_game)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 28.57s
+     Running `target\debug\er_game.exe --bench --bench-warmup 100 --bench-measure 30 --bench-output .agents/evidence/rts_admission32_settle_20261008_1907.txt`
+2026-10-08T23:07:56.360143Z  INFO bevy_diagnostic::system_information_diagnostics_plugin::internal: SystemInfo { os: "Windows 11 Home", kernel: "26300", cpu: "12th Gen Intel(R) Core(TM) i7-12700H", core_count: "14", memory: "23.7 GiB" }
+2026-10-08T23:07:56.519784Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_read_data_files_in_registry: Registry lookup failed to get layer manifest files.
+2026-10-08T23:07:56.519808Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x2dc1a8a3c80, name: ?)
+2026-10-08T23:07:56.519815Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Removing layer VK_LAYER_OW_OVERLAY (C:\Program Files (x86)\Overwolf\0.309.0.14\ow-vulkan-overlay64.json) because it is a duplicate of VK_LAYER_OW_OVERLAY (C:\Program Files (x86)\Overwolf\0.305.0.9\ow-vulkan-overlay64.json)
+2026-10-08T23:07:56.519818Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x2dc1a8a3c80, name: ?)
+2026-10-08T23:07:56.519821Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Removing layer VK_LAYER_OW_OBS_HOOK (C:\Program Files (x86)\Overwolf\0.309.0.14\ow-graphics-vulkan64.json) because it is a duplicate of VK_LAYER_OW_OBS_HOOK (C:\Program Files (x86)\Overwolf\0.305.0.9\ow-graphics-vulkan64.json)
+2026-10-08T23:07:56.519824Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x2dc1a8a3c80, name: ?)
+2026-10-08T23:07:56.519827Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Removing layer VK_LAYER_OBS_HOOK (C:\ProgramData\obs-studio-hook\obs-vulkan64.json) because it is a duplicate of VK_LAYER_OBS_HOOK (C:\ProgramData\obs-studio-hook\obs-vulkan64.json)
+2026-10-08T23:07:56.519829Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x2dc1a8a3c80, name: ?)
+2026-10-08T23:07:56.519832Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Removing layer VK_LAYER_WEOBS_HOOK (C:\ProgramData\obs-studio-hook\we-obs-vulkan32.json) because it is a duplicate of VK_LAYER_WEOBS_HOOK (C:\ProgramData\obs-studio-hook\we-obs-vulkan64.json)
+2026-10-08T23:07:56.519835Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x2dc1a8a3c80, name: ?)
+2026-10-08T23:07:56.520409Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Layer VK_LAYER_OW_OVERLAY uses API version 1.2 which is older than the application specified API version of 1.3. May cause issues.
+2026-10-08T23:07:56.520418Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x2dc1a8a3c80, name: ?)
+2026-10-08T23:07:56.520421Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Layer VK_LAYER_OW_OBS_HOOK uses API version 1.2 which is older than the application specified API version of 1.3. May cause issues.
+2026-10-08T23:07:56.520424Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x2dc1a8a3c80, name: ?)
+2026-10-08T23:07:56.860652Z  INFO bevy_render::renderer: AdapterInfo { name: "NVIDIA GeForce RTX 3060 Laptop GPU", vendor: 4318, device: 9504, device_type: DiscreteGpu, device_pci_bus_id: "0000:01:00.0", driver: "NVIDIA", driver_info: "617.14", backend: Vulkan, subgroup_min_size: 32, subgroup_max_size: 32, transient_saves_memory: false }
+2026-10-08T23:07:57.904041Z  INFO bevy_pbr::cluster: GPU clustering is supported on this device.
+2026-10-08T23:07:57.904102Z  INFO bevy_render::batching::gpu_preprocessing: GPU preprocessing is fully supported on this device.
+2026-10-08T23:07:57.904802Z  INFO bevy_winit::system: Creating new window Planet Solar Sim (Bench) (65v0)
+2026-10-08T23:07:57.932022Z  INFO er_game::bench: Benchmark scenario: far (distance=26545834)
+2026-10-08T23:08:01.781461Z  WARN er_game::bench: Scenario far failed to settle within 600 frames: active=723, pending=30, splits=1, merges=0
+2026-10-08T23:08:01.932793Z  INFO er_game::bench: Scenario far measured: 30 frames, avg 5.05ms
+2026-10-08T23:08:01.932827Z  WARN er_game::bench: Scenario far measured after settle timeout: pending meshes=27, splits=0, merges=0
+2026-10-08T23:08:01.938539Z  INFO er_game::bench: Benchmark scenario: mid (distance=12388056)
+2026-10-08T23:08:05.814639Z  WARN er_game::bench: Scenario mid failed to settle within 600 frames: active=1605, pending=32, splits=1, merges=0
+2026-10-08T23:08:06.013003Z  INFO er_game::bench: Scenario mid measured: 30 frames, avg 6.64ms
+2026-10-08T23:08:06.013036Z  WARN er_game::bench: Scenario mid measured after settle timeout: pending meshes=29, splits=0, merges=0
+2026-10-08T23:08:06.019512Z  INFO er_game::bench: Benchmark scenario: close (distance=7963750)
+2026-10-08T23:08:09.813068Z  WARN er_game::bench: Scenario close failed to settle within 600 frames: active=2478, pending=29, splits=0, merges=0
+2026-10-08T23:08:10.007103Z  INFO er_game::bench: Scenario close measured: 30 frames, avg 6.46ms
+2026-10-08T23:08:10.007141Z  WARN er_game::bench: Scenario close measured after settle timeout: pending meshes=27, splits=0, merges=0
+2026-10-08T23:08:10.014270Z  INFO er_game::bench: Benchmark scenario: very_close (distance=6724944.5)
+2026-10-08T23:08:13.906307Z  WARN er_game::bench: Scenario very_close failed to settle within 600 frames: active=3375, pending=28, splits=0, merges=0
+2026-10-08T23:08:14.090312Z  INFO er_game::bench: Scenario very_close measured: 30 frames, avg 6.12ms
+2026-10-08T23:08:14.090332Z  WARN er_game::bench: Scenario very_close measured after settle timeout: pending meshes=28, splits=0, merges=0
+2026-10-08T23:08:14.096994Z  INFO er_game::bench: Benchmark scenario: surface (distance=6547972)
+2026-10-08T23:08:18.436257Z  WARN er_game::bench: Scenario surface failed to settle within 600 frames: active=4374, pending=27, splits=0, merges=0
+2026-10-08T23:08:18.652634Z  INFO er_game::bench: Scenario surface measured: 30 frames, avg 7.22ms
+2026-10-08T23:08:18.652657Z  WARN er_game::bench: Scenario surface measured after settle timeout: pending meshes=31, splits=0, merges=0
+2026-10-08T23:08:18.660409Z  INFO er_game::bench: Benchmark scenario: altitude_10km (distance=6381000)
+2026-10-08T23:08:22.752249Z  WARN er_game::bench: Scenario altitude_10km failed to settle within 600 frames: active=5409, pending=32, splits=1, merges=0
+2026-10-08T23:08:22.951930Z  INFO er_game::bench: Scenario altitude_10km measured: 30 frames, avg 6.66ms
+2026-10-08T23:08:22.951963Z  WARN er_game::bench: Scenario altitude_10km measured after settle timeout: pending meshes=28, splits=1, merges=0
+2026-10-08T23:08:22.959409Z  INFO er_game::bench: Benchmark scenario: altitude_1km (distance=6372000)
+2026-10-08T23:08:29.164923Z  WARN er_game::bench: Scenario altitude_1km failed to settle within 600 frames: active=7305, pending=29, splits=2, merges=0
+2026-10-08T23:08:29.576353Z  INFO er_game::bench: Scenario altitude_1km measured: 30 frames, avg 13.81ms
+2026-10-08T23:08:29.576384Z  WARN er_game::bench: Scenario altitude_1km measured after settle timeout: pending meshes=27, splits=0, merges=0
+2026-10-08T23:08:29.586595Z  INFO er_game::bench: Benchmark scenario: altitude_100m (distance=6371100)
+2026-10-08T23:08:38.884620Z  WARN er_game::bench: Scenario altitude_100m failed to settle within 600 frames: active=9534, pending=26, splits=1, merges=0
+2026-10-08T23:08:39.348827Z  INFO er_game::bench: Scenario altitude_100m measured: 30 frames, avg 15.47ms
+2026-10-08T23:08:39.348852Z  WARN er_game::bench: Scenario altitude_100m measured after settle timeout: pending meshes=22, splits=0, merges=0
+2026-10-08T23:08:39.365286Z  INFO er_game::bench: Benchmark scenario: altitude_25m (distance=6371025)
+2026-10-08T23:08:51.975604Z  WARN er_game::bench: Scenario altitude_25m failed to settle within 600 frames: active=11808, pending=25, splits=1, merges=0
+2026-10-08T23:08:52.595541Z  INFO er_game::bench: Scenario altitude_25m measured: 30 frames, avg 20.69ms
+2026-10-08T23:08:52.595572Z  WARN er_game::bench: Scenario altitude_25m measured after settle timeout: pending meshes=27, splits=1, merges=0
+2026-10-08T23:08:52.619660Z  INFO er_game::bench: Benchmark completed.
+EnigmaticRTS Benchmark Report
+============================
+Warmup: 100 frames | Measure: 30 frames per scenario
+
+Scenario           avg_ms   min_ms   max_ms   p95_ms   p99_ms    fps chunks  depth
+----------------------------------------------------------------------------------------------
+far                  5.05     4.12     6.20     5.76     6.20  198.0    753      4
+mid                  6.64     4.92     7.78     7.68     7.78  150.7   1647      6
+close                6.46     5.54     7.51     7.45     7.51  154.8   2517      8
+very_close           6.12     5.01     7.35     7.32     7.35  163.3   3414     10
+surface              7.22     5.66     8.29     8.27     8.29  138.5   4425     11
+altitude_10km        6.66     5.53     8.08     7.83     8.08  150.1   5466     15
+altitude_1km        13.81    10.33    17.52    16.76    17.52   72.4   7395     17
+altitude_100m       15.47    11.84    17.84    17.50    17.84   64.6   9630     17
+altitude_25m        20.69    17.28    24.05    23.99    24.05   48.3  11901     17
+
+TerrainDebugInfo at end of each scenario:
+  far              dist=26545834 active=753 depth=4 visible=661 pending(s/m/mesh)=0/0/27 async/queued=13/14 pending_peak/min=42/0 frame_time_ms=0.74 mesh=32.63MiB built=3 draw_work=661 slabs=63.91MiB allocs=742 cpu=30.4% ram=0.51GiB vram=0.52/5.10GiB opaque_cpu/gpu=0.02ms/0.73ms input_to_cpu=none
+  mid              dist=12388056 active=1647 depth=6 visible=1343 pending(s/m/mesh)=0/0/29 async/queued=13/16 pending_peak/min=38/24 frame_time_ms=1.07 mesh=71.16MiB built=3 draw_work=1345 slabs=140.51MiB allocs=1637 cpu=34.6% ram=0.51GiB vram=0.77/5.10GiB opaque_cpu/gpu=0.02ms/1.94ms input_to_cpu=none
+  close            dist=7963750 active=2517 depth=8 visible=1147 pending(s/m/mesh)=0/0/27 async/queued=11/16 pending_peak/min=37/24 frame_time_ms=1.79 mesh=108.54MiB built=5 draw_work=1141 slabs=210.01MiB allocs=2505 cpu=30.0% ram=0.52GiB vram=0.77/5.10GiB opaque_cpu/gpu=0.02ms/1.99ms input_to_cpu=none
+  very_close       dist=6724944.5 active=3414 depth=10 visible=850 pending(s/m/mesh)=0/0/28 async/queued=13/15 pending_peak/min=37/24 frame_time_ms=1.79 mesh=147.12MiB built=3 draw_work=851 slabs=215.72MiB allocs=3391 cpu=39.1% ram=0.52GiB vram=0.77/5.10GiB opaque_cpu/gpu=0.02ms/1.83ms input_to_cpu=none
+  surface          dist=6547972 active=4425 depth=11 visible=1178 pending(s/m/mesh)=0/0/31 async/queued=12/19 pending_peak/min=40/20 frame_time_ms=1.57 mesh=191.05MiB built=4 draw_work=1174 slabs=313.04MiB allocs=4413 cpu=29.6% ram=0.53GiB vram=1.05/5.10GiB opaque_cpu/gpu=0.02ms/2.11ms input_to_cpu=none
+  altitude_10km    dist=6381000 active=5466 depth=15 visible=830 pending(s/m/mesh)=1/0/28 async/queued=11/17 pending_peak/min=40/21 frame_time_ms=1.92 mesh=235.54MiB built=5 draw_work=830 slabs=467.54MiB allocs=5437 cpu=32.4% ram=0.53GiB vram=1.05/5.10GiB opaque_cpu/gpu=0.02ms/2.27ms input_to_cpu=none
+  altitude_1km     dist=6372000 active=7395 depth=17 visible=2287 pending(s/m/mesh)=0/0/27 async/queued=10/17 pending_peak/min=39/19 frame_time_ms=3.01 mesh=318.62MiB built=6 draw_work=2278 slabs=480.37MiB allocs=7369 cpu=22.5% ram=0.55GiB vram=1.20/5.10GiB opaque_cpu/gpu=0.03ms/2.63ms input_to_cpu=none
+  altitude_100m    dist=6371100 active=9630 depth=17 visible=4157 pending(s/m/mesh)=0/0/22 async/queued=7/15 pending_peak/min=39/18 frame_time_ms=3.69 mesh=414.94MiB built=9 draw_work=4127 slabs=580.07MiB allocs=9609 cpu=29.2% ram=0.57GiB vram=1.27/5.10GiB opaque_cpu/gpu=0.03ms/1.81ms input_to_cpu=none
+  altitude_25m     dist=6371025 active=11901 depth=17 visible=6178 pending(s/m/mesh)=1/0/27 async/queued=8/19 pending_peak/min=37/20 frame_time_ms=4.27 mesh=513.77MiB built=8 draw_work=6176 slabs=768.30MiB allocs=11900 cpu=16.5% ram=0.58GiB vram=1.52/5.10GiB opaque_cpu/gpu=0.02ms/2.48ms input_to_cpu=none
+
+BENCHMARK_FAILED: terrain did not converge before measurement
+EXIT=0
