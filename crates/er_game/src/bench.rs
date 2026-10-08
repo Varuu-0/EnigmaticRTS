@@ -22,6 +22,8 @@ use crate::diagnostics::PerformanceSnapshot;
 
 const DEFAULT_WARMUP: u32 = 30;
 const DEFAULT_MEASURE: u32 = 60;
+const SETTLE_STABLE_FRAMES: u32 = 30;
+const SETTLE_TIMEOUT_FRAMES: u32 = 600;
 
 const SCENARIO_RADIUS_MULTIPLIERS: &[(&str, f64)] = &[
     ("far", 4.166_666_666_7),
@@ -49,8 +51,12 @@ pub struct BenchConfig {
     pub frame_durations: Vec<f32>,
     pub results: Vec<BenchResult>,
     pub completed: bool,
-    /// True when a scenario finishes with terrain work still pending.
+    /// True when a scenario fails to reach a stable bounded streaming state.
     pub convergence_failed: bool,
+    /// Consecutive frames with unchanged terrain state during settling.
+    pub stable_frames: u32,
+    /// Last terrain state signature observed during settling.
+    pub last_settle_signature: Option<(usize, usize, usize, usize)>,
     /// Pending-work extrema observed during the current scenario.
     pub scenario_pending_peak: usize,
     pub scenario_pending_min: usize,
@@ -100,6 +106,7 @@ pub struct BenchDebugSnapshot {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BenchPhase {
     Warmup,
+    Settle,
     Measure,
 }
 
@@ -171,6 +178,8 @@ pub fn parse_bench_args(planet_radius_m: f64) -> Option<BenchConfig> {
         results: Vec::new(),
         completed: false,
         convergence_failed: false,
+        stable_frames: 0,
+        last_settle_signature: None,
         scenario_pending_peak: 0,
         scenario_pending_min: usize::MAX,
     })
@@ -211,6 +220,8 @@ fn run_benchmark(
         info!("Benchmark scenario: {} (distance={})", scenario_name, dist);
         config.scenario_pending_peak = 0;
         config.scenario_pending_min = usize::MAX;
+        config.stable_frames = 0;
+        config.last_settle_signature = None;
         if let Ok((mut orbit, _transform)) = camera_query.single_mut() {
             orbit.distance = dist as f64;
             orbit.smoothed_distance = dist as f64;
@@ -227,6 +238,49 @@ fn run_benchmark(
         BenchPhase::Warmup => {
             config.frames_in_phase += 1;
             if config.frames_in_phase >= config.warmup_frames {
+                config.phase = BenchPhase::Settle;
+                config.frames_in_phase = 0;
+                config.stable_frames = 0;
+                config.last_settle_signature = None;
+                config.frame_durations.clear();
+            }
+        }
+        BenchPhase::Settle => {
+            let signature = (
+                debug_info.active_chunks,
+                debug_info.pending_meshes,
+                debug_info.pending_splits,
+                debug_info.pending_merges,
+            );
+            if config.last_settle_signature == Some(signature) {
+                config.stable_frames += 1;
+            } else {
+                config.last_settle_signature = Some(signature);
+                config.stable_frames = 0;
+            }
+            config.frames_in_phase += 1;
+            if config.stable_frames >= SETTLE_STABLE_FRAMES {
+                info!(
+                    "Scenario {} settled after {} frames: active={}, pending={}",
+                    scenario_name,
+                    config.frames_in_phase,
+                    debug_info.active_chunks,
+                    debug_info.pending_meshes,
+                );
+                config.phase = BenchPhase::Measure;
+                config.frames_in_phase = 0;
+                config.frame_durations.clear();
+            } else if config.frames_in_phase >= SETTLE_TIMEOUT_FRAMES {
+                config.convergence_failed = true;
+                warn!(
+                    "Scenario {} failed to settle within {} frames: active={}, pending={}, splits={}, merges={}",
+                    scenario_name,
+                    SETTLE_TIMEOUT_FRAMES,
+                    debug_info.active_chunks,
+                    debug_info.pending_meshes,
+                    debug_info.pending_splits,
+                    debug_info.pending_merges,
+                );
                 config.phase = BenchPhase::Measure;
                 config.frames_in_phase = 0;
                 config.frame_durations.clear();
@@ -244,13 +298,11 @@ fn run_benchmark(
                     durations.len(),
                     avg,
                 );
-                let convergence_ok = debug_info.pending_meshes == 0
-                    && debug_info.pending_splits == 0
-                    && debug_info.pending_merges == 0;
+                let convergence_ok = config.stable_frames >= SETTLE_STABLE_FRAMES;
                 if !convergence_ok {
                     config.convergence_failed = true;
                     warn!(
-                        "Scenario {} measured before terrain converged: pending meshes={}, splits={}, merges={}",
+                        "Scenario {} measured after settle timeout: pending meshes={}, splits={}, merges={}",
                         scenario_name,
                         debug_info.pending_meshes,
                         debug_info.pending_splits,

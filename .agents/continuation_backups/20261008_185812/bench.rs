@@ -1,0 +1,494 @@
+//! Headless/hidden-window benchmark mode.
+//!
+//! Moves the main OrbitCamera through a series of distances (far → surface),
+//! collects per-frame durations and TerrainDebugInfo, writes a concise text
+//! report to `--bench-output` (or stdout), and exits successfully.
+//!
+//! CLI flags:
+//!   --bench                 enable benchmark mode
+//!   --bench-output <path>   write results to this file (default: stdout)
+//!   --bench-warmup <frames> warmup frames per scenario (default: 30)
+//!   --bench-measure <frames> measured frames per scenario (default: 60)
+
+use std::path::PathBuf;
+
+use bevy::prelude::*;
+use glam::DVec3;
+
+use er_terrain::{TerrainDebugInfo, TerrainUpdate};
+
+use crate::camera::OrbitCamera;
+use crate::diagnostics::PerformanceSnapshot;
+
+const DEFAULT_WARMUP: u32 = 30;
+const DEFAULT_MEASURE: u32 = 60;
+
+const SCENARIO_RADIUS_MULTIPLIERS: &[(&str, f64)] = &[
+    ("far", 4.166_666_666_7),
+    ("mid", 1.944_444_444_4),
+    ("close", 1.25),
+    ("very_close", 1.055_555_555_6),
+    ("surface", 1.027_777_777_8),
+    // Earth-scale low-altitude views. These are radius-relative distances,
+    // retained outside the terrain surface to avoid camera collision.
+    ("altitude_10km", 1.001_569_612_3),
+    ("altitude_1km", 1.000_156_961_2),
+    ("altitude_100m", 1.000_015_696_1),
+    ("altitude_25m", 1.000_003_924_0),
+];
+
+#[derive(Resource)]
+pub struct BenchConfig {
+    pub output_path: Option<PathBuf>,
+    pub warmup_frames: u32,
+    pub measure_frames: u32,
+    pub scenarios: Vec<BenchScenario>,
+    pub current_index: usize,
+    pub frames_in_phase: u32,
+    pub phase: BenchPhase,
+    pub frame_durations: Vec<f32>,
+    pub results: Vec<BenchResult>,
+    pub completed: bool,
+    /// True when a scenario finishes with terrain work still pending.
+    pub convergence_failed: bool,
+    /// Pending-work extrema observed during the current scenario.
+    pub scenario_pending_peak: usize,
+    pub scenario_pending_min: usize,
+}
+
+#[derive(Clone)]
+pub struct BenchScenario {
+    pub name: String,
+    pub distance: f32,
+}
+
+#[derive(Clone)]
+pub struct BenchResult {
+    pub name: String,
+    pub distance: f32,
+    pub durations: Vec<f32>,
+    pub debug: BenchDebugSnapshot,
+    pub pending_peak: usize,
+    pub pending_min: usize,
+}
+
+#[derive(Clone, Copy)]
+pub struct BenchDebugSnapshot {
+    pub active_chunks: usize,
+    pub max_depth: u8,
+    pub pending_splits: usize,
+    pub pending_merges: usize,
+    pub pending_meshes: usize,
+    pub pending_async_meshes: usize,
+    pub queued_meshes: usize,
+    pub visible_chunks: usize,
+    pub frame_time_ms: f32,
+    pub meshes_built: usize,
+    pub estimated_mesh_bytes: usize,
+    pub process_cpu_percent: Option<f64>,
+    pub process_memory_gib: Option<f64>,
+    pub gpu_vram_usage_bytes: Option<u64>,
+    pub gpu_vram_budget_bytes: Option<u64>,
+    pub opaque_render_cpu_ms: Option<f64>,
+    pub opaque_render_gpu_ms: Option<f64>,
+    pub mesh_allocator_bytes: Option<f64>,
+    pub mesh_allocator_allocations: Option<f64>,
+    pub input_to_cpu_frame_end_ms: Option<f32>,
+    pub visible_mesh_draw_estimate: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BenchPhase {
+    Warmup,
+    Measure,
+}
+
+pub struct BenchPlugin;
+
+impl Plugin for BenchPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Update, run_benchmark.after(TerrainUpdate));
+    }
+}
+
+pub fn parse_bench_args(planet_radius_m: f64) -> Option<BenchConfig> {
+    let args: Vec<String> = std::env::args().collect();
+    let mut bench = false;
+    let mut output_path: Option<PathBuf> = None;
+    let mut warmup = DEFAULT_WARMUP;
+    let mut measure = DEFAULT_MEASURE;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--bench" => {
+                bench = true;
+            }
+            "--bench-output" => {
+                i += 1;
+                if i < args.len() {
+                    output_path = Some(PathBuf::from(&args[i]));
+                }
+            }
+            "--bench-warmup" => {
+                i += 1;
+                if i < args.len() {
+                    warmup = args[i].parse().unwrap_or(DEFAULT_WARMUP);
+                }
+            }
+            "--bench-measure" => {
+                i += 1;
+                if i < args.len() {
+                    measure = args[i].parse().unwrap_or(DEFAULT_MEASURE);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if !bench {
+        return None;
+    }
+
+    let scenarios = SCENARIO_RADIUS_MULTIPLIERS
+        .iter()
+        .map(|(name, multiplier)| BenchScenario {
+            name: name.to_string(),
+            distance: (planet_radius_m * multiplier) as f32,
+        })
+        .collect();
+
+    Some(BenchConfig {
+        output_path,
+        warmup_frames: warmup,
+        measure_frames: measure,
+        scenarios,
+        current_index: 0,
+        frames_in_phase: 0,
+        phase: BenchPhase::Warmup,
+        frame_durations: Vec::new(),
+        results: Vec::new(),
+        completed: false,
+        convergence_failed: false,
+        scenario_pending_peak: 0,
+        scenario_pending_min: usize::MAX,
+    })
+}
+
+fn run_benchmark(
+    mut config: ResMut<BenchConfig>,
+    time: Res<Time>,
+    mut camera_query: Query<(&mut OrbitCamera, &mut Transform), With<Camera3d>>,
+    debug_info: Res<TerrainDebugInfo>,
+    performance: Res<PerformanceSnapshot>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if config.completed {
+        return;
+    }
+
+    if config.current_index >= config.scenarios.len() {
+        let report = generate_report(&config);
+        write_report(&config, &report);
+        config.completed = true;
+        info!("Benchmark completed.\n{}", report);
+        if config.convergence_failed {
+            eprintln!("BENCHMARK_FAILED: terrain did not converge before measurement");
+            exit.write(AppExit::error());
+        } else {
+            exit.write(AppExit::Success);
+        }
+        return;
+    }
+
+    let scenario_name = config.scenarios[config.current_index].name.clone();
+    let scenario_dist = config.scenarios[config.current_index].distance;
+    let dist = scenario_dist;
+
+    // Set camera position at the start of each scenario (frame 0 of warmup).
+    if config.frames_in_phase == 0 && config.phase == BenchPhase::Warmup {
+        info!("Benchmark scenario: {} (distance={})", scenario_name, dist);
+        config.scenario_pending_peak = 0;
+        config.scenario_pending_min = usize::MAX;
+        if let Ok((mut orbit, _transform)) = camera_query.single_mut() {
+            orbit.distance = dist as f64;
+            orbit.smoothed_distance = dist as f64;
+            orbit.target = DVec3::ZERO;
+            orbit.smoothed_target = DVec3::ZERO;
+        }
+    }
+
+    let dt_ms = time.delta_secs() * 1000.0;
+    config.scenario_pending_peak = config.scenario_pending_peak.max(debug_info.pending_meshes);
+    config.scenario_pending_min = config.scenario_pending_min.min(debug_info.pending_meshes);
+
+    match config.phase {
+        BenchPhase::Warmup => {
+            config.frames_in_phase += 1;
+            if config.frames_in_phase >= config.warmup_frames {
+                config.phase = BenchPhase::Measure;
+                config.frames_in_phase = 0;
+                config.frame_durations.clear();
+            }
+        }
+        BenchPhase::Measure => {
+            config.frame_durations.push(dt_ms);
+            config.frames_in_phase += 1;
+            if config.frames_in_phase >= config.measure_frames {
+                let durations = std::mem::take(&mut config.frame_durations);
+                let avg = durations.iter().sum::<f32>() / durations.len().max(1) as f32;
+                info!(
+                    "Scenario {} measured: {} frames, avg {:.2}ms",
+                    scenario_name,
+                    durations.len(),
+                    avg,
+                );
+                let convergence_ok = debug_info.pending_meshes == 0
+                    && debug_info.pending_splits == 0
+                    && debug_info.pending_merges == 0;
+                if !convergence_ok {
+                    config.convergence_failed = true;
+                    warn!(
+                        "Scenario {} measured before terrain converged: pending meshes={}, splits={}, merges={}",
+                        scenario_name,
+                        debug_info.pending_meshes,
+                        debug_info.pending_splits,
+                        debug_info.pending_merges,
+                    );
+                }
+                let pending_peak = config.scenario_pending_peak;
+                let pending_min = config.scenario_pending_min;
+                config.results.push(BenchResult {
+                    name: scenario_name,
+                    distance: scenario_dist,
+                    durations,
+                    debug: BenchDebugSnapshot {
+                        active_chunks: debug_info.active_chunks,
+                        max_depth: debug_info.max_depth,
+                        pending_splits: debug_info.pending_splits,
+                        pending_merges: debug_info.pending_merges,
+                        pending_meshes: debug_info.pending_meshes,
+                        pending_async_meshes: debug_info.pending_async_meshes,
+                        queued_meshes: debug_info.queued_meshes,
+                        visible_chunks: debug_info.visible_chunks,
+                        frame_time_ms: debug_info.frame_time_ms,
+                        meshes_built: debug_info.meshes_built,
+                        estimated_mesh_bytes: debug_info.estimated_mesh_bytes,
+                        process_cpu_percent: performance.process_cpu_percent,
+                        process_memory_gib: performance.process_memory_gib,
+                        gpu_vram_usage_bytes: performance.gpu_vram_usage_bytes,
+                        gpu_vram_budget_bytes: performance.gpu_vram_budget_bytes,
+                        opaque_render_cpu_ms: performance.opaque_render_cpu_ms,
+                        opaque_render_gpu_ms: performance.opaque_render_gpu_ms,
+                        mesh_allocator_bytes: performance.mesh_allocator_bytes,
+                        mesh_allocator_allocations: performance.mesh_allocator_allocations,
+                        input_to_cpu_frame_end_ms: performance.input_to_cpu_frame_end_ms,
+                        visible_mesh_draw_estimate: performance.visible_mesh_draw_estimate,
+                    },
+                    pending_peak,
+                    pending_min,
+                });
+                config.current_index += 1;
+                config.phase = BenchPhase::Warmup;
+                config.frames_in_phase = 0;
+            }
+        }
+    }
+}
+
+fn generate_report(config: &BenchConfig) -> String {
+    let mut lines = Vec::new();
+    lines.push("EnigmaticRTS Benchmark Report".to_string());
+    lines.push("============================".to_string());
+    lines.push(format!(
+        "Warmup: {} frames | Measure: {} frames per scenario",
+        config.warmup_frames, config.measure_frames
+    ));
+    lines.push(String::new());
+    lines.push(format!(
+        "{:<16} {:>8} {:>8} {:>8} {:>8} {:>8} {:>6} {:>6} {:>6}",
+        "Scenario", "avg_ms", "min_ms", "max_ms", "p95_ms", "p99_ms", "fps", "chunks", "depth"
+    ));
+    lines.push("-".repeat(94));
+
+    for result in &config.results {
+        let avg = result.durations.iter().sum::<f32>() / result.durations.len().max(1) as f32;
+        let min = result
+            .durations
+            .iter()
+            .cloned()
+            .fold(f32::INFINITY, f32::min);
+        let max = result.durations.iter().cloned().fold(0.0_f32, f32::max);
+        let p95 = percentile(&result.durations, 95.0);
+        let p99 = percentile(&result.durations, 99.0);
+        let fps = 1000.0 / avg.max(0.001);
+
+        lines.push(format!(
+            "{:<16} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>6.1} {:>6} {:>6}",
+            result.name,
+            avg,
+            min,
+            max,
+            p95,
+            p99,
+            fps,
+            result.debug.active_chunks,
+            result.debug.max_depth,
+        ));
+    }
+
+    lines.push(String::new());
+    lines.push("TerrainDebugInfo at end of each scenario:".to_string());
+    for result in &config.results {
+        let process_cpu = result
+            .debug
+            .process_cpu_percent
+            .map(|value| format!("{value:.1}%"))
+            .unwrap_or_else(|| "waiting".to_owned());
+        let process_memory = result
+            .debug
+            .process_memory_gib
+            .map(|value| format!("{value:.2}GiB"))
+            .unwrap_or_else(|| "waiting".to_owned());
+        let gpu_vram = match (
+            result.debug.gpu_vram_usage_bytes,
+            result.debug.gpu_vram_budget_bytes,
+        ) {
+            (Some(usage), Some(budget)) => format!(
+                "{:.2}/{:.2}GiB",
+                usage as f64 / (1024.0 * 1024.0 * 1024.0),
+                budget as f64 / (1024.0 * 1024.0 * 1024.0),
+            ),
+            _ => "unavailable".to_owned(),
+        };
+        let opaque_cpu = result
+            .debug
+            .opaque_render_cpu_ms
+            .map(|value| format!("{value:.2}ms"))
+            .unwrap_or_else(|| "waiting".to_owned());
+        let opaque_gpu = result
+            .debug
+            .opaque_render_gpu_ms
+            .map(|value| format!("{value:.2}ms"))
+            .unwrap_or_else(|| "unavailable".to_owned());
+        let mesh_allocator = result
+            .debug
+            .mesh_allocator_bytes
+            .map(|bytes| format!("{:.2}MiB", bytes / (1024.0 * 1024.0)))
+            .unwrap_or_else(|| "waiting".to_owned());
+        let mesh_allocations = result
+            .debug
+            .mesh_allocator_allocations
+            .map(|count| format!("{count:.0}"))
+            .unwrap_or_else(|| "waiting".to_owned());
+        let input_latency = result
+            .debug
+            .input_to_cpu_frame_end_ms
+            .map(|value| format!("{value:.2}ms"))
+            .unwrap_or_else(|| "none".to_owned());
+        lines.push(format!(
+            "  {:<16} dist={} active={} depth={} visible={} pending(s/m/mesh)={}/{}/{} async/queued={}/{} pending_peak/min={}/{} frame_time_ms={:.2} mesh={:.2}MiB built={} draw_work={} slabs={} allocs={} cpu={} ram={} vram={} opaque_cpu/gpu={}/{} input_to_cpu={}",
+            result.name,
+            result.distance,
+            result.debug.active_chunks,
+            result.debug.max_depth,
+            result.debug.visible_chunks,
+            result.debug.pending_splits,
+            result.debug.pending_merges,
+            result.debug.pending_meshes,
+            result.debug.pending_async_meshes,
+            result.debug.queued_meshes,
+            result.pending_peak,
+            result.pending_min,
+            result.debug.frame_time_ms,
+            result.debug.estimated_mesh_bytes as f64 / (1024.0 * 1024.0),
+            result.debug.meshes_built,
+            result.debug.visible_mesh_draw_estimate,
+            mesh_allocator,
+            mesh_allocations,
+            process_cpu,
+            process_memory,
+            gpu_vram,
+            opaque_cpu,
+            opaque_gpu,
+            input_latency,
+        ));
+    }
+
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+fn percentile(data: &[f32], pct: f32) -> f32 {
+    if data.is_empty() {
+        return 0.0;
+    }
+    let mut sorted: Vec<f32> = data.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let idx = ((pct / 100.0) * (sorted.len() as f32 - 1.0)).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+fn write_report(config: &BenchConfig, report: &str) {
+    if let Some(path) = &config.output_path {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, report);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_bench_args;
+
+    #[test]
+    fn earth_benchmark_scenarios_remain_outside_planet() {
+        // Construct the same radius-scaled scenarios without depending on
+        // process arguments, which may not include --bench under the harness.
+        let radius = 6_371_000.0;
+        for (_, multiplier) in super::SCENARIO_RADIUS_MULTIPLIERS {
+            assert!(radius * multiplier > radius);
+        }
+    }
+
+    #[test]
+    fn earth_benchmark_scenarios_include_low_altitude_views() {
+        let radius = 6_371_000.0;
+        let config = parse_bench_args_with_scenarios(radius);
+        let names: Vec<&str> = config
+            .iter()
+            .map(|scenario| scenario.name.as_str())
+            .collect();
+        for required in [
+            "altitude_10km",
+            "altitude_1km",
+            "altitude_100m",
+            "altitude_25m",
+        ] {
+            assert!(
+                names.contains(&required),
+                "missing benchmark scenario {required}"
+            );
+        }
+        assert!(config
+            .iter()
+            .all(|scenario| scenario.distance > radius as f32));
+    }
+
+    fn parse_bench_args_with_scenarios(radius: f64) -> Vec<super::BenchScenario> {
+        super::SCENARIO_RADIUS_MULTIPLIERS
+            .iter()
+            .map(|(name, multiplier)| super::BenchScenario {
+                name: (*name).to_string(),
+                distance: (radius * multiplier) as f32,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn parser_signature_accepts_planet_radius() {
+        let _ = parse_bench_args(6_371_000.0);
+    }
+}

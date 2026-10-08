@@ -1,0 +1,154 @@
+EnigmaticRTS crash report
+timestamp_unix: 1791500561
+location: C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_pbr-0.19.0\src\cluster\gpu.rs:1156:90
+message: called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+Backtrace:
+   0: std::backtrace_rs::backtrace::win64::trace
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\..\..\backtrace\src\backtrace\win64.rs:85
+   1: std::backtrace_rs::backtrace::trace_unsynchronized
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\..\..\backtrace\src\backtrace\mod.rs:66
+   2: std::backtrace::Backtrace::create
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\backtrace.rs:331
+   3: std::backtrace::Backtrace::force_capture
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\backtrace.rs:312
+   4: er_game::crash::install_crash_hook::closure$0
+             at .\crates\er_game\src\crash.rs:14
+   5: std::panicking::panic_with_hook
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:833
+   6: std::panicking::panic_handler::closure$0
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:698
+   7: std::sys::backtrace::__rust_end_short_backtrace<std::panicking::panic_handler::closure_env$0,never$>
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\sys\backtrace.rs:182
+   8: std::panicking::panic_handler
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:689
+   9: core::panicking::panic_fmt
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\panicking.rs:80
+  10: core::result::unwrap_failed
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\result.rs:1867
+  11: core::result::Result::unwrap
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\result.rs:1233
+  12: bevy_pbr::cluster::gpu::cluster_on_gpu::schedule_readback_buffer_map::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_pbr-0.19.0\src\cluster\gpu.rs:1156
+  13: core::ops::function::FnOnce::call_once<bevy_pbr::cluster::gpu::cluster_on_gpu::schedule_readback_buffer_map::closure_env$0,tuple$<enum2$<core::result::Result<tuple$<>,wgpu::api::buffer::BufferAsyncError> > > >
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:250
+  14: alloc::boxed::impl$31::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\boxed.rs:2249
+  15: core::ops::function::FnOnce::call_once<alloc::boxed::Box<dyn$<core::ops::function::FnOnce<tuple$<enum2$<core::result::Result<tuple$<>,wgpu::api::buffer::BufferAsyncError> > >,assoc$<Output,tuple$<> > >,core::marker::Send>,alloc::alloc::Global>,tuple$<enum2
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:250
+  16: alloc::boxed::impl$31::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\boxed.rs:2249
+  17: wgpu::backend::wgpu_core::impl$28::map_async::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-29.0.3\src\backend\wgpu_core.rs:2218
+  18: core::ops::function::FnOnce::call_once<wgpu::backend::wgpu_core::impl$28::map_async::closure_env$0,tuple$<enum2$<core::result::Result<tuple$<>,enum2$<wgpu_core::resource::BufferAccessError> > > > >
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:250
+  19: alloc::boxed::impl$31::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\boxed.rs:2249
+  20: wgpu_core::device::UserClosures::fire
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-core-29.0.3\src\device\mod.rs:185
+  21: wgpu_core::device::queue::impl$2::drop
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-core-29.0.3\src\device\queue.rs:250
+  22: core::ptr::drop_in_place
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ptr\mod.rs:810
+  23: alloc::sync::Arc::drop_slow<wgpu_core::device::queue::Queue,alloc::alloc::Global>
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\sync.rs:2131
+  24: alloc::sync::impl$41::drop
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\sync.rs:2862
+  25: core::ptr::drop_in_place
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ptr\mod.rs:810
+  26: wgpu_core::global::Global::queue_drop
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-core-29.0.3\src\device\global.rs:2062
+  27: wgpu::backend::wgpu_core::impl$15::drop
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-29.0.3\src\backend\wgpu_core.rs:2144
+  28: core::ptr::drop_in_place
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ptr\mod.rs:810
+  29: alloc::sync::Arc::drop_slow<wgpu::backend::wgpu_core::CoreQueue,alloc::alloc::Global>
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\sync.rs:2131
+  30: alloc::sync::impl$41::drop
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\sync.rs:2862
+  31: core::ptr::drop_in_place
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ptr\mod.rs:810
+  32: core::ptr::drop_in_place
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ptr\mod.rs:810
+  33: core::ptr::drop_in_place
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ptr\mod.rs:810
+  34: core::ptr::drop_in_place
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ptr\mod.rs:810
+  35: alloc::sync::Arc::drop_slow<bevy_render::renderer::wgpu_wrapper::WgpuWrapper<wgpu::api::queue::Queue>,alloc::alloc::Global>
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\sync.rs:2131
+  36: bevy_ecs::storage::blob_array::BlobArray::clear
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\storage\blob_array.rs:203
+  37: bevy_ecs::storage::table::column::Column::clear
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\storage\table\column.rs:286
+  38: bevy_ecs::storage::sparse_set::ComponentSparseSet::clear
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\storage\sparse_set.rs:185
+  39: bevy_ecs::storage::sparse_set::SparseSets::clear_entities
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\storage\sparse_set.rs:840
+  40: bevy_ecs::world::World::clear_entities
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\world\mod.rs:3377
+  41: bevy_ecs::world::World::clear_all
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\world\mod.rs:3363
+  42: bevy_winit::state::impl$1::exiting
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_winit-0.19.0\src\state.rs:508
+  43: winit::event_loop::dispatch_event_for_app
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\event_loop.rs:648
+  44: winit::event_loop::impl$6::run_app::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\event_loop.rs:265
+  45: winit::platform_impl::windows::event_loop::impl$3::run_on_demand::closure$0<bevy_winit::WinitUserEvent,winit::event_loop::impl$6::run_app::closure_env$0<bevy_winit::WinitUserEvent,bevy_winit::state::WinitAppRunnerState> >
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\event_loop.rs:264
+  46: winit::platform_impl::windows::event_loop::runner::impl$3::call_event_handler::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\event_loop\runner.rs:236
+  47: core::panic::unwind_safe::impl$25::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\panic\unwind_safe.rs:275
+  48: std::panicking::catch_unwind::do_call
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:581
+  49: std::panicking::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:544
+  50: std::panic::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panic.rs:359
+  51: winit::platform_impl::windows::event_loop::runner::EventLoopRunner::catch_unwind<winit::platform_impl::windows::event_loop::UserEventPlaceholder,tuple$<>,winit::platform_impl::windows::event_loop::runner::impl$3::call_event_handler::closure_env$0<winit::pl
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\event_loop\runner.rs:173
+  52: winit::platform_impl::windows::event_loop::runner::EventLoopRunner::move_state_to<winit::platform_impl::windows::event_loop::UserEventPlaceholder>
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\event_loop\runner.rs:0
+  53: winit::platform_impl::windows::event_loop::EventLoop::run_on_demand
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\event_loop.rs:285
+  54: winit::platform_impl::windows::event_loop::EventLoop::run<bevy_winit::WinitUserEvent,winit::event_loop::impl$6::run_app::closure_env$0<bevy_winit::WinitUserEvent,bevy_winit::state::WinitAppRunnerState> >
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\event_loop.rs:233
+  55: winit::event_loop::EventLoop::run_app
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\event_loop.rs:265
+  56: bevy_winit::state::winit_runner
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_winit-0.19.0\src\state.rs:903
+  57: bevy_winit::impl$0::build::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_winit-0.19.0\src\lib.rs:135
+  58: core::ops::function::FnOnce::call_once<bevy_winit::impl$0::build::closure_env$0,tuple$<bevy_app::app::App> >
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:250
+  59: alloc::boxed::impl$31::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\boxed.rs:2249
+  60: bevy_app::app::App::run
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_app-0.19.0\src\app.rs:201
+  61: er_game::main
+             at .\crates\er_game\src\main.rs:311
+  62: core::ops::function::FnOnce::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:250
+  63: std::sys::backtrace::__rust_begin_short_backtrace<void (*)(),tuple$<> >
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\sys\backtrace.rs:166
+  64: std::rt::lang_start::closure$0<tuple$<> >
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\rt.rs:206
+  65: std::rt::lang_start_internal::closure$0
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\rt.rs:175
+  66: std::panicking::catch_unwind::do_call
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:581
+  67: std::panicking::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:544
+  68: std::panic::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panic.rs:359
+  69: std::rt::lang_start_internal
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\rt.rs:171
+  70: main
+  71: invoke_main
+             at D:\a\_work\1\s\src\vctools\crt\vcstartup\src\startup\exe_common.inl:78
+  72: __scrt_common_main_seh
+             at D:\a\_work\1\s\src\vctools\crt\vcstartup\src\startup\exe_common.inl:288
+  73: BaseThreadInitThunk
+  74: RtlUserThreadStart
+

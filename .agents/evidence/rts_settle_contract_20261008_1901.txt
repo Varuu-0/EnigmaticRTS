@@ -1,0 +1,411 @@
+   Compiling er_game v0.0.1 (E:\Projects\EnigmaticRTS\crates\er_game)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 23.77s
+     Running `target\debug\er_game.exe --bench --bench-warmup 600 --bench-measure 120 --bench-output .agents/evidence/rts_settle_contract_20261008_1901.txt`
+2026-10-08T23:01:28.247362Z  INFO bevy_diagnostic::system_information_diagnostics_plugin::internal: SystemInfo { os: "Windows 11 Home", kernel: "26300", cpu: "12th Gen Intel(R) Core(TM) i7-12700H", core_count: "14", memory: "23.7 GiB" }
+2026-10-08T23:01:28.445017Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	windows_read_data_files_in_registry: Registry lookup failed to get layer manifest files.
+2026-10-08T23:01:28.445052Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x14becc00e60, name: ?)
+2026-10-08T23:01:28.445064Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Removing layer VK_LAYER_OW_OVERLAY (C:\Program Files (x86)\Overwolf\0.309.0.14\ow-vulkan-overlay64.json) because it is a duplicate of VK_LAYER_OW_OVERLAY (C:\Program Files (x86)\Overwolf\0.305.0.9\ow-vulkan-overlay64.json)
+2026-10-08T23:01:28.445072Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x14becc00e60, name: ?)
+2026-10-08T23:01:28.445079Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Removing layer VK_LAYER_OW_OBS_HOOK (C:\Program Files (x86)\Overwolf\0.309.0.14\ow-graphics-vulkan64.json) because it is a duplicate of VK_LAYER_OW_OBS_HOOK (C:\Program Files (x86)\Overwolf\0.305.0.9\ow-graphics-vulkan64.json)
+2026-10-08T23:01:28.445086Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x14becc00e60, name: ?)
+2026-10-08T23:01:28.445092Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Removing layer VK_LAYER_OBS_HOOK (C:\ProgramData\obs-studio-hook\obs-vulkan64.json) because it is a duplicate of VK_LAYER_OBS_HOOK (C:\ProgramData\obs-studio-hook\obs-vulkan64.json)
+2026-10-08T23:01:28.445098Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x14becc00e60, name: ?)
+2026-10-08T23:01:28.445104Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Removing layer VK_LAYER_WEOBS_HOOK (C:\ProgramData\obs-studio-hook\we-obs-vulkan32.json) because it is a duplicate of VK_LAYER_WEOBS_HOOK (C:\ProgramData\obs-studio-hook\we-obs-vulkan64.json)
+2026-10-08T23:01:28.445110Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x14becc00e60, name: ?)
+2026-10-08T23:01:28.446103Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Layer VK_LAYER_OW_OVERLAY uses API version 1.2 which is older than the application specified API version of 1.3. May cause issues.
+2026-10-08T23:01:28.446123Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x14becc00e60, name: ?)
+2026-10-08T23:01:28.446130Z  WARN wgpu_hal::vulkan::instance: GENERAL [Loader Message (0x0)]
+	Layer VK_LAYER_OW_OBS_HOOK uses API version 1.2 which is older than the application specified API version of 1.3. May cause issues.
+2026-10-08T23:01:28.446136Z  WARN wgpu_hal::vulkan::instance: 	objects: (type: INSTANCE, hndl: 0x14becc00e60, name: ?)
+2026-10-08T23:01:28.869063Z  INFO bevy_render::renderer: AdapterInfo { name: "NVIDIA GeForce RTX 3060 Laptop GPU", vendor: 4318, device: 9504, device_type: DiscreteGpu, device_pci_bus_id: "0000:01:00.0", driver: "NVIDIA", driver_info: "617.14", backend: Vulkan, subgroup_min_size: 32, subgroup_max_size: 32, transient_saves_memory: false }
+2026-10-08T23:01:30.006152Z  INFO bevy_pbr::cluster: GPU clustering is supported on this device.
+2026-10-08T23:01:30.006217Z  INFO bevy_render::batching::gpu_preprocessing: GPU preprocessing is fully supported on this device.
+2026-10-08T23:01:30.006950Z  INFO bevy_winit::system: Creating new window Planet Solar Sim (Bench) (65v0)
+2026-10-08T23:01:30.038777Z  INFO er_game::bench: Benchmark scenario: far (distance=26545834)
+2026-10-08T23:01:34.538669Z  INFO er_game::bench: Scenario far settled after 190 frames: active=774, pending=0
+2026-10-08T23:01:35.171102Z  INFO er_game::bench: Scenario far measured: 120 frames, avg 5.27ms
+2026-10-08T23:01:35.176073Z  INFO er_game::bench: Benchmark scenario: mid (distance=12388056)
+2026-10-08T23:01:43.338046Z  WARN er_game::bench: Scenario mid failed to settle within 600 frames: active=2562, pending=57, splits=0, merges=0
+2026-10-08T23:01:44.636857Z  INFO er_game::bench: Scenario mid measured: 120 frames, avg 10.82ms
+2026-10-08T23:01:44.636890Z  WARN er_game::bench: Scenario mid measured after settle timeout: pending meshes=57, splits=0, merges=0
+2026-10-08T23:01:44.647445Z  INFO er_game::bench: Benchmark scenario: close (distance=7963750)
+2026-10-08T23:01:54.990264Z  WARN er_game::bench: Scenario close failed to settle within 600 frames: active=5067, pending=64, splits=2, merges=0
+2026-10-08T23:01:56.448187Z  INFO er_game::bench: Scenario close measured: 120 frames, avg 12.14ms
+2026-10-08T23:01:56.448213Z  WARN er_game::bench: Scenario close measured after settle timeout: pending meshes=54, splits=0, merges=0
+2026-10-08T23:01:56.456338Z  INFO er_game::bench: Benchmark scenario: very_close (distance=6724944.5)
+2026-10-08T23:02:05.763087Z  WARN er_game::bench: Scenario very_close failed to settle within 600 frames: active=7392, pending=61, splits=0, merges=0
+2026-10-08T23:02:06.985937Z  INFO er_game::bench: Scenario very_close measured: 120 frames, avg 10.20ms
+2026-10-08T23:02:06.985981Z  WARN er_game::bench: Scenario very_close measured after settle timeout: pending meshes=59, splits=0, merges=0
+2026-10-08T23:02:06.997073Z  INFO er_game::bench: Benchmark scenario: surface (distance=6547972)
+2026-10-08T23:02:16.314754Z  INFO er_game::bench: Scenario surface settled after 268 frames: active=9501, pending=0
+2026-10-08T23:02:17.765105Z  INFO er_game::bench: Scenario surface measured: 120 frames, avg 12.08ms
+2026-10-08T23:02:17.777530Z  INFO er_game::bench: Benchmark scenario: altitude_10km (distance=6381000)
+2026-10-08T23:02:28.951059Z  WARN er_game::bench: Scenario altitude_10km failed to settle within 600 frames: active=12336, pending=53, splits=0, merges=0
+2026-10-08T23:02:30.603136Z  INFO er_game::bench: Scenario altitude_10km measured: 120 frames, avg 13.78ms
+2026-10-08T23:02:30.603166Z  WARN er_game::bench: Scenario altitude_10km measured after settle timeout: pending meshes=60, splits=2, merges=0
+2026-10-08T23:02:30.617508Z  INFO er_game::bench: Benchmark scenario: altitude_1km (distance=6372000)
+2026-10-08T23:02:39.999042Z ERROR bevy_render::error_handler: Caught DeviceLost error: Unknown Unexpected error variant (driver implementation is at fault)
+2026-10-08T23:02:39.999077Z ERROR bevy_render::view::window: Couldn't get swap chain texture: Validation
+EnigmaticRTS crash report
+timestamp_unix: 1791500560
+location: C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-29.0.3\src\backend\wgpu_core.rs:2253:18
+message: Error in Buffer::get_mapped_range: Validation Error
+
+Caused by:
+  Buffer with '' label is invalid
+
+
+Backtrace:
+   0: std::backtrace_rs::backtrace::win64::trace
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\..\..\backtrace\src\backtrace\win64.rs:85
+   1: std::backtrace_rs::backtrace::trace_unsynchronized
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\..\..\backtrace\src\backtrace\mod.rs:66
+   2: std::backtrace::Backtrace::create
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\backtrace.rs:331
+   3: std::backtrace::Backtrace::force_capture
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\backtrace.rs:312
+   4: er_game::crash::install_crash_hook::closure$0
+             at .\crates\er_game\src\crash.rs:14
+   5: std::panicking::panic_with_hook
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:833
+   6: std::panicking::panic_handler::closure$0
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:698
+   7: std::sys::backtrace::__rust_end_short_backtrace<std::panicking::panic_handler::closure_env$0,never$>
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\sys\backtrace.rs:182
+   8: std::panicking::panic_handler
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:689
+   9: core::panicking::panic_fmt
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\panicking.rs:80
+  10: wgpu::backend::wgpu_core::ContextWgpuCore::handle_error_fatal<enum2$<wgpu_core::resource::BufferAccessError> >
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-29.0.3\src\backend\wgpu_core.rs:342
+  11: wgpu::backend::wgpu_core::impl$28::get_mapped_range
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-29.0.3\src\backend\wgpu_core.rs:2253
+  12: wgpu::api::buffer::BufferSlice::get_mapped_range_mut
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-29.0.3\src\api\buffer.rs:641
+  13: wgpu::api::buffer::Buffer::get_mapped_range_mut
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-29.0.3\src\api\buffer.rs:444
+  14: wgpu::util::device::impl$0::create_buffer_init
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-29.0.3\src\util\device.rs:71
+  15: bevy_render::renderer::render_device::RenderDevice::create_buffer_with_data
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_render-0.19.0\src\renderer\render_device.rs:211
+  16: bevy_render::render_resource::storage_buffer::StorageBuffer::write_buffer<bevy_pbr::cluster::GpuClusterableObjectIndexListsStorage>
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_render-0.19.0\src\render_resource\storage_buffer.rs:138
+  17: bevy_pbr::cluster::gpu::prepare_clusters_for_gpu_clustering
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_pbr-0.19.0\src\cluster\gpu.rs:1709
+  18: core::ops::function::FnMut::call_mut
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:166
+  19: core::ops::function::impls::impl$3::call_mut<tuple$<bevy_ecs::system::commands::Commands,bevy_ecs::system::query::Query<tuple$<bevy_ecs::entity::Entity,ref$<bevy_render::sync_world::MainEntity>,ref$<bevy_pbr::cluster::ExtractedClusterConfig>,enum2$<core::o
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:298
+  20: bevy_ecs::system::function_system::impl$48::run::call_inner
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\system\function_system.rs:904
+  21: bevy_ecs::system::function_system::impl$48::run
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\system\function_system.rs:907
+  22: bevy_ecs::system::function_system::impl$12::run_unsafe<void (*)(bevy_ecs::system::commands::Commands,bevy_ecs::system::query::Query<tuple$<bevy_ecs::entity::Entity,ref$<bevy_render::sync_world::MainEntity>,ref$<bevy_pbr::cluster::ExtractedClusterConfig>,en
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\system\function_system.rs:696
+  23: core::hint::black_box
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\hint.rs:491
+  24: bevy_ecs::schedule::executor::__rust_begin_short_backtrace::run_unsafe
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\schedule\executor\mod.rs:263
+  25: bevy_ecs::schedule::executor::multi_threaded::impl$5::spawn_system_task::async_block$0::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\schedule\executor\multi_threaded.rs:666
+  26: core::ops::function::FnOnce::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:250
+  27: core::panic::unwind_safe::impl$25::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\panic\unwind_safe.rs:275
+  28: std::panicking::catch_unwind::do_call
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:581
+  29: std::panicking::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:544
+  30: std::panic::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panic.rs:359
+  31: bevy_ecs::schedule::executor::multi_threaded::impl$5::spawn_system_task::async_block$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\schedule\executor\multi_threaded.rs:659
+  32: core::panic::unwind_safe::impl$28::poll<enum2$<bevy_ecs::schedule::executor::multi_threaded::impl$5::spawn_system_task::async_block_env$0> >
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\panic\unwind_safe.rs:300
+  33: async_executor::impl$21::poll
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\async-executor-1.14.0\src\lib.rs:1195
+  34: async_task::raw::impl$3::run::closure$1
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\async-task-4.7.1\src\raw.rs:550
+  35: core::ops::function::FnOnce::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:250
+  36: core::panic::unwind_safe::impl$25::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\panic\unwind_safe.rs:275
+  37: std::panicking::catch_unwind::do_call
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:581
+  38: std::panicking::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:544
+  39: std::panic::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panic.rs:359
+  40: async_task::raw::RawTask::run<async_executor::AsyncCallOnDrop<futures_lite::future::CatchUnwind<core::panic::unwind_safe::AssertUnwindSafe<enum2$<bevy_ecs::schedule::executor::multi_threaded::impl$5::spawn_system_task::async_block_env$0> > >,async_executor
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\async-task-4.7.1\src\raw.rs:549
+  41: async_task::runnable::Runnable::run
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\async-task-4.7.1\src\runnable.rs:781
+  42: async_executor::impl$13::run::async_fn$0::async_block$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\async-executor-1.14.0\src\lib.rs:749
+  43: futures_lite::future::impl$7::poll<enum2$<core::result::Result<tuple$<>,async_channel::RecvError> >,futures_lite::future::Or<enum2$<bevy_tasks::task_pool::impl$2::new_internal::closure$0::closure$0::closure$0::closure$0::async_block_env$0>,async_channel::R
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-lite-2.6.1\src\future.rs:454
+  44: async_executor::impl$13::run::async_fn$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\async-executor-1.14.0\src\lib.rs:756
+  45: async_executor::impl$5::run::async_fn$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\async-executor-1.14.0\src\lib.rs:353
+  46: futures_lite::future::block_on::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\futures-lite-2.6.1\src\future.rs:96
+  47: std::thread::local::LocalKey::try_with
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\thread\local.rs:462
+  48: std::thread::local::LocalKey::with<core::cell::RefCell<tuple$<parking::Parker,core::task::wake::Waker> >,futures_lite::future::block_on::closure_env$0<enum2$<core::result::Result<tuple$<>,async_channel::RecvError> >,enum2$<async_executor::impl$5::run::asyn
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\thread\local.rs:426
+  49: bevy_tasks::task_pool::impl$2::new_internal::closure$0::closure$0::closure$0::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_tasks-0.19.0\src\task_pool.rs:203
+  50: std::panicking::catch_unwind::do_call
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:581
+  51: std::panicking::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:544
+  52: std::panic::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panic.rs:359
+  53: bevy_tasks::task_pool::impl$2::new_internal::closure$0::closure$0::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_tasks-0.19.0\src\task_pool.rs:197
+  54: std::thread::local::LocalKey::try_with
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\thread\local.rs:462
+  55: std::thread::local::LocalKey::with<bevy_tasks::executor::LocalExecutor,bevy_tasks::task_pool::impl$2::new_internal::closure$0::closure$0::closure_env$0,tuple$<> >
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\thread\local.rs:426
+  56: bevy_tasks::task_pool::impl$2::new_internal::closure$0::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_tasks-0.19.0\src\task_pool.rs:190
+  57: std::sys::backtrace::__rust_begin_short_backtrace<bevy_tasks::task_pool::impl$2::new_internal::closure$0::closure_env$0,tuple$<> >
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\sys\backtrace.rs:166
+  58: std::thread::lifecycle::spawn_unchecked::closure$1::closure$0
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\thread\lifecycle.rs:91
+  59: core::panic::unwind_safe::impl$25::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\panic\unwind_safe.rs:275
+  60: std::panicking::catch_unwind::do_call
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:581
+  61: std::panicking::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:544
+  62: std::panic::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panic.rs:359
+  63: std::thread::lifecycle::spawn_unchecked::closure$1
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\thread\lifecycle.rs:89
+  64: core::ops::function::FnOnce::call_once<std::thread::lifecycle::spawn_unchecked::closure_env$1<bevy_tasks::task_pool::impl$2::new_internal::closure$0::closure_env$0,tuple$<> >,tuple$<> >
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:250
+  65: std::sys::thread::windows::impl$0::new::thread_start
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\sys\thread\windows.rs:58
+  66: BaseThreadInitThunk
+  67: RtlUserThreadStart
+
+
+Crash report written to: E:\Projects\EnigmaticRTS\target\debug\crash_reports\crash_1791500560.txt
+
+thread 'Compute Task Pool (7)' (3168) panicked at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-29.0.3\src\backend\wgpu_core.rs:2253:18:
+Error in Buffer::get_mapped_range: Validation Error
+
+Caused by:
+  Buffer with '' label is invalid
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+Encountered a panic in system `<Enable the debug feature to see the name>`!
+2026-10-08T23:02:41.165828Z ERROR bevy_render::error_handler: Caught rendering error: Validation Error
+
+Caused by:
+  In Queue::write_buffer
+    Buffer with 'render bin entry buffer' label is invalid
+
+2026-10-08T23:02:41.165844Z ERROR bevy_render::error_handler: Caught rendering error: Validation Error
+
+Caused by:
+  In Queue::write_buffer
+    Buffer with 'bin index to indirect parameters offset buffer' label is invalid
+
+2026-10-08T23:02:41.165850Z ERROR bevy_render::error_handler: Caught rendering error: Validation Error
+
+Caused by:
+  In Queue::write_buffer
+    Buffer with 'render bin entry buffer' label is invalid
+
+2026-10-08T23:02:41.165854Z ERROR bevy_render::error_handler: Caught rendering error: Validation Error
+
+Caused by:
+  In Queue::write_buffer
+    Buffer with 'bin index to indirect parameters offset buffer' label is invalid
+
+2026-10-08T23:02:41.165858Z ERROR bevy_render::error_handler: Caught rendering error: Validation Error
+
+Caused by:
+  In Queue::write_buffer
+    Buffer with 'render bin entry buffer' label is invalid
+
+2026-10-08T23:02:41.165861Z ERROR bevy_render::error_handler: Caught rendering error: Validation Error
+
+Caused by:
+  In Queue::write_buffer
+    Buffer with 'bin index to indirect parameters offset buffer' label is invalid
+
+2026-10-08T23:02:41.166398Z ERROR bevy_pbr::cluster::gpu: Failed to fetch staging buffer; not clustering.
+2026-10-08T23:02:41.166417Z ERROR bevy_render::diagnostic: TimeSpanScope::end was never called
+2026-10-08T23:02:41.166571Z  WARN bevy_render::diagnostic::internal: Failed to download render statistics buffer: Error occurred when trying to async map a buffer
+Encountered a panic in system `<Enable the debug feature to see the name>`!
+2026-10-08T23:02:41.171999Z  WARN bevy_render::diagnostic::internal: Failed to download render statistics buffer: Error occurred when trying to async map a buffer
+EnigmaticRTS crash report
+timestamp_unix: 1791500561
+location: C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_pbr-0.19.0\src\cluster\gpu.rs:1156:90
+message: called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+Backtrace:
+   0: std::backtrace_rs::backtrace::win64::trace
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\..\..\backtrace\src\backtrace\win64.rs:85
+   1: std::backtrace_rs::backtrace::trace_unsynchronized
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\..\..\backtrace\src\backtrace\mod.rs:66
+   2: std::backtrace::Backtrace::create
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\backtrace.rs:331
+   3: std::backtrace::Backtrace::force_capture
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\backtrace.rs:312
+   4: er_game::crash::install_crash_hook::closure$0
+             at .\crates\er_game\src\crash.rs:14
+   5: std::panicking::panic_with_hook
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:833
+   6: std::panicking::panic_handler::closure$0
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:698
+   7: std::sys::backtrace::__rust_end_short_backtrace<std::panicking::panic_handler::closure_env$0,never$>
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\sys\backtrace.rs:182
+   8: std::panicking::panic_handler
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:689
+   9: core::panicking::panic_fmt
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\panicking.rs:80
+  10: core::result::unwrap_failed
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\result.rs:1867
+  11: core::result::Result::unwrap
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\result.rs:1233
+  12: bevy_pbr::cluster::gpu::cluster_on_gpu::schedule_readback_buffer_map::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_pbr-0.19.0\src\cluster\gpu.rs:1156
+  13: core::ops::function::FnOnce::call_once<bevy_pbr::cluster::gpu::cluster_on_gpu::schedule_readback_buffer_map::closure_env$0,tuple$<enum2$<core::result::Result<tuple$<>,wgpu::api::buffer::BufferAsyncError> > > >
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:250
+  14: alloc::boxed::impl$31::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\boxed.rs:2249
+  15: core::ops::function::FnOnce::call_once<alloc::boxed::Box<dyn$<core::ops::function::FnOnce<tuple$<enum2$<core::result::Result<tuple$<>,wgpu::api::buffer::BufferAsyncError> > >,assoc$<Output,tuple$<> > >,core::marker::Send>,alloc::alloc::Global>,tuple$<enum2
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:250
+  16: alloc::boxed::impl$31::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\boxed.rs:2249
+  17: wgpu::backend::wgpu_core::impl$28::map_async::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-29.0.3\src\backend\wgpu_core.rs:2218
+  18: core::ops::function::FnOnce::call_once<wgpu::backend::wgpu_core::impl$28::map_async::closure_env$0,tuple$<enum2$<core::result::Result<tuple$<>,enum2$<wgpu_core::resource::BufferAccessError> > > > >
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:250
+  19: alloc::boxed::impl$31::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\boxed.rs:2249
+  20: wgpu_core::device::UserClosures::fire
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-core-29.0.3\src\device\mod.rs:185
+  21: wgpu_core::device::queue::impl$2::drop
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-core-29.0.3\src\device\queue.rs:250
+  22: core::ptr::drop_in_place
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ptr\mod.rs:810
+  23: alloc::sync::Arc::drop_slow<wgpu_core::device::queue::Queue,alloc::alloc::Global>
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\sync.rs:2131
+  24: alloc::sync::impl$41::drop
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\sync.rs:2862
+  25: core::ptr::drop_in_place
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ptr\mod.rs:810
+  26: wgpu_core::global::Global::queue_drop
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-core-29.0.3\src\device\global.rs:2062
+  27: wgpu::backend::wgpu_core::impl$15::drop
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\wgpu-29.0.3\src\backend\wgpu_core.rs:2144
+  28: core::ptr::drop_in_place
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ptr\mod.rs:810
+  29: alloc::sync::Arc::drop_slow<wgpu::backend::wgpu_core::CoreQueue,alloc::alloc::Global>
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\sync.rs:2131
+  30: alloc::sync::impl$41::drop
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\sync.rs:2862
+  31: core::ptr::drop_in_place
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ptr\mod.rs:810
+  32: core::ptr::drop_in_place
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ptr\mod.rs:810
+  33: core::ptr::drop_in_place
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ptr\mod.rs:810
+  34: core::ptr::drop_in_place
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ptr\mod.rs:810
+  35: alloc::sync::Arc::drop_slow<bevy_render::renderer::wgpu_wrapper::WgpuWrapper<wgpu::api::queue::Queue>,alloc::alloc::Global>
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\sync.rs:2131
+  36: bevy_ecs::storage::blob_array::BlobArray::clear
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\storage\blob_array.rs:203
+  37: bevy_ecs::storage::table::column::Column::clear
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\storage\table\column.rs:286
+  38: bevy_ecs::storage::sparse_set::ComponentSparseSet::clear
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\storage\sparse_set.rs:185
+  39: bevy_ecs::storage::sparse_set::SparseSets::clear_entities
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\storage\sparse_set.rs:840
+  40: bevy_ecs::world::World::clear_entities
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\world\mod.rs:3377
+  41: bevy_ecs::world::World::clear_all
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_ecs-0.19.0\src\world\mod.rs:3363
+  42: bevy_winit::state::impl$1::exiting
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_winit-0.19.0\src\state.rs:508
+  43: winit::event_loop::dispatch_event_for_app
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\event_loop.rs:648
+  44: winit::event_loop::impl$6::run_app::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\event_loop.rs:265
+  45: winit::platform_impl::windows::event_loop::impl$3::run_on_demand::closure$0<bevy_winit::WinitUserEvent,winit::event_loop::impl$6::run_app::closure_env$0<bevy_winit::WinitUserEvent,bevy_winit::state::WinitAppRunnerState> >
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\event_loop.rs:264
+  46: winit::platform_impl::windows::event_loop::runner::impl$3::call_event_handler::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\event_loop\runner.rs:236
+  47: core::panic::unwind_safe::impl$25::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\panic\unwind_safe.rs:275
+  48: std::panicking::catch_unwind::do_call
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:581
+  49: std::panicking::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:544
+  50: std::panic::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panic.rs:359
+  51: winit::platform_impl::windows::event_loop::runner::EventLoopRunner::catch_unwind<winit::platform_impl::windows::event_loop::UserEventPlaceholder,tuple$<>,winit::platform_impl::windows::event_loop::runner::impl$3::call_event_handler::closure_env$0<winit::pl
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\event_loop\runner.rs:173
+  52: winit::platform_impl::windows::event_loop::runner::EventLoopRunner::move_state_to<winit::platform_impl::windows::event_loop::UserEventPlaceholder>
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\event_loop\runner.rs:0
+  53: winit::platform_impl::windows::event_loop::EventLoop::run_on_demand
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\event_loop.rs:285
+  54: winit::platform_impl::windows::event_loop::EventLoop::run<bevy_winit::WinitUserEvent,winit::event_loop::impl$6::run_app::closure_env$0<bevy_winit::WinitUserEvent,bevy_winit::state::WinitAppRunnerState> >
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\platform_impl\windows\event_loop.rs:233
+  55: winit::event_loop::EventLoop::run_app
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\winit-0.30.13\src\event_loop.rs:265
+  56: bevy_winit::state::winit_runner
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_winit-0.19.0\src\state.rs:903
+  57: bevy_winit::impl$0::build::closure$0
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_winit-0.19.0\src\lib.rs:135
+  58: core::ops::function::FnOnce::call_once<bevy_winit::impl$0::build::closure_env$0,tuple$<bevy_app::app::App> >
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:250
+  59: alloc::boxed::impl$31::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\alloc\src\boxed.rs:2249
+  60: bevy_app::app::App::run
+             at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_app-0.19.0\src\app.rs:201
+  61: er_game::main
+             at .\crates\er_game\src\main.rs:311
+  62: core::ops::function::FnOnce::call_once
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\core\src\ops\function.rs:250
+  63: std::sys::backtrace::__rust_begin_short_backtrace<void (*)(),tuple$<> >
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\sys\backtrace.rs:166
+  64: std::rt::lang_start::closure$0<tuple$<> >
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\rt.rs:206
+  65: std::rt::lang_start_internal::closure$0
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\rt.rs:175
+  66: std::panicking::catch_unwind::do_call
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:581
+  67: std::panicking::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panicking.rs:544
+  68: std::panic::catch_unwind
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\panic.rs:359
+  69: std::rt::lang_start_internal
+             at /rustc/ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96/library\std\src\rt.rs:171
+  70: main
+  71: invoke_main
+             at D:\a\_work\1\s\src\vctools\crt\vcstartup\src\startup\exe_common.inl:78
+  72: __scrt_common_main_seh
+             at D:\a\_work\1\s\src\vctools\crt\vcstartup\src\startup\exe_common.inl:288
+  73: BaseThreadInitThunk
+  74: RtlUserThreadStart
+
+
+Crash report written to: E:\Projects\EnigmaticRTS\target\debug\crash_reports\crash_1791500561.txt
+
+thread 'main' (4568) panicked at C:\Users\varun\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bevy_pbr-0.19.0\src\cluster\gpu.rs:1156:90:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+EXIT=0
